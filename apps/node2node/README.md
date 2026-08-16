@@ -171,4 +171,4 @@ esptool.py --chip esp32c6 -p COM20 -b 115200 --before default_reset --after hard
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](../../LICENSE).
+This project is licensed under the [GNU Affero General Public License Version 3 (AGPL-3.0)](../../LICENSE).

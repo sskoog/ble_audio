@@ -227,4 +227,4 @@ For a seamless, production-ready smart speaker network, build the control servic
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](../../LICENSE).
+This project is licensed under the [GNU Affero General Public License Version 3 (AGPL-3.0)](../../LICENSE).
