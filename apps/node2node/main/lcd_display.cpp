@@ -117,112 +117,126 @@ LcdDisplay::LcdDisplay() = default;
 
 LcdDisplay::~LcdDisplay() {
     if (m_framebuffer) {
-        free(m_framebuffer);
+        heap_caps_free(m_framebuffer);
         m_framebuffer = nullptr;
     }
 }
 
 esp_err_t LcdDisplay::init() {
-    ESP_LOGI(TAG, "Initializing Waveshare ESP32-C6-LCD (ST7789 320x172 Landscape)...");
+    ESP_LOGI(TAG, "Initializing ST7789 1.47-inch LCD (320x172 Landscape)...");
 
-    // 1. Allocate Framebuffer in DMA/Internal Memory (320 x 172 x 2 = 110,080 bytes)
-    size_t fb_size = LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t);
-    m_framebuffer = static_cast<uint16_t*>(heap_caps_malloc(fb_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    if (!m_framebuffer) {
-        m_framebuffer = static_cast<uint16_t*>(malloc(fb_size));
-        if (!m_framebuffer) {
-            ESP_LOGE(TAG, "Failed to allocate framebuffer (%u bytes)", fb_size);
-            return ESP_ERR_NO_MEM;
-        }
-    }
-    clear(COLOR_BLACK);
+    // 1. Backlight PWM Configuration (20% Brightness to minimize power dissipation)
+    ledc_timer_config_t ledc_timer = {};
+    ledc_timer.speed_mode = LEDC_LOW_SPEED_MODE;
+    ledc_timer.duty_resolution = LEDC_TIMER_10_BIT;
+    ledc_timer.timer_num = LEDC_TIMER_0;
+    ledc_timer.freq_hz = 5000; // 5 kHz PWM
+    ledc_timer.clk_cfg = LEDC_AUTO_CLK;
+    ledc_timer_config(&ledc_timer);
 
-    // 2. Initialize SPI Bus for ST7789 LCD
-    spi_bus_config_t buscfg = {};
-    buscfg.mosi_io_num = LCD_PIN_MOSI;
-    buscfg.miso_io_num = -1;
-    buscfg.sclk_io_num = LCD_PIN_SCLK;
-    buscfg.quadwp_io_num = -1;
-    buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t);
+    ledc_channel_config_t ledc_channel = {};
+    ledc_channel.speed_mode = LEDC_LOW_SPEED_MODE;
+    ledc_channel.channel = LEDC_CHANNEL_0;
+    ledc_channel.timer_sel = LEDC_TIMER_0;
+    ledc_channel.intr_type = LEDC_INTR_DISABLE;
+    ledc_channel.gpio_num = LCD_PIN_BL;
+    ledc_channel.duty = 205; // 20% Duty Cycle (205 / 1023)
+    ledc_channel.hpoint = 0;
+    ledc_channel_config(&ledc_channel);
 
-    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    // 2. SPI Bus Config
+    spi_bus_config_t bus_cfg = {};
+    bus_cfg.sclk_io_num = LCD_PIN_SCLK;
+    bus_cfg.mosi_io_num = LCD_PIN_MOSI;
+    bus_cfg.miso_io_num = -1;
+    bus_cfg.quadwp_io_num = -1;
+    bus_cfg.quadhd_io_num = -1;
+    bus_cfg.max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t);
+
+    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // 3. Install LCD Panel IO
-    esp_lcd_panel_io_handle_t io_handle = nullptr;
-    esp_lcd_panel_io_spi_config_t io_config = {};
-    io_config.dc_gpio_num = LCD_PIN_DC;
-    io_config.cs_gpio_num = LCD_PIN_CS;
-    io_config.pclk_hz = 40 * 1000 * 1000; // 40 MHz SPI Clock
-    io_config.lcd_cmd_bits = 8;
-    io_config.lcd_param_bits = 8;
-    io_config.spi_mode = 0;
-    io_config.trans_queue_depth = 10;
+    // 3. Panel IO Config
+    esp_lcd_panel_io_spi_config_t io_cfg = {};
+    io_cfg.dc_gpio_num = LCD_PIN_DC;
+    io_cfg.cs_gpio_num = LCD_PIN_CS;
+    io_cfg.pclk_hz = 40 * 1000 * 1000; // 40 MHz SPI Clock
+    io_cfg.lcd_cmd_bits = 8;
+    io_cfg.lcd_param_bits = 8;
+    io_cfg.spi_mode = 0;
+    io_cfg.trans_queue_depth = 10;
 
-    ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_config, &io_handle);
+    esp_lcd_panel_io_handle_t io_handle = nullptr;
+    ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_cfg, &io_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create LCD Panel IO: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Panel IO init failed: %s", esp_err_to_name(ret));
         return ret;
     }
     m_io_handle = io_handle;
 
-    // 4. Install ST7789 Panel Driver
-    esp_lcd_panel_handle_t panel_handle = nullptr;
-    esp_lcd_panel_dev_config_t panel_config = {};
-    panel_config.reset_gpio_num = LCD_PIN_RST;
-    panel_config.rgb_endian = LCD_RGB_ENDIAN_BGR;
-    panel_config.bits_per_pixel = 16;
+    // 4. Panel Driver Config (ST7789)
+    esp_lcd_panel_dev_config_t panel_cfg = {};
+    panel_cfg.reset_gpio_num = LCD_PIN_RST;
+    panel_cfg.rgb_endian = LCD_RGB_ENDIAN_BGR;
+    panel_cfg.bits_per_pixel = 16;
 
-    ret = esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle);
+    esp_lcd_panel_handle_t panel_handle = nullptr;
+    ret = esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &panel_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create ST7789 panel: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "ST7789 panel init failed: %s", esp_err_to_name(ret));
         return ret;
     }
     m_panel_handle = panel_handle;
 
     esp_lcd_panel_reset(panel_handle);
     esp_lcd_panel_init(panel_handle);
-    esp_lcd_panel_invert_color(panel_handle, true);
-    esp_lcd_panel_swap_xy(panel_handle, true);
-    esp_lcd_panel_mirror(panel_handle, true, false);
-    // Correct gap for 172x320 panel in landscape (swap_xy=true): X gap = 0, Y gap = (240-172)/2 = 34
-    esp_lcd_panel_set_gap(panel_handle, 0, 34);
+    esp_lcd_panel_invert_color(panel_handle, true); // ST7789 color inversion
+    esp_lcd_panel_swap_xy(panel_handle, true);      // Landscape orientation
+    esp_lcd_panel_mirror(panel_handle, true, false); // Mirror X for correct layout
+    esp_lcd_panel_set_gap(panel_handle, 0, 34);     // Waveshare 1.47" ST7789 172x320 offset
     esp_lcd_panel_disp_on_off(panel_handle, true);
 
-    // 5. Backlight Configuration (LEDC PWM on GPIO 22)
-    ledc_timer_config_t bl_timer = {};
-    bl_timer.speed_mode = LEDC_LOW_SPEED_MODE;
-    bl_timer.duty_resolution = LEDC_TIMER_10_BIT;
-    bl_timer.timer_num = LEDC_TIMER_0;
-    bl_timer.freq_hz = 5000;
-    bl_timer.clk_cfg = LEDC_AUTO_CLK;
-    ledc_timer_config(&bl_timer);
+    // 5. Allocate Framebuffer in Internal SRAM (320 x 172 x 2 = 110 KB)
+    m_framebuffer = (uint16_t*)heap_caps_malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!m_framebuffer) {
+        ESP_LOGE(TAG, "Failed to allocate 110 KB LCD framebuffer!");
+        return ESP_ERR_NO_MEM;
+    }
 
-    ledc_channel_config_t bl_channel = {};
-    bl_channel.gpio_num = LCD_PIN_BL;
-    bl_channel.speed_mode = LEDC_LOW_SPEED_MODE;
-    bl_channel.channel = LEDC_CHANNEL_0;
-    bl_channel.intr_type = LEDC_INTR_DISABLE;
-    bl_channel.timer_sel = LEDC_TIMER_0;
-    bl_channel.duty = 256; // Default 25% brightness (256/1023)
-    bl_channel.hpoint = 0;
-    ledc_channel_config(&bl_channel);
+    // 6. Initialize WS2812B RGB LED on GPIO 8
+    led_strip_config_t strip_config = {};
+    strip_config.strip_gpio_num = RGB_LED_PIN;
+    strip_config.max_leds = 1;
+    strip_config.led_pixel_format = LED_PIXEL_FORMAT_GRB;
+    strip_config.led_model = LED_MODEL_WS2812;
+
+    led_strip_rmt_config_t rmt_config = {};
+    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
+    rmt_config.resolution_hz = 10 * 1000 * 1000; // 10 MHz
+    led_strip_handle_t led_strip = nullptr;
+    if (led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip) == ESP_OK) {
+        m_led_strip_handle = led_strip;
+        led_strip_clear(led_strip);
+        led_strip_set_pixel(led_strip, 0, 0, 51, 51); // Default 20% Cyan status
+        led_strip_refresh(led_strip);
+    } else {
+        ESP_LOGW(TAG, "RGB LED init skipped/failed.");
+    }
 
     m_initialized = true;
     clear(COLOR_BLACK);
-    drawHeader("ESP32-C6 BLE AUDIO BROADCAST");
+    drawHeader("WAVESHARE ESP32-C6 BLE AUDIO");
     flush();
 
-    ESP_LOGI(TAG, "ST7789 LCD Console Initialized Successfully (320x172 Landscape, gap=(0,34)).");
+    ESP_LOGI(TAG, "ST7789 1.47-inch LCD Console Initialized Successfully.");
     return ESP_OK;
 }
 
 void LcdDisplay::setBacklight(bool enable) {
-    setBacklightBrightness(enable ? 25 : 0);
+    setBacklightBrightness(enable ? 20 : 0);
 }
 
 void LcdDisplay::setBacklightBrightness(uint8_t percent) {
@@ -234,17 +248,18 @@ void LcdDisplay::setBacklightBrightness(uint8_t percent) {
 
 void LcdDisplay::clear(uint16_t bg_color) {
     if (!m_framebuffer) return;
-    for (int i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
+    for (int i = 0; i < LCD_WIDTH * LCD_HEIGHT; ++i) {
         m_framebuffer[i] = bg_color;
     }
 }
 
 void LcdDisplay::drawChar(int x, int y, char c, uint16_t color, uint16_t bg_color) {
     if (c < 32 || c > 126 || !m_framebuffer) return;
+
     int char_idx = c - 32;
-    for (int row = 0; row < 16; row++) {
+    for (int row = 0; row < 16; ++row) {
         uint8_t line = FONT_8X16[char_idx][row];
-        for (int col = 0; col < 8; col++) {
+        for (int col = 0; col < 8; ++col) {
             uint16_t pixel_color = (line & (0x80 >> col)) ? color : bg_color;
             int px = x + col;
             int py = y + row;
@@ -256,7 +271,7 @@ void LcdDisplay::drawChar(int x, int y, char c, uint16_t color, uint16_t bg_colo
 }
 
 void LcdDisplay::drawString(int x, int y, const char* str, uint16_t color, uint16_t bg_color) {
-    if (!str || !m_framebuffer) return;
+    if (!str) return;
     int cur_x = x;
     while (*str) {
         if (cur_x + 8 > LCD_WIDTH) break;
@@ -267,7 +282,7 @@ void LcdDisplay::drawString(int x, int y, const char* str, uint16_t color, uint1
 }
 
 void LcdDisplay::drawHeader(const char* title) {
-    if (!m_framebuffer || !title) return;
+    if (!m_framebuffer) return;
 
     // Draw header bar background (Dark Gray / Yellow Header)
     for (int y = 0; y < 18; ++y) {
@@ -286,24 +301,36 @@ void LcdDisplay::drawHeader(const char* title) {
 }
 
 void LcdDisplay::printLine(int row, const char* text, uint16_t color, uint16_t bg_color) {
-    if (row < 0 || row > 8 || !text || !m_framebuffer) return;
+    if (row < 0 || row > 9 || !m_framebuffer) return;
 
-    int y = 22 + (row * 18); // Header is 0..19, lines start at y=22 with 18px pitch
+    int y = 22 + (row * 15); // Calculate row Y coordinate
     if (y + 16 > LCD_HEIGHT) return;
 
-    // Clear entire line background
-    for (int py = y; py < y + 17 && py < LCD_HEIGHT; ++py) {
+    // Clear existing line background
+    for (int py = y; py < y + 15; ++py) {
         for (int px = 0; px < LCD_WIDTH; ++px) {
             m_framebuffer[py * LCD_WIDTH + px] = bg_color;
         }
     }
 
-    drawString(6, y + 1, text, color, bg_color);
+    drawString(4, y, text, color, bg_color);
+}
+
+void LcdDisplay::setRgbColor(uint8_t red, uint8_t green, uint8_t blue) {
+    if (m_led_strip_handle) {
+        // Cap max brightness to 20% (max 51 out of 255)
+        uint8_t r = (red > 51) ? 51 : red;
+        uint8_t g = (green > 51) ? 51 : green;
+        uint8_t b = (blue > 51) ? 51 : blue;
+        auto* strip = static_cast<led_strip_handle_t>(m_led_strip_handle);
+        led_strip_set_pixel(strip, 0, r, g, b);
+        led_strip_refresh(strip);
+    }
 }
 
 void LcdDisplay::flush() {
     if (!m_initialized || !m_panel_handle || !m_framebuffer) return;
-    auto panel = static_cast<esp_lcd_panel_handle_t>(m_panel_handle);
+    auto* panel = static_cast<esp_lcd_panel_handle_t>(m_panel_handle);
     esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_WIDTH, LCD_HEIGHT, m_framebuffer);
 }
 
