@@ -182,7 +182,7 @@ void DiagnosticMonitor::printDiagnostics() {
         m_lcd_display->printLine(1, buf, Hardware::COLOR_GREEN);
         
         // Display Bluetooth status and Source 0x09 ID Name
-        snprintf(buf, sizeof(buf), "BT: %d dBm | %s | BIS: %s", stream.rssi_dbm, bt_state, stream.source_name.c_str());
+        snprintf(buf, sizeof(buf), "BT: %d dBm | %s from %s", stream.rssi_dbm, bt_state, stream.source_name.c_str());
         m_lcd_display->printLine(2, buf, Hardware::COLOR_BLUE);
 
         snprintf(buf, sizeof(buf), "AUDIO: %.1f kHz %u-bit %s", static_cast<float>(stream.sample_rate) / 1000.0f, stream.bit_depth, (stream.channels == 1) ? "Mono" : "Stereo");

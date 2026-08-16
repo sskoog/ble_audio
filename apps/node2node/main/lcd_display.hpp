@@ -21,17 +21,17 @@ constexpr gpio_num_t LCD_PIN_RST  = GPIO_NUM_21;
 constexpr gpio_num_t LCD_PIN_BL   = GPIO_NUM_22;
 constexpr gpio_num_t RGB_LED_PIN  = GPIO_NUM_8;
 
-// RGB565 Color Definitions (Big Endian for ST7789)
+// RGB565 Color Definitions (Corrected for Waveshare ST7789 SPI)
 constexpr uint16_t COLOR_BLACK       = 0x0000;
 constexpr uint16_t COLOR_WHITE       = 0xFFFF;
-constexpr uint16_t COLOR_CYAN        = 0x7FF0; // Swap bytes for ST7789 SPI
+constexpr uint16_t COLOR_RED         = 0x1F00;
 constexpr uint16_t COLOR_GREEN       = 0xE007;
-constexpr uint16_t COLOR_YELLOW      = 0xE0FF;
-constexpr uint16_t COLOR_MAGENTA     = 0x1FF8;
-constexpr uint16_t COLOR_RED         = 0x00F8;
-constexpr uint16_t COLOR_BLUE        = 0x1F00;
-constexpr uint16_t COLOR_ORANGE      = 0x00FC;
-constexpr uint16_t COLOR_DARK_GRAY   = 0xC318;
+constexpr uint16_t COLOR_BLUE        = 0x00F8;
+constexpr uint16_t COLOR_CYAN        = 0xE0FF;
+constexpr uint16_t COLOR_MAGENTA     = 0x7FF0;
+constexpr uint16_t COLOR_YELLOW      = 0xFF07;
+constexpr uint16_t COLOR_ORANGE      = 0xBF03;
+constexpr uint16_t COLOR_DARK_GRAY   = 0x18C3;
 constexpr uint16_t COLOR_NEON_GREEN  = 0xE007;
 
 class LcdDisplay {
