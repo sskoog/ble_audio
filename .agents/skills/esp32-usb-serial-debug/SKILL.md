@@ -1,12 +1,12 @@
 ---
 name: esp32-usb-serial-debug
 description: >-
-  Procedures, scripts, and commands for flashing (uploading firmware) and debugging ESP32/ESP32-C6 devices via USB Virtual Serial Port (USB Serial JTAG / UART) on Windows PowerShell. Use when the user asks to flash, upload, monitor, or read serial logs from ESP32 nodes (e.g. Node20 on COM20, Node21 on COM21).
+  Procedures, scripts, and commands for flashing (uploading firmware) and debugging ESP32/ESP32-C6 devices via USB Virtual Serial Port (USB Serial JTAG / UART) on Windows PowerShell. Includes timeout management and error handling for common issues such as Permission Denied (port in use by another subagent/monitor) and connection timeouts.
 ---
 
 # ESP32 USB Virtual Serial Flashing & Debugging Skill
 
-This skill provides standard operating procedures, automated PowerShell scripts, and reference commands for compiling, flashing, and monitoring ESP32-C6 boards over USB Virtual Serial (Native USB Serial/JTAG or UART bridge) in Windows PowerShell.
+This skill provides standard operating procedures, automated PowerShell scripts, and reference commands for compiling, flashing, and monitoring ESP32-C6 boards over USB Virtual Serial (Native USB Serial/JTAG or UART bridge) in Windows PowerShell with robust timeout and error handling.
 
 ---
 
@@ -53,65 +53,81 @@ powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/s
 
 ## 3. Firmware Flashing Procedure
 
-### Method A: Fast Multi-Binary Flashing (Recommended)
-Use `esptool.py` at 460800 baud with hardware auto-reset for fast flashing:
+### Method A: Automated Flashing Script with Port Pre-check (Recommended)
+The [flash_node.ps1](file:///c:/Git_ble_audio/.agents/skills/esp32-usb-serial-debug/scripts/flash_node.ps1) script pre-checks if the port is busy, verifies build artifacts, and executes `esptool.py` with automatic retries:
 
-```powershell
-# For node2node (Node20 on COM20 or Node21 on COM21)
-python -m esptool --chip esp32c6 -p COM20 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 apps\node2node\build\bootloader\bootloader.bin 0x8000 apps\node2node\build\partition_table\partition-table.bin 0x10000 apps\node2node\build\esp32c6_ble_audio_broadcast.bin
-
-# For android2node (Node20 on COM20)
-python -m esptool --chip esp32c6 -p COM20 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 apps\android2node\build\bootloader\bootloader.bin 0x8000 apps\android2node\build\partition_table\partition-table.bin 0x10000 apps\android2node\build\esp32c6_ble_audio_receiver.bin
-```
-
-### Method B: Flash Script Helper
-Use the automated flashing helper:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/flash_node.ps1 -Port COM20 -App node2node
 ```
 
-### Method C: IDF Native Flash
+### Method B: Fast Multi-Binary Flashing
 ```powershell
-idf.py -C apps\node2node -p COM20 flash
+# For node2node (Node20 on COM20 or Node21 on COM21)
+python -m esptool --chip esp32c6 -p COM20 -b 460800 --connect-attempts 5 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 apps\node2node\build\bootloader\bootloader.bin 0x8000 apps\node2node\build\partition_table\partition-table.bin 0x10000 apps\node2node\build\esp32c6_ble_audio_broadcast.bin
 ```
 
 ---
 
 ## 4. Reading Serial Logs & Telemetry
 
-### Non-Blocking Telemetry Capture in PowerShell (Automated)
-To read a clean stream of logs for automated inspection without locking up the terminal:
+### Safe Non-Blocking Telemetry Capture (Recommended)
+The [read_serial.ps1](file:///c:/Git_ble_audio/.agents/skills/esp32-usb-serial-debug/scripts/read_serial.ps1) script handles port locking, configurable timeouts, and always closes the port in a `finally` block so subagents or flashing tools are never locked out:
 
 ```powershell
-$port = new-object System.IO.Ports.SerialPort "COM20", 115200, None, 8, one
-$port.Open()
-$port.ReadTimeout = 1500
-$startTime = [DateTime]::UtcNow
+# Read telemetry from COM20 for 10 seconds (with 1500ms line timeout)
+powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/read_serial.ps1 -Port COM20 -DurationSeconds 10
+```
+
+### Direct PowerShell Snippet with Timeout & Error Handling:
+```powershell
+$port = "COM20"
+$sp = $null
 try {
+    $sp = New-Object System.IO.Ports.SerialPort $port, 115200, None, 8, one
+    $sp.ReadTimeout = 1500
+    $sp.WriteTimeout = 1500
+    $sp.Open()
+    
+    $startTime = [DateTime]::UtcNow
     while (([DateTime]::UtcNow - $startTime).TotalSeconds -lt 10) {
         try {
-            $line = $port.ReadLine()
+            $line = $sp.ReadLine()
             Write-Output $line
         } catch [System.TimeoutException] {}
     }
-} finally {
-    $port.Close()
 }
-```
-
-Or execute the helper script:
-```powershell
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/read_serial.ps1 -Port COM20 -DurationSeconds 10
+catch [System.UnauthorizedAccessException] {
+    Write-Error "PERMISSION DENIED: $port is currently in use by another subagent, terminal, or process."
+}
+finally {
+    if ($sp -ne $null) {
+        if ($sp.IsOpen) { $sp.Close() }
+        $sp.Dispose()
+    }
+}
 ```
 
 ---
 
-## 5. Troubleshooting & Best Practices
+## 5. Error Handling & Common Issues
 
-1. **Access Denied Error on Flash**:
-   - Cause: Another process (or a previous PowerShell script) has `COM20` / `COM21` open.
-   - Fix: Ensure serial monitor instances or serial ports are closed before issuing `write_flash`.
-2. **USB Serial JTAG Disconnects**:
-   - With `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, the USB CDC port will briefly detach and re-enumerate upon hard reset. Allow 1-2 seconds after reset before opening the port.
-3. **Double Check Flash Size & Mode**:
-   - All ESP32-C6 boards in this repository use **8MB Flash (`CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y`)** with **DIO mode @ 80MHz**.
+### 1. "Permission Denied" / `UnauthorizedAccessException` / `Access is denied`
+- **Root Cause**: Another subagent, IDE extension, PowerShell background task, or external terminal (e.g. PuTTY, Arduino Serial Monitor) currently has the COM port open.
+- **Handling**:
+  - The scripts automatically detect this error and retry after a short delay.
+  - To locate and release the process holding the port in Windows PowerShell:
+    ```powershell
+    # Check for any running background tasks in Antigravity or open monitor tasks
+    # Kill stale python esptool / monitor processes if necessary:
+    Get-Process | Where-Object { $_.ProcessName -match "python" -or $_.ProcessName -match "idf_monitor" }
+    ```
+
+### 2. "Failed to connect to ESP32: No serial data received" / Connection Timeout
+- **Root Cause**: Chip is in deep sleep, bad USB connection, or USB CDC line needs re-enumeration.
+- **Handling**:
+  - `flash_node.ps1` adds `--connect-attempts 5` and a 2-second retry backoff.
+  - For stubborn boards, hold the `BOOT` button on the ESP32 while initiating the flash command.
+
+### 3. USB Serial JTAG CDC Re-enumeration Delay
+- With `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, the native USB port will momentarily detach from Windows when hard reset.
+- Allow 1-2 seconds after flashing before attempting to open the port for reading.
