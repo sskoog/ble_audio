@@ -136,11 +136,12 @@ void BleAudioBroadcast::checkSyncState() {
     if (m_node_role == NODE_ROLE_SINK) {
         if (m_telemetry.is_synced) {
             TickType_t now = xTaskGetTickCount();
-            // If no broadcast advertisement received for > 3.0 seconds, transition back to SCANNING
-            if ((now - m_last_adv_tick) > pdMS_TO_TICKS(3000)) {
+            // If no broadcast advertisement received for > 1.0 second, transition back to SCANNING and reset stats
+            if ((now - m_last_adv_tick) > pdMS_TO_TICKS(1000)) {
                 m_telemetry.is_synced = false;
                 m_telemetry.source_name = "SEARCHING...";
                 m_telemetry.rssi_dbm = 0;
+                m_telemetry.packets_count = 0; // Reset packet counter on connection drop
                 ESP_LOGW(TAG, "Node20: Broadcast Sync Lost (Source Inactive/Powered Off). Scanning...");
             }
         }

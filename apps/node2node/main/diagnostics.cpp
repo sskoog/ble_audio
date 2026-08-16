@@ -186,15 +186,15 @@ void DiagnosticMonitor::printDiagnostics() {
             snprintf(buf, sizeof(buf), "BT: %s | BIS: #%u", bt_state, stream.bis_index);
         } else {
             if (stream.is_synced) {
-                snprintf(buf, sizeof(buf), "BT: %d dBm | %s", stream.rssi_dbm, bt_state);
+                snprintf(buf, sizeof(buf), "BT: %d dBm | %s | #%lu", stream.rssi_dbm, bt_state, stream.packets_count);
             } else {
-                snprintf(buf, sizeof(buf), "BT: %s (Listening...)", bt_state);
+                snprintf(buf, sizeof(buf), "BT: Scanning...");
             }
         }
-        m_lcd_display->printLine(2, buf, stream.is_synced ? Hardware::COLOR_BLUE : Hardware::COLOR_CYAN);
+        m_lcd_display->printLine(2, buf, stream.is_synced ? Hardware::COLOR_CYAN : Hardware::COLOR_BLUE);
 
-        snprintf(buf, sizeof(buf), "BIS: #%u | PKTS: %lu from %s", stream.bis_index, stream.packets_count, stream.source_name.c_str());
-        m_lcd_display->printLine(3, buf, Hardware::COLOR_BLUE);
+        snprintf(buf, sizeof(buf), "BIS: #%u @ %s", stream.bis_index, stream.source_name.c_str());
+        m_lcd_display->printLine(3, buf, Hardware::COLOR_CYAN);
 
         snprintf(buf, sizeof(buf), "AUDIO: %.1f kHz %u-bit %s", static_cast<float>(stream.sample_rate) / 1000.0f, stream.bit_depth, (stream.channels == 1) ? "Mono" : "Stereo");
         m_lcd_display->printLine(4, buf, Hardware::COLOR_ORANGE);
