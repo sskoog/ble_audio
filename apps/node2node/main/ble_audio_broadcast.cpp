@@ -179,7 +179,7 @@ esp_err_t BleAudioBroadcast::init(uint8_t node_role) {
 void BleAudioBroadcast::startAudioTask() {
     if (!m_audio_task_running) {
         m_audio_task_running = true;
-        xTaskCreate(audioTaskRoutine, "ble_audio_task", 4096, this, 5, nullptr);
+        xTaskCreate(audioTaskRoutine, "ble_audio_task", 4096, this, 3, nullptr);
     }
 }
 
@@ -199,7 +199,6 @@ void BleAudioBroadcast::runSourceLoop() {
     uint8_t lc3_buffer[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
     size_t actual_encoded_bytes = 0;
 
-    TickType_t last_wake = xTaskGetTickCount();
     const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS); // 10 ms
 
     while (m_audio_task_running) {
@@ -214,8 +213,8 @@ void BleAudioBroadcast::runSourceLoop() {
         // 3. Increment Transmit Packet Counter
         m_telemetry.packets_count++;
 
-        // Maintain strict 10 ms isochronous timing
-        vTaskDelayUntil(&last_wake, interval);
+        // Maintain 10 ms frame pacing and yield CPU to FreeRTOS IDLE & Watchdog
+        vTaskDelay(interval > 0 ? interval : 1);
     }
 }
 
@@ -233,7 +232,6 @@ void BleAudioBroadcast::runSinkLoop() {
     incoming_lc3_packet[2] = AUDIO_LC3_OCTETS_PER_FRAME;
     incoming_lc3_packet[3] = AUDIO_CHANNELS_NUM;
 
-    TickType_t last_wake = xTaskGetTickCount();
     const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS); // 10 ms
 
     while (m_audio_task_running) {
@@ -248,7 +246,7 @@ void BleAudioBroadcast::runSinkLoop() {
         // 3. Increment Receive Packet Counter
         m_telemetry.packets_count++;
 
-        vTaskDelayUntil(&last_wake, interval);
+        vTaskDelay(interval > 0 ? interval : 1);
     }
 }
 

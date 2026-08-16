@@ -71,6 +71,9 @@ void ToneGenerator::set_gain_pct(float pct) {
     m_peak_amplitude = static_cast<int16_t>(32767.0f * linear_scale + 0.5f);
 }
 
+static int16_t s_sine_table[512];
+static bool s_sine_table_initialized = false;
+
 esp_err_t ToneGenerator::init(uint32_t sample_rate_hz, float nominal_freq_hz, float min_freq_hz, float max_freq_hz, float amplitude_pct) {
     m_sample_rate = sample_rate_hz;
     m_min_freq_hz = min_freq_hz;
@@ -80,6 +83,14 @@ esp_err_t ToneGenerator::init(uint32_t sample_rate_hz, float nominal_freq_hz, fl
     m_carrier_phase = 0.0f;
     m_vfo_phase = 0.0f;
     m_cycle_count = 0;
+
+    // Initialize 512-point Sine LUT once
+    if (!s_sine_table_initialized) {
+        for (int i = 0; i < 512; i++) {
+            s_sine_table[i] = static_cast<int16_t>(sinf((2.0f * static_cast<float>(M_PI) * i) / 512.0f) * 32767.0f);
+        }
+        s_sine_table_initialized = true;
+    }
 
     set_gain_pct(amplitude_pct);
     randomizeModRate();
@@ -94,22 +105,25 @@ size_t ToneGenerator::generateFrame(int16_t* out_pcm, size_t num_samples) {
 
     const float two_pi = 2.0f * static_cast<float>(M_PI);
     const float dt = 1.0f / static_cast<float>(m_sample_rate);
+    const float gain_factor = static_cast<float>(m_peak_amplitude) / 32767.0f;
+    const float rad_to_lut = 512.0f / two_pi;
 
     for (size_t i = 0; i < num_samples; i++) {
-        // Compute instantaneous modulated frequency from VFO sine wave
-        m_current_freq_hz = m_center_freq_hz + m_freq_deviation_hz * sinf(m_vfo_phase);
+        // Fast table lookup for VFO sine
+        uint32_t vfo_lut_idx = static_cast<uint32_t>(m_vfo_phase * rad_to_lut) & 511;
+        float vfo_val = static_cast<float>(s_sine_table[vfo_lut_idx]) / 32767.0f;
 
-        // Advance carrier phase based on instantaneous frequency
+        m_current_freq_hz = m_center_freq_hz + m_freq_deviation_hz * vfo_val;
+
+        // Fast table lookup for Carrier sine
+        uint32_t carrier_lut_idx = static_cast<uint32_t>(m_carrier_phase * rad_to_lut) & 511;
+        out_pcm[i] = static_cast<int16_t>(s_sine_table[carrier_lut_idx] * gain_factor);
+
         m_carrier_phase += two_pi * m_current_freq_hz * dt;
         if (m_carrier_phase >= two_pi) {
             m_carrier_phase -= two_pi;
         }
 
-        // Generate 16-bit PCM sample
-        float sample_val = static_cast<float>(m_peak_amplitude) * sinf(m_carrier_phase);
-        out_pcm[i] = static_cast<int16_t>(sample_val);
-
-        // Advance VFO phase
         m_vfo_phase += two_pi * m_vfo_mod_rate_hz * dt;
         if (m_vfo_phase >= two_pi) {
             m_vfo_phase -= two_pi;
