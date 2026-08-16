@@ -27,6 +27,10 @@ StatusLed::~StatusLed() {
 }
 
 esp_err_t StatusLed::init(int gpio_num) {
+    if (m_strip_handle != nullptr) {
+        return ESP_OK; // Already initialized
+    }
+
     m_gpio_num = gpio_num;
 
     led_strip_config_t strip_config = {};

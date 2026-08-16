@@ -123,9 +123,9 @@ LcdDisplay::~LcdDisplay() {
 }
 
 esp_err_t LcdDisplay::init() {
-    ESP_LOGI(TAG, "Initializing Waveshare ESP32-C6-LCD (ST7789 320x172 & WS2812 RGB LED)...");
+    ESP_LOGI(TAG, "Initializing Waveshare ESP32-C6-LCD (ST7789 320x172 Landscape)...");
 
-    // 1. Allocate Framebuffer in DMA/Internal Memory
+    // 1. Allocate Framebuffer in DMA/Internal Memory (320 x 172 x 2 = 110,080 bytes)
     size_t fb_size = LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t);
     m_framebuffer = static_cast<uint16_t*>(heap_caps_malloc(fb_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (!m_framebuffer) {
@@ -189,13 +189,14 @@ esp_err_t LcdDisplay::init() {
     esp_lcd_panel_invert_color(panel_handle, true);
     esp_lcd_panel_swap_xy(panel_handle, true);
     esp_lcd_panel_mirror(panel_handle, true, false);
-    esp_lcd_panel_set_gap(panel_handle, 34, 0); // Waveshare 1.47" ST7789 320x172 offset
+    // Correct gap for 172x320 panel in landscape (swap_xy=true): X gap = 0, Y gap = (240-172)/2 = 34
+    esp_lcd_panel_set_gap(panel_handle, 0, 34);
     esp_lcd_panel_disp_on_off(panel_handle, true);
 
     // 5. Backlight Configuration (LEDC PWM on GPIO 22)
     ledc_timer_config_t bl_timer = {};
     bl_timer.speed_mode = LEDC_LOW_SPEED_MODE;
-    bl_timer.duty_resolution = LEDC_TIMER_8_BIT;
+    bl_timer.duty_resolution = LEDC_TIMER_10_BIT;
     bl_timer.timer_num = LEDC_TIMER_0;
     bl_timer.freq_hz = 5000;
     bl_timer.clk_cfg = LEDC_AUTO_CLK;
@@ -207,27 +208,26 @@ esp_err_t LcdDisplay::init() {
     bl_channel.channel = LEDC_CHANNEL_0;
     bl_channel.intr_type = LEDC_INTR_DISABLE;
     bl_channel.timer_sel = LEDC_TIMER_0;
-    bl_channel.duty = 64; // Default 25% brightness
+    bl_channel.duty = 256; // Default 25% brightness (256/1023)
     bl_channel.hpoint = 0;
     ledc_channel_config(&bl_channel);
 
-    // 6. Initialize WS2812 RGB LED (via unified StatusLed controller)
-    getStatusLed().init(RGB_LED_PIN);
-
     m_initialized = true;
+    clear(COLOR_BLACK);
+    drawHeader("ESP32-C6 BLE AUDIO BROADCAST");
     flush();
-    ESP_LOGI(TAG, "ST7789 LCD Console & WS2812 Initialized Successfully.");
+
+    ESP_LOGI(TAG, "ST7789 LCD Console Initialized Successfully (320x172 Landscape, gap=(0,34)).");
     return ESP_OK;
 }
 
 void LcdDisplay::setBacklight(bool enable) {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, enable ? 64 : 0);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    setBacklightBrightness(enable ? 25 : 0);
 }
 
 void LcdDisplay::setBacklightBrightness(uint8_t percent) {
     if (percent > 100) percent = 100;
-    uint32_t duty = (percent * 255) / 100;
+    uint32_t duty = (percent * 1023) / 100;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
@@ -240,65 +240,65 @@ void LcdDisplay::clear(uint16_t bg_color) {
 }
 
 void LcdDisplay::drawChar(int x, int y, char c, uint16_t color, uint16_t bg_color) {
-    if (!m_framebuffer || c < 32 || c > 127) return;
-    const uint8_t* glyph = FONT_8X16[c - 32];
+    if (c < 32 || c > 126 || !m_framebuffer) return;
+    int char_idx = c - 32;
     for (int row = 0; row < 16; row++) {
-        int py = y + row;
-        if (py < 0 || py >= LCD_HEIGHT) continue;
-        uint8_t line = glyph[row];
+        uint8_t line = FONT_8X16[char_idx][row];
         for (int col = 0; col < 8; col++) {
+            uint16_t pixel_color = (line & (0x80 >> col)) ? color : bg_color;
             int px = x + col;
-            if (px < 0 || px >= LCD_WIDTH) continue;
-            m_framebuffer[py * LCD_WIDTH + px] = (line & (0x80 >> col)) ? color : bg_color;
+            int py = y + row;
+            if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                m_framebuffer[py * LCD_WIDTH + px] = pixel_color;
+            }
         }
     }
 }
 
 void LcdDisplay::drawString(int x, int y, const char* str, uint16_t color, uint16_t bg_color) {
-    if (!str) return;
+    if (!str || !m_framebuffer) return;
     int cur_x = x;
     while (*str) {
-        if (*str == '\n') {
-            cur_x = x;
-            y += 18;
-        } else {
-            drawChar(cur_x, y, *str, color, bg_color);
-            cur_x += 8;
-        }
+        if (cur_x + 8 > LCD_WIDTH) break;
+        drawChar(cur_x, y, *str, color, bg_color);
+        cur_x += 8;
         str++;
     }
 }
 
-void LcdDisplay::printLine(int row, const char* text, uint16_t color, uint16_t bg_color) {
-    if (row < 0 || row > 8 || !text) return;
-    int y = 4 + row * 20;
+void LcdDisplay::drawHeader(const char* title) {
+    if (!m_framebuffer || !title) return;
 
-    // Clear line area
-    for (int r = y; r < y + 18 && r < LCD_HEIGHT; r++) {
-        for (int c = 4; c < LCD_WIDTH - 4; c++) {
-            m_framebuffer[r * LCD_WIDTH + c] = bg_color;
+    // Draw header bar background (Dark Gray / Yellow Header)
+    for (int y = 0; y < 18; ++y) {
+        for (int x = 0; x < LCD_WIDTH; ++x) {
+            m_framebuffer[y * LCD_WIDTH + x] = COLOR_DARK_GRAY;
+        }
+    }
+
+    drawString(6, 1, title, COLOR_YELLOW, COLOR_DARK_GRAY);
+
+    // Header Separator Line
+    for (int x = 0; x < LCD_WIDTH; ++x) {
+        m_framebuffer[18 * LCD_WIDTH + x] = COLOR_CYAN;
+        m_framebuffer[19 * LCD_WIDTH + x] = COLOR_CYAN;
+    }
+}
+
+void LcdDisplay::printLine(int row, const char* text, uint16_t color, uint16_t bg_color) {
+    if (row < 0 || row > 8 || !text || !m_framebuffer) return;
+
+    int y = 22 + (row * 18); // Header is 0..19, lines start at y=22 with 18px pitch
+    if (y + 16 > LCD_HEIGHT) return;
+
+    // Clear entire line background
+    for (int py = y; py < y + 17 && py < LCD_HEIGHT; ++py) {
+        for (int px = 0; px < LCD_WIDTH; ++px) {
+            m_framebuffer[py * LCD_WIDTH + px] = bg_color;
         }
     }
 
     drawString(6, y + 1, text, color, bg_color);
-}
-
-void LcdDisplay::drawHeader(const char* title) {
-    if (!m_framebuffer || !title) return;
-    for (int r = 0; r < 20; r++) {
-        for (int c = 0; c < LCD_WIDTH; c++) {
-            m_framebuffer[r * LCD_WIDTH + c] = COLOR_BLUE;
-        }
-    }
-    drawString(8, 2, title, COLOR_WHITE, COLOR_BLUE);
-}
-
-void LcdDisplay::setRgbColor(uint8_t red, uint8_t green, uint8_t blue) {
-    if (m_led_strip_handle) {
-        auto strip = static_cast<led_strip_handle_t>(m_led_strip_handle);
-        led_strip_set_pixel(strip, 0, red, green, blue);
-        led_strip_refresh(strip);
-    }
 }
 
 void LcdDisplay::flush() {

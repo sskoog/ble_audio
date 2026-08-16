@@ -29,6 +29,7 @@ constexpr uint16_t COLOR_MAGENTA     = 0x1FF8;
 constexpr uint16_t COLOR_RED         = 0x00F8;
 constexpr uint16_t COLOR_BLUE        = 0x1F00;
 constexpr uint16_t COLOR_ORANGE      = 0x00FC;
+constexpr uint16_t COLOR_DARK_GRAY   = 0xC318;
 
 class LcdDisplay {
 public:
@@ -43,9 +44,6 @@ public:
     void printLine(int row, const char* text, uint16_t color = COLOR_WHITE, uint16_t bg_color = COLOR_BLACK);
     void drawHeader(const char* title);
 
-    // RGB LED Status Control (GPIO 8)
-    void setRgbColor(uint8_t red, uint8_t green, uint8_t blue);
-
     // Refresh entire framebuffer to ST7789 LCD
     void flush();
 
@@ -57,7 +55,6 @@ private:
 
     void* m_panel_handle = nullptr;
     void* m_io_handle = nullptr;
-    void* m_led_strip_handle = nullptr;
     bool m_initialized = false;
     uint16_t* m_framebuffer = nullptr;
 };
