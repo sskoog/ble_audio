@@ -173,22 +173,30 @@ void DiagnosticMonitor::printDiagnostics() {
     if (m_lcd_display && m_lcd_display->isInitialized()) {
         char buf[128];
 
-        snprintf(buf, sizeof(buf), "NODE: %s | UP: %lus", 
+        snprintf(buf, sizeof(buf), "NODE: %s | UP: %lu s", 
             (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", uptime_sec);
         m_lcd_display->printLine(0, buf, Hardware::COLOR_WHITE);
 
-        snprintf(buf, sizeof(buf), "CPU: %d%% @ %.0f MHz | %d C | %luKB", 
+        snprintf(buf, sizeof(buf), "CPU: %d%% @ %.0f MHz | %d C | %lu KB", 
             cpu_usage_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
         m_lcd_display->printLine(1, buf, Hardware::COLOR_GREEN);
         
         // Display Bluetooth status and Source 0x09 ID Name
-        snprintf(buf, sizeof(buf), "BT: %d dBm | %s from %s", stream.rssi_dbm, bt_state, stream.source_name.c_str());
-        m_lcd_display->printLine(2, buf, Hardware::COLOR_BLUE);
+        if (cfg->node_role == NODE_ROLE_SOURCE) {
+            snprintf(buf, sizeof(buf), "BT: %s | BIS: #%u", bt_state, stream.bis_index);
+        } else {
+            if (stream.is_synced) {
+                snprintf(buf, sizeof(buf), "BT: %d dBm | %s from %s", stream.rssi_dbm, bt_state, stream.source_name.c_str());
+            } else {
+                snprintf(buf, sizeof(buf), "BT: %s (Listening...)", bt_state);
+            }
+        }
+        m_lcd_display->printLine(2, buf, stream.is_synced ? Hardware::COLOR_BLUE : Hardware::COLOR_YELLOW);
 
         snprintf(buf, sizeof(buf), "AUDIO: %.1f kHz %u-bit %s", static_cast<float>(stream.sample_rate) / 1000.0f, stream.bit_depth, (stream.channels == 1) ? "Mono" : "Stereo");
         m_lcd_display->printLine(3, buf, Hardware::COLOR_CYAN);
 
-        snprintf(buf, sizeof(buf), "CODEC: %s (%lu kbps)", stream.codec_name.c_str(), stream.bitrate_kbps);
+        snprintf(buf, sizeof(buf), "CODEC: %s @ %lu kbps", stream.codec_name.c_str(), stream.bitrate_kbps);
         m_lcd_display->printLine(4, buf, Hardware::COLOR_CYAN);
 
         snprintf(buf, sizeof(buf), "BIS: #%u | PKTS: %lu", stream.bis_index, stream.packets_count);

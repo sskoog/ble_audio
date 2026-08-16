@@ -39,15 +39,8 @@ public:
     const char* getStateString() const;
     uint32_t getPacketsCount() const { return m_telemetry.packets_count; }
 
-    void setSourceName(const char* name) {
-        if (name) m_telemetry.source_name = name;
-    }
-    void setRssi(int8_t rssi) {
-        m_telemetry.rssi_dbm = rssi;
-    }
-    void setSynced(bool synced) {
-        m_telemetry.is_synced = synced;
-    }
+    void notifyAdvReceived(const char* name, int8_t rssi);
+    void checkSyncState();
 
 private:
     static void hostTaskRoutine(void* param);
@@ -65,6 +58,7 @@ private:
     uint8_t m_node_role = CONFIG_ACTIVE_NODE_ROLE;
     bool m_initialized = false;
     bool m_audio_task_running = false;
+    uint32_t m_last_adv_tick = 0;
     StreamTelemetry m_telemetry;
 };
 

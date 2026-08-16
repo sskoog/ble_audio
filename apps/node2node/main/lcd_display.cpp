@@ -284,19 +284,19 @@ void LcdDisplay::drawString(int x, int y, const char* str, uint16_t color, uint1
 void LcdDisplay::drawHeader(const char* title) {
     if (!m_framebuffer) return;
 
-    // Draw header bar background (Dark Gray Background / Yellow Header Text)
+    // Draw header bar background (White Background / Magenta Text)
     for (int y = 0; y < 18; ++y) {
         for (int x = 0; x < LCD_WIDTH; ++x) {
-            m_framebuffer[y * LCD_WIDTH + x] = COLOR_DARK_GRAY;
+            m_framebuffer[y * LCD_WIDTH + x] = COLOR_WHITE;
         }
     }
 
-    drawString(6, 1, title, COLOR_YELLOW, COLOR_DARK_GRAY);
+    drawString(6, 1, title, COLOR_MAGENTA, COLOR_WHITE);
 
     // Header Separator Line
     for (int x = 0; x < LCD_WIDTH; ++x) {
-        m_framebuffer[18 * LCD_WIDTH + x] = COLOR_CYAN;
-        m_framebuffer[19 * LCD_WIDTH + x] = COLOR_CYAN;
+        m_framebuffer[18 * LCD_WIDTH + x] = COLOR_MAGENTA;
+        m_framebuffer[19 * LCD_WIDTH + x] = COLOR_MAGENTA;
     }
 }
 

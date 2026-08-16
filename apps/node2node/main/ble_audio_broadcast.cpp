@@ -47,10 +47,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
 
                         // Match against target Auracast / Node21 Source
                         if (strstr(name_buf, "ESP32") != nullptr || strstr(name_buf, "Source") != nullptr || strstr(name_buf, "21") != nullptr) {
-                            s_broadcast_instance->setSourceName(name_buf);
-                            s_broadcast_instance->setRssi(disc->rssi);
-                            s_broadcast_instance->setSynced(true);
-                            ESP_LOGI(TAG, "Node20 Locked to Broadcast Source [0x09]: %s (RSSI: %d dBm)", name_buf, disc->rssi);
+                            s_broadcast_instance->notifyAdvReceived(name_buf, disc->rssi);
+                            ESP_LOGD(TAG, "Node20 Locked to Broadcast Source [0x09]: %s (RSSI: %d dBm)", name_buf, disc->rssi);
                         }
                     }
                     offset += (1 + ad_len);
@@ -79,6 +77,28 @@ BleAudioBroadcast::~BleAudioBroadcast() {
     s_broadcast_instance = nullptr;
 }
 
+void BleAudioBroadcast::notifyAdvReceived(const char* name, int8_t rssi) {
+    if (name) m_telemetry.source_name = name;
+    m_telemetry.rssi_dbm = rssi;
+    m_telemetry.is_synced = true;
+    m_last_adv_tick = xTaskGetTickCount();
+}
+
+void BleAudioBroadcast::checkSyncState() {
+    if (m_node_role == NODE_ROLE_SINK) {
+        if (m_telemetry.is_synced) {
+            TickType_t now = xTaskGetTickCount();
+            // If no broadcast advertisement received for > 3.0 seconds, transition back to SCANNING
+            if ((now - m_last_adv_tick) > pdMS_TO_TICKS(3000)) {
+                m_telemetry.is_synced = false;
+                m_telemetry.source_name = "SEARCHING...";
+                m_telemetry.rssi_dbm = 0;
+                ESP_LOGW(TAG, "Node20: Broadcast Sync Lost (Source Inactive/Powered Off). Scanning...");
+            }
+        }
+    }
+}
+
 const char* BleAudioBroadcast::getStateString() const {
     if (m_node_role == NODE_ROLE_SOURCE) {
         return "BROADCASTING";
@@ -86,7 +106,7 @@ const char* BleAudioBroadcast::getStateString() const {
         if (m_telemetry.is_synced) {
             return "STREAMING";
         } else {
-            return "SYNCED (PBP)";
+            return "SCANNING";
         }
     }
 }
@@ -162,10 +182,7 @@ void BleAudioBroadcast::onSyncCb(void) {
             if (rc != 0) {
                 ESP_LOGE(TAG, "Failed to start BLE discovery, rc = %d", rc);
             } else {
-                ESP_LOGI(TAG, "Node20: BLE Audio Scanner Active.");
-                s_broadcast_instance->setSourceName("ESP32-C6-21");
-                s_broadcast_instance->setSynced(true);
-                s_broadcast_instance->setRssi(-42);
+                ESP_LOGI(TAG, "Node20: BLE Audio Scanner Active (Listening for Broadcaster)...");
             }
         }
     }
@@ -275,16 +292,21 @@ void BleAudioBroadcast::runSinkLoop() {
     const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS); // 10 ms
 
     while (m_audio_task_running) {
-        // 1. Decode incoming LC3 frame to 16-bit 44.1 kHz PCM
-        m_lc3_codec.decodeFrame(incoming_lc3_packet, sizeof(incoming_lc3_packet), decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_pcm_samples);
+        // Periodically monitor sync watchdog: if no broadcast received for > 3.0s, drop to SCANNING
+        checkSyncState();
 
-        // 2. Output PCM to MAX98357A I2S DAC
-        if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-            m_i2s_dac->write(decoded_pcm, actual_pcm_samples, &bytes_written, 10);
+        if (m_telemetry.is_synced) {
+            // 1. Decode incoming LC3 frame to 16-bit 44.1 kHz PCM
+            m_lc3_codec.decodeFrame(incoming_lc3_packet, sizeof(incoming_lc3_packet), decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_pcm_samples);
+
+            // 2. Output PCM to MAX98357A I2S DAC
+            if (m_i2s_dac && m_i2s_dac->isInitialized()) {
+                m_i2s_dac->write(decoded_pcm, actual_pcm_samples, &bytes_written, 10);
+            }
+
+            // 3. Increment Receive Packet Counter ONLY when actively streaming from source
+            m_telemetry.packets_count++;
         }
-
-        // 3. Increment Receive Packet Counter
-        m_telemetry.packets_count++;
 
         vTaskDelay(interval > 0 ? interval : 1);
     }
