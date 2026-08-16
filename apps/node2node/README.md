@@ -125,8 +125,8 @@ c:\Git_forestChirp\BLE_audio\ble_audio_node\
 - **Amplitude:** Fixed at 30% of full-scale 16-bit integer range ($32767 \times 0.30 \approx 9830$).
 
 ### C. Fixed-Point LC3 Codec (`lc3_codec.hpp` / `.cpp`)
-- **Encoder:** Converts 441 raw 16-bit PCM samples into an 80-octet compressed LC3 frame.
-- **Decoder:** Decompresses 80-octet LC3 frames back to 441 16-bit PCM samples for I²S DAC transmission.
+- **Encoder:** Converts 44.1 kHz raw 16-bit PCM samples into an 80-octet compressed LC3 frame.
+- **Decoder:** Decompresses 80-octet LC3 frames back to 44.1 kHz, 16-bit PCM samples for I²S DAC transmission.
 
 ### D. BLE Audio Broadcast Engine (`ble_audio_broadcast.hpp` / `.cpp`)
 - **Source Mode (Node21):**

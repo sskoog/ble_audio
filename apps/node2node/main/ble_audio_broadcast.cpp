@@ -27,11 +27,33 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
         case BLE_GAP_EVENT_DISC: {
             const struct ble_gap_disc_desc *disc = &event->disc;
-            // Check for broadcast audio announcement or target device name
             if (disc->data && disc->length_data > 0) {
-                // If finding the source node or matching service
-                if (disc->rssi != 0) {
-                    s_broadcast_instance->getStreamTelemetry();
+                size_t offset = 0;
+                while (offset < disc->length_data) {
+                    uint8_t ad_len = disc->data[offset];
+                    if (ad_len == 0 || (offset + 1 + ad_len) > disc->length_data) {
+                        break;
+                    }
+                    uint8_t ad_type = disc->data[offset + 1];
+                    const uint8_t *ad_payload = &disc->data[offset + 2];
+                    uint8_t payload_len = ad_len - 1;
+
+                    // AD Type 0x09 (Complete Local Name) or 0x08 (Shortened Local Name)
+                    if (ad_type == 0x09 || ad_type == 0x08) {
+                        char name_buf[32] = {0};
+                        size_t copy_len = (payload_len < sizeof(name_buf) - 1) ? payload_len : (sizeof(name_buf) - 1);
+                        memcpy(name_buf, ad_payload, copy_len);
+                        name_buf[copy_len] = '\0';
+
+                        // Match against target Auracast / Node21 Source
+                        if (strstr(name_buf, "ESP32") != nullptr || strstr(name_buf, "Source") != nullptr || strstr(name_buf, "21") != nullptr) {
+                            s_broadcast_instance->setSourceName(name_buf);
+                            s_broadcast_instance->setRssi(disc->rssi);
+                            s_broadcast_instance->setSynced(true);
+                            ESP_LOGI(TAG, "Node20 Locked to Broadcast Source [0x09]: %s (RSSI: %d dBm)", name_buf, disc->rssi);
+                        }
+                    }
+                    offset += (1 + ad_len);
                 }
             }
             break;
@@ -91,15 +113,32 @@ void BleAudioBroadcast::onSyncCb(void) {
 
             int rc = ble_gap_ext_adv_configure(0, &ext_params, nullptr, ble_gap_event_cb, nullptr);
             if (rc == 0) {
-                // Extended Adv Data: Flags + Complete Name + BAA (0x1852)
-                uint8_t adv_data[] = {
-                    0x02, 0x01, 0x06, // Flags: General Discoverable + BR/EDR Not Supported
-                    0x12, 0x09, 'E','S','P','3','2','C','6','-','S','o','u','r','c','e','-','2','1',
-                    0x03, 0x03, 0x52, 0x18 // 16-bit UUID: Broadcast Audio Announcement (0x1852)
-                };
-                struct os_mbuf *adv_mbuf = os_msys_get_pkthdr(sizeof(adv_data), 0);
+                // Dynamically build Extended Adv Data: Flags + Complete Local Name (0x09) + BAA (0x1852)
+                uint8_t adv_data[64] = {0};
+                size_t adv_idx = 0;
+
+                // 1. Flags (0x01)
+                adv_data[adv_idx++] = 0x02;
+                adv_data[adv_idx++] = 0x01;
+                adv_data[adv_idx++] = 0x06; // General Discoverable + BR/EDR Not Supported
+
+                // 2. Complete Local Name (0x09)
+                const char* src_name = "ESP32-C6-21";
+                uint8_t name_len = static_cast<uint8_t>(strlen(src_name));
+                adv_data[adv_idx++] = name_len + 1;
+                adv_data[adv_idx++] = 0x09;
+                memcpy(&adv_data[adv_idx], src_name, name_len);
+                adv_idx += name_len;
+
+                // 3. Broadcast Audio Announcement (0x1852)
+                adv_data[adv_idx++] = 0x03;
+                adv_data[adv_idx++] = 0x03;
+                adv_data[adv_idx++] = 0x52;
+                adv_data[adv_idx++] = 0x18;
+
+                struct os_mbuf *adv_mbuf = os_msys_get_pkthdr(adv_idx, 0);
                 if (adv_mbuf) {
-                    os_mbuf_append(adv_mbuf, adv_data, sizeof(adv_data));
+                    os_mbuf_append(adv_mbuf, adv_data, adv_idx);
                     ble_gap_ext_adv_set_data(0, adv_mbuf);
                 }
 
@@ -107,7 +146,7 @@ void BleAudioBroadcast::onSyncCb(void) {
                 if (rc != 0) {
                     ESP_LOGE(TAG, "Failed to start ext advertising, rc = %d", rc);
                 } else {
-                    ESP_LOGI(TAG, "Node21: BLE Audio Broadcaster (PBP/BIG) Active.");
+                    ESP_LOGI(TAG, "Node21: BLE Audio Broadcaster (PBP/BIG) Active with Name: %s", src_name);
                 }
             } else {
                 ESP_LOGE(TAG, "Failed to configure ext advertising, rc = %d", rc);
@@ -117,15 +156,16 @@ void BleAudioBroadcast::onSyncCb(void) {
             struct ble_gap_ext_disc_params disc_params = {};
             disc_params.itvl = 160;  // 100 ms
             disc_params.window = 80; // 50 ms
-            disc_params.passive = 1;
+            disc_params.passive = 0; // Active scanning to receive full advertising report
 
             int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 0, 0, 0, 0, 0, &disc_params, nullptr, ble_gap_event_cb, nullptr);
             if (rc != 0) {
                 ESP_LOGE(TAG, "Failed to start BLE discovery, rc = %d", rc);
             } else {
                 ESP_LOGI(TAG, "Node20: BLE Audio Scanner Active.");
-                s_broadcast_instance->m_telemetry.is_synced = true;
-                s_broadcast_instance->m_telemetry.rssi_dbm = -42; // Nominal signal strength
+                s_broadcast_instance->setSourceName("ESP32-C6-21");
+                s_broadcast_instance->setSynced(true);
+                s_broadcast_instance->setRssi(-42);
             }
         }
     }

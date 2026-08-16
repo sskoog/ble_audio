@@ -17,7 +17,7 @@ extern "C" {
 
 /* Set active role here (can be overridden via compiler flags -DCONFIG_NODE_ROLE=...) */
 #ifndef CONFIG_ACTIVE_NODE_ROLE
-#define CONFIG_ACTIVE_NODE_ROLE         NODE_ROLE_SOURCE
+#define CONFIG_ACTIVE_NODE_ROLE         NODE_ROLE_SINK
 #endif
 
 /* =====================================================================
