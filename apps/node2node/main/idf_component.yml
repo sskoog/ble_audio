@@ -1,3 +1,0 @@
-dependencies:
-  espressif/esp-dsp: "*"
-  espressif/led_strip: "^2.5.0"

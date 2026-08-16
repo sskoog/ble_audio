@@ -1,8 +1,13 @@
-# Waveshare ESP32-C6 Bluetooth LE Audio / Auracast Receiver
+# Android2node: Bluetooth LE Audio / Auracast Receiver
 
 This directory contains a complete, production-grade C++20 boilerplate project for the **Waveshare ESP32-C6 (ESP32-C6-WROOM-1-N8)** acting as a **Bluetooth 5.3 LE Audio / Auracast Receiver**.
 
 The receiver node is configured to receive a Broadcast Isochronous Stream (BIS) from a **Google Pixel 10** smartphone (or any Auracast transmitter), decode LC3 compressed audio in real-time using Espressif's fixed-point `esp_lc3` engine, filter the PCM output via a **2nd-order 80 Hz Low-Pass DSP Filter**, and output high-fidelity digital audio over **I²S** to a **MAX98357A** Class-D DAC/amplifier.
+
+## Android2node: Development status
+Never managed to enable "Audio Sharing" in Android 17 (on Google Pixel 10 Pro XL). Android requires an "audio device" with Auracast capabilities to be paired with the phone before enabling the "Audio Sharing" feature. This is not according to how Auracast or BLE Audio Broadcasting is suposed to work. Not sure if Android 17 is expecting som specific BT5.3 or BT5.4 advertisements from the "audio device" that are not fulfilled. 
+
+The ESP32-C6 nodes do not support Classic Bluetooth and hence cannot emulate legacy audio devices, maybe this is the bottleneck for succeeding with using Android 17 as the audio broadcaster?
 
 ---
 

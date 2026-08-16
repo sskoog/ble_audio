@@ -23,5 +23,6 @@ idf_component_register(
         esp_https_ota
         app_update
         esp_lcd
+        esp-dsp
         led_strip
 )
