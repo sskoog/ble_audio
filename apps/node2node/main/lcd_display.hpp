@@ -31,7 +31,8 @@ constexpr uint16_t COLOR_CYAN        = 0xE0FF;
 constexpr uint16_t COLOR_MAGENTA     = 0x7FF0;
 constexpr uint16_t COLOR_YELLOW      = 0xFF07;
 constexpr uint16_t COLOR_ORANGE      = 0xBF03;
-constexpr uint16_t COLOR_DARK_GRAY   = 0x18C3;
+constexpr uint16_t COLOR_DARK_GRAY   = 0x252A;
+constexpr uint16_t COLOR_MEDIUM_GRAY = 0x4840;
 constexpr uint16_t COLOR_NEON_GREEN  = 0xE007;
 
 class LcdDisplay {

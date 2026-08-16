@@ -228,7 +228,7 @@ esp_err_t LcdDisplay::init() {
 
     m_initialized = true;
     clear(COLOR_BLACK);
-    drawHeader("WAVESHARE ESP32-C6 BLE AUDIO");
+    drawHeader("    WAVESHARE ESP32-C6 BLE AUDIO");
     flush();
 
     ESP_LOGI(TAG, "ST7789 1.47-inch LCD Console Initialized Successfully.");
@@ -284,7 +284,7 @@ void LcdDisplay::drawString(int x, int y, const char* str, uint16_t color, uint1
 void LcdDisplay::drawHeader(const char* title) {
     if (!m_framebuffer) return;
 
-    // Draw header bar background (Dark Gray / Yellow Header)
+    // Draw header bar background (Dark Gray Background / Yellow Header Text)
     for (int y = 0; y < 18; ++y) {
         for (int x = 0; x < LCD_WIDTH; ++x) {
             m_framebuffer[y * LCD_WIDTH + x] = COLOR_DARK_GRAY;
