@@ -12,7 +12,7 @@
 namespace Bluetooth {
 
 struct StreamTelemetry {
-    std::string source_name = "SEARCHING...";
+    std::string source_name = "N/A";
     std::string codec_name = "LC3 fixp";
     uint32_t sample_rate = AUDIO_SAMPLE_RATE_HZ;
     uint8_t  bit_depth = AUDIO_BIT_DEPTH;
@@ -41,6 +41,8 @@ public:
 
     void notifyAdvReceived(const char* name, int8_t rssi);
     void checkSyncState();
+    void parseAdvReport(const uint8_t* data, uint8_t length_data, int8_t rssi);
+    void startScanning();
 
 private:
     static void hostTaskRoutine(void* param);

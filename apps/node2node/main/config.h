@@ -28,10 +28,10 @@ extern "C" {
 
 #if CONFIG_ACTIVE_NODE_ROLE == NODE_ROLE_SINK
 #define ACTIVE_BOARD_TYPE               BOARD_WAVESHARE_LCD
-#define NODE_DEVICE_NAME                "ESP32-C6-Sink-Node20"
+#define NODE_DEVICE_NAME                "ESP32-C6-20"
 #else
 #define ACTIVE_BOARD_TYPE               BOARD_ESP32C6_WROOM
-#define NODE_DEVICE_NAME                "ESP32-C6-Source-Node21"
+#define NODE_DEVICE_NAME                "ESP32-C6-21"
 #endif
 
 /* =====================================================================

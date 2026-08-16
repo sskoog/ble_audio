@@ -186,21 +186,21 @@ void DiagnosticMonitor::printDiagnostics() {
             snprintf(buf, sizeof(buf), "BT: %s | BIS: #%u", bt_state, stream.bis_index);
         } else {
             if (stream.is_synced) {
-                snprintf(buf, sizeof(buf), "BT: %d dBm | %s from %s", stream.rssi_dbm, bt_state, stream.source_name.c_str());
+                snprintf(buf, sizeof(buf), "BT: %d dBm | %s", stream.rssi_dbm, bt_state);
             } else {
                 snprintf(buf, sizeof(buf), "BT: %s (Listening...)", bt_state);
             }
         }
-        m_lcd_display->printLine(2, buf, stream.is_synced ? Hardware::COLOR_BLUE : Hardware::COLOR_YELLOW);
+        m_lcd_display->printLine(2, buf, stream.is_synced ? Hardware::COLOR_BLUE : Hardware::COLOR_CYAN);
+
+        snprintf(buf, sizeof(buf), "BIS: #%u | PKTS: %lu from %s", stream.bis_index, stream.packets_count, stream.source_name.c_str());
+        m_lcd_display->printLine(3, buf, Hardware::COLOR_BLUE);
 
         snprintf(buf, sizeof(buf), "AUDIO: %.1f kHz %u-bit %s", static_cast<float>(stream.sample_rate) / 1000.0f, stream.bit_depth, (stream.channels == 1) ? "Mono" : "Stereo");
-        m_lcd_display->printLine(3, buf, Hardware::COLOR_CYAN);
+        m_lcd_display->printLine(4, buf, Hardware::COLOR_ORANGE);
 
         snprintf(buf, sizeof(buf), "CODEC: %s @ %lu kbps", stream.codec_name.c_str(), stream.bitrate_kbps);
-        m_lcd_display->printLine(4, buf, Hardware::COLOR_CYAN);
-
-        snprintf(buf, sizeof(buf), "BIS: #%u | PKTS: %lu", stream.bis_index, stream.packets_count);
-        m_lcd_display->printLine(5, buf, Hardware::COLOR_MAGENTA);
+        m_lcd_display->printLine(5, buf, Hardware::COLOR_ORANGE);
 
         if (cfg->node_role == NODE_ROLE_SOURCE && m_tone_gen) {
             snprintf(buf, sizeof(buf), "VCO: %.1f Hz (VFO: %.2fHz)", 
@@ -208,7 +208,7 @@ void DiagnosticMonitor::printDiagnostics() {
             m_lcd_display->printLine(6, buf, Hardware::COLOR_ORANGE);
         } else {
             snprintf(buf, sizeof(buf), "DAC: MAX98357A I2S Mono");
-            m_lcd_display->printLine(6, buf, Hardware::COLOR_WHITE);
+            m_lcd_display->printLine(6, buf, Hardware::COLOR_YELLOW);
         }
 
         m_lcd_display->flush();

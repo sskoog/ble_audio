@@ -28,32 +28,20 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_DISC: {
             const struct ble_gap_disc_desc *disc = &event->disc;
             if (disc->data && disc->length_data > 0) {
-                size_t offset = 0;
-                while (offset < disc->length_data) {
-                    uint8_t ad_len = disc->data[offset];
-                    if (ad_len == 0 || (offset + 1 + ad_len) > disc->length_data) {
-                        break;
-                    }
-                    uint8_t ad_type = disc->data[offset + 1];
-                    const uint8_t *ad_payload = &disc->data[offset + 2];
-                    uint8_t payload_len = ad_len - 1;
-
-                    // AD Type 0x09 (Complete Local Name) or 0x08 (Shortened Local Name)
-                    if (ad_type == 0x09 || ad_type == 0x08) {
-                        char name_buf[32] = {0};
-                        size_t copy_len = (payload_len < sizeof(name_buf) - 1) ? payload_len : (sizeof(name_buf) - 1);
-                        memcpy(name_buf, ad_payload, copy_len);
-                        name_buf[copy_len] = '\0';
-
-                        // Match against target Auracast / Node21 Source
-                        if (strstr(name_buf, "ESP32") != nullptr || strstr(name_buf, "Source") != nullptr || strstr(name_buf, "21") != nullptr) {
-                            s_broadcast_instance->notifyAdvReceived(name_buf, disc->rssi);
-                            ESP_LOGD(TAG, "Node20 Locked to Broadcast Source [0x09]: %s (RSSI: %d dBm)", name_buf, disc->rssi);
-                        }
-                    }
-                    offset += (1 + ad_len);
-                }
+                s_broadcast_instance->parseAdvReport(disc->data, disc->length_data, disc->rssi);
             }
+            break;
+        }
+        case BLE_GAP_EVENT_EXT_DISC: {
+            const struct ble_gap_ext_disc_desc *ext_disc = &event->ext_disc;
+            if (ext_disc->data && ext_disc->length_data > 0) {
+                s_broadcast_instance->parseAdvReport(ext_disc->data, ext_disc->length_data, ext_disc->rssi);
+            }
+            break;
+        }
+        case BLE_GAP_EVENT_DISC_COMPLETE: {
+            ESP_LOGI(TAG, "Discovery cycle complete, restarting continuous scan...");
+            s_broadcast_instance->startScanning();
             break;
         }
         case BLE_GAP_EVENT_ADV_COMPLETE: {
@@ -82,6 +70,66 @@ void BleAudioBroadcast::notifyAdvReceived(const char* name, int8_t rssi) {
     m_telemetry.rssi_dbm = rssi;
     m_telemetry.is_synced = true;
     m_last_adv_tick = xTaskGetTickCount();
+}
+
+void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data, int8_t rssi) {
+    if (!data || length_data == 0) return;
+
+    size_t offset = 0;
+    while (offset < length_data) {
+        uint8_t ad_len = data[offset];
+        if (ad_len == 0 || (offset + 1 + ad_len) > length_data) {
+            break;
+        }
+        uint8_t ad_type = data[offset + 1];
+        const uint8_t *ad_payload = &data[offset + 2];
+        uint8_t payload_len = ad_len - 1;
+
+        // 1. AD Type 0x09 (Complete Local Name) or 0x08 (Shortened Local Name)
+        if (ad_type == 0x09 || ad_type == 0x08) {
+            char name_buf[32] = {0};
+            size_t copy_len = (payload_len < sizeof(name_buf) - 1) ? payload_len : (sizeof(name_buf) - 1);
+            memcpy(name_buf, ad_payload, copy_len);
+            name_buf[copy_len] = '\0';
+
+            // Match against target Auracast / Node21 Source
+            if (strstr(name_buf, "ESP32") != nullptr || strstr(name_buf, "Source") != nullptr || strstr(name_buf, "21") != nullptr) {
+                notifyAdvReceived(name_buf, rssi);
+                ESP_LOGI(TAG, "Node20 Locked to Broadcast Source [0x09]: %s (RSSI: %d dBm)", name_buf, rssi);
+                return;
+            }
+        }
+        // 2. Service UUID 16-bit (0x02 or 0x03) - Check for BAA (0x1852)
+        else if (ad_type == 0x02 || ad_type == 0x03) {
+            for (size_t i = 0; i + 1 < payload_len; i += 2) {
+                uint16_t uuid = ad_payload[i] | (ad_payload[i + 1] << 8);
+                if (uuid == 0x1852) {
+                    notifyAdvReceived("ESP32-C6-21", rssi);
+                    ESP_LOGI(TAG, "Node20 Locked to Broadcast BAA (0x1852) (RSSI: %d dBm)", rssi);
+                    return;
+                }
+            }
+        }
+        offset += (1 + ad_len);
+    }
+}
+
+void BleAudioBroadcast::startScanning() {
+    if (m_node_role != NODE_ROLE_SINK) return;
+
+    ESP_LOGI(TAG, "Node20: Starting BLE Extended Audio Discovery...");
+
+    struct ble_gap_ext_disc_params uncoded_params = {};
+    uncoded_params.itvl = 160;   // 100 ms
+    uncoded_params.window = 160; // 100 ms continuous scan (100% duty cycle)
+    uncoded_params.passive = 1;  // Passive scan for non-connectable broadcast
+
+    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 0, 0, 0, 0, 0, &uncoded_params, nullptr, ble_gap_event_cb, nullptr);
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGE(TAG, "Failed to start ble_gap_ext_disc, rc = %d", rc);
+    } else {
+        ESP_LOGI(TAG, "Node20: BLE Extended Continuous Scanner Active (Listening for Broadcasts).");
+    }
 }
 
 void BleAudioBroadcast::checkSyncState() {
@@ -122,68 +170,61 @@ void BleAudioBroadcast::onSyncCb(void) {
             ESP_LOGI(TAG, "Node21: Starting BLE 5.3 Audio Broadcast & PBP Announcement...");
 
             struct ble_gap_ext_adv_params ext_params = {};
-            ext_params.legacy_pdu = 1;
-            ext_params.connectable = 1;
-            ext_params.scannable = 1;
-            ext_params.itvl_min = BLE_GAP_ADV_FAST_INTERVAL1_MIN;
-            ext_params.itvl_max = BLE_GAP_ADV_FAST_INTERVAL1_MAX;
+            ext_params.legacy_pdu = 0; // Extended Advertising PDU
+            ext_params.connectable = 0; // Non-connectable broadcast
+            ext_params.scannable = 0;   // Non-scannable
+            ext_params.itvl_min = BLE_GAP_ADV_FAST_INTERVAL1_MIN; // ~30 ms
+            ext_params.itvl_max = BLE_GAP_ADV_FAST_INTERVAL1_MAX; // ~60 ms
             ext_params.primary_phy = BLE_HCI_LE_PHY_1M;
             ext_params.secondary_phy = BLE_HCI_LE_PHY_1M;
             ext_params.sid = 1;
+            ext_params.own_addr_type = BLE_OWN_ADDR_PUBLIC;
 
             int rc = ble_gap_ext_adv_configure(0, &ext_params, nullptr, ble_gap_event_cb, nullptr);
-            if (rc == 0) {
-                // Dynamically build Extended Adv Data: Flags + Complete Local Name (0x09) + BAA (0x1852)
-                uint8_t adv_data[64] = {0};
-                size_t adv_idx = 0;
+            if (rc != 0) {
+                ESP_LOGE(TAG, "ble_gap_ext_adv_configure failed, rc = %d", rc);
+            }
 
-                // 1. Flags (0x01)
-                adv_data[adv_idx++] = 0x02;
-                adv_data[adv_idx++] = 0x01;
-                adv_data[adv_idx++] = 0x06; // General Discoverable + BR/EDR Not Supported
+            // Build Extended Advertising Data: Flags (0x01) + Complete Name (0x09) + BAA (0x1852)
+            uint8_t raw_adv[64] = {0};
+            size_t idx = 0;
 
-                // 2. Complete Local Name (0x09)
-                const char* src_name = "ESP32-C6-21";
-                uint8_t name_len = static_cast<uint8_t>(strlen(src_name));
-                adv_data[adv_idx++] = name_len + 1;
-                adv_data[adv_idx++] = 0x09;
-                memcpy(&adv_data[adv_idx], src_name, name_len);
-                adv_idx += name_len;
+            // 1. Flags (0x01)
+            raw_adv[idx++] = 0x02;
+            raw_adv[idx++] = 0x01;
+            raw_adv[idx++] = 0x06;
 
-                // 3. Broadcast Audio Announcement (0x1852)
-                adv_data[adv_idx++] = 0x03;
-                adv_data[adv_idx++] = 0x03;
-                adv_data[adv_idx++] = 0x52;
-                adv_data[adv_idx++] = 0x18;
+            // 2. Complete Local Name (0x09)
+            const char* name_str = "ESP32-C6-21";
+            uint8_t nlen = static_cast<uint8_t>(strlen(name_str));
+            raw_adv[idx++] = nlen + 1;
+            raw_adv[idx++] = 0x09;
+            memcpy(&raw_adv[idx], name_str, nlen);
+            idx += nlen;
 
-                struct os_mbuf *adv_mbuf = os_msys_get_pkthdr(adv_idx, 0);
-                if (adv_mbuf) {
-                    os_mbuf_append(adv_mbuf, adv_data, adv_idx);
-                    ble_gap_ext_adv_set_data(0, adv_mbuf);
-                }
+            // 3. Broadcast Audio Announcement Service (0x1852)
+            raw_adv[idx++] = 0x03;
+            raw_adv[idx++] = 0x03;
+            raw_adv[idx++] = 0x52;
+            raw_adv[idx++] = 0x18;
 
-                rc = ble_gap_ext_adv_start(0, 0, 0);
+            struct os_mbuf *data = os_msys_get_pkthdr(idx, 0);
+            if (data) {
+                os_mbuf_append(data, raw_adv, idx);
+                rc = ble_gap_ext_adv_set_data(0, data);
                 if (rc != 0) {
-                    ESP_LOGE(TAG, "Failed to start ext advertising, rc = %d", rc);
-                } else {
-                    ESP_LOGI(TAG, "Node21: BLE Audio Broadcaster (PBP/BIG) Active with Name: %s", src_name);
+                    ESP_LOGE(TAG, "ble_gap_ext_adv_set_data failed, rc = %d", rc);
                 }
+            }
+
+            rc = ble_gap_ext_adv_start(0, 0, 0);
+            if (rc != 0) {
+                ESP_LOGE(TAG, "ble_gap_ext_adv_start failed, rc = %d", rc);
             } else {
-                ESP_LOGE(TAG, "Failed to configure ext advertising, rc = %d", rc);
+                ESP_LOGI(TAG, "Node21: BLE Extended Audio Broadcaster Active with Name: %s", name_str);
             }
         } else {
-            ESP_LOGI(TAG, "Node20: Starting BLE Audio Scanning for Broadcast Source...");
-            struct ble_gap_ext_disc_params disc_params = {};
-            disc_params.itvl = 160;  // 100 ms
-            disc_params.window = 80; // 50 ms
-            disc_params.passive = 0; // Active scanning to receive full advertising report
-
-            int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 0, 0, 0, 0, 0, &disc_params, nullptr, ble_gap_event_cb, nullptr);
-            if (rc != 0) {
-                ESP_LOGE(TAG, "Failed to start BLE discovery, rc = %d", rc);
-            } else {
-                ESP_LOGI(TAG, "Node20: BLE Audio Scanner Active (Listening for Broadcaster)...");
-            }
+            s_broadcast_instance->startScanning();
         }
     }
 }
