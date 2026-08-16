@@ -157,14 +157,18 @@ $env:PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\riscv32-esp-elf
 1. Ensure `#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SOURCE` in `main/config.h`.
 2. Compile and flash:
 ```powershell
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\tools\idf.py" -C "C:\Git_forestChirp\BLE_audio\ble_audio_node" build
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" -m esptool --chip esp32c6 -p COM22 -b 115200 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
+idf.py build
+esptool.py --chip esp32c6 -p COM22 -b 115200 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
 ```
 
 ### 2. Build and Flash Audio Sink (Node20 on COM20)
 1. Set `#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK` in `main/config.h`.
 2. Compile and flash:
 ```powershell
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\tools\idf.py" -C "C:\Git_forestChirp\BLE_audio\ble_audio_node" build
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" -m esptool --chip esp32c6 -p COM20 -b 115200 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
+idf.py build
+esptool.py --chip esp32c6 -p COM20 -b 115200 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
 ```
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](../../LICENSE).

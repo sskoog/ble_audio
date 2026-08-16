@@ -219,3 +219,7 @@ For a seamless, production-ready smart speaker network, build the control servic
 - Implement the Volume Control Service (VCS) over a standard, low-energy 1-to-1 BLE GATT connection.
 - Your Pixel will connect to the node and send a command instructing the speaker to tune into the specific `Broadcast_ID` using the Broadcast Audio Scan Service (BASS).
 - This architecture allows you to independently tune the volume of every single speaker in the room, despite them all listening to the exact same global Auracast audio broadcast.
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](../../LICENSE).
