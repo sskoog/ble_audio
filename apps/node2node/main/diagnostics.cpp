@@ -173,21 +173,17 @@ void DiagnosticMonitor::printDiagnostics() {
     if (m_lcd_display && m_lcd_display->isInitialized()) {
         char buf[128];
 
-        if (cfg->node_role == NODE_ROLE_SOURCE) {
-            snprintf(buf, sizeof(buf), "NODE: SOURCE | UP: %lus", uptime_sec);
-            m_lcd_display->printLine(0, buf, Hardware::COLOR_WHITE);
-        } else {
-            // SINK displays the locked Source 0x09 ID Name!
-            snprintf(buf, sizeof(buf), "SRC: %s (0x09)", stream.source_name.c_str());
-            m_lcd_display->printLine(0, buf, stream.is_synced ? Hardware::COLOR_GREEN : Hardware::COLOR_YELLOW);
-        }
+        snprintf(buf, sizeof(buf), "NODE: %s | UP: %lus", 
+            (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", uptime_sec);
+        m_lcd_display->printLine(0, buf, Hardware::COLOR_WHITE);
 
         snprintf(buf, sizeof(buf), "CPU: %d%% @ %.0f MHz | %d C | %luKB", 
             cpu_usage_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
         m_lcd_display->printLine(1, buf, Hardware::COLOR_GREEN);
-
-        snprintf(buf, sizeof(buf), "BT: %s (%d dBm)", bt_state, stream.rssi_dbm);
-        m_lcd_display->printLine(2, buf, Hardware::COLOR_YELLOW);
+        
+        // Display Bluetooth status and Source 0x09 ID Name
+        snprintf(buf, sizeof(buf), "BT: %d dBm | %s | BIS: %s", stream.rssi_dbm, bt_state, stream.source_name.c_str());
+        m_lcd_display->printLine(2, buf, Hardware::COLOR_BLUE);
 
         snprintf(buf, sizeof(buf), "AUDIO: %.1f kHz %u-bit %s", static_cast<float>(stream.sample_rate) / 1000.0f, stream.bit_depth, (stream.channels == 1) ? "Mono" : "Stereo");
         m_lcd_display->printLine(3, buf, Hardware::COLOR_CYAN);
