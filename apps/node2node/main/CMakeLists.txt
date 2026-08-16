@@ -1,0 +1,23 @@
+idf_component_register(
+    SRCS 
+        "main.cpp"
+        "config.c"
+        "lc3_codec.cpp"
+        "tone_generator.cpp"
+        "i2s_audio.cpp"
+        "lcd_display.cpp"
+        "status_led.cpp"
+        "ble_audio_broadcast.cpp"
+        "diagnostics.cpp"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        bt
+        nvs_flash
+        driver
+        esp_timer
+        esp_hw_support
+        esp_lcd
+        esp-dsp
+        led_strip
+)

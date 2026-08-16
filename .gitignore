@@ -1,0 +1,37 @@
+# ESP-IDF Build artifacts
+build/
+**/build/
+
+# ESP-IDF component manager & lockfiles
+managed_components/
+**/managed_components/
+dependencies.lock
+**/dependencies.lock
+
+# ESP-IDF SDK configuration (generated from sdkconfig.defaults)
+sdkconfig
+sdkconfig.old
+**/sdkconfig
+**/sdkconfig.old
+
+# Wi-Fi Credentials & Secrets (NEVER COMMIT TO GIT)
+wifi_credentials.h
+wifi_credentials.c
+*wifi_credentials.h
+*wifi_credentials.c
+**/wifi_credentials.h
+**/wifi_credentials.c
+
+# IDE / Editor configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.suo
+*.user
+*.userosv
+*.sln.docstates
+
+# OS generated files
+.DS_Store
+Thumbs.db

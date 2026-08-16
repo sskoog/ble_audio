@@ -1,0 +1,27 @@
+idf_component_register(
+    SRCS 
+        "main.cpp"
+        "config.c"
+        "ota_manager.cpp"
+        "ble_audio_receiver.cpp"
+        "dsp_filter.cpp"
+        "i2s_dac.cpp"
+        "diagnostics.cpp"
+        "lcd_console.cpp"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        bt
+        nvs_flash
+        driver
+        esp_timer
+        esp_hw_support
+        esp_ringbuf
+        esp_wifi
+        esp_event
+        esp_http_client
+        esp_https_ota
+        app_update
+        esp_lcd
+        led_strip
+)

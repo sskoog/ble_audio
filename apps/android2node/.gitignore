@@ -1,0 +1,17 @@
+# ESP-IDF Build & Dependencies
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+
+# Wi-Fi Credentials & Secrets (NEVER COMMIT TO GIT)
+wifi_credentials.h
+wifi_credentials.c
+main/wifi_credentials.h
+main/wifi_credentials.c
+
+# IDE Files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
