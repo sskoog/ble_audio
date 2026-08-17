@@ -28,6 +28,15 @@ public:
 private:
     static void taskRoutine(void* pvParameters);
     void printDiagnostics();
+    void updateCpuLoadHistory();
+
+    static constexpr size_t CPU_HISTORY_SIZE = 10;
+    int m_cpu_history[CPU_HISTORY_SIZE] = {0};
+    size_t m_cpu_hist_idx = 0;
+    size_t m_cpu_hist_count = 0;
+    int m_cpu_mean_pct = 0;
+    int m_cpu_peak_pct = 0;
+    TickType_t m_last_cpu_calc_tick = 0;
 
     Bluetooth::BleAudioBroadcast& m_ble_broadcast;
     Audio::ToneGenerator* m_tone_gen = nullptr;

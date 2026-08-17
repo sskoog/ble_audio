@@ -19,7 +19,7 @@ float getCPUfreq_MHz() {
     if (esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &freq_hz) == ESP_OK) {
         return static_cast<float>(freq_hz) / 1000000.0f;
     }
-    return 160.0f; // Fallback nominal ESP32-C6 CPU clock
+    return 160.0f;
 }
 
 esp_err_t setCPUfreq_MHz(int mhz) {
@@ -74,6 +74,26 @@ static int calculateCpuUsagePct() {
     return static_cast<int>(cpu_busy_pct + 0.5f);
 }
 
+void DiagnosticMonitor::updateCpuLoadHistory() {
+    int current_load = calculateCpuUsagePct();
+    m_cpu_history[m_cpu_hist_idx] = current_load;
+    m_cpu_hist_idx = (m_cpu_hist_idx + 1) % CPU_HISTORY_SIZE;
+    if (m_cpu_hist_count < CPU_HISTORY_SIZE) {
+        m_cpu_hist_count++;
+    }
+
+    int sum = 0;
+    int peak = 0;
+    for (size_t i = 0; i < m_cpu_hist_count; ++i) {
+        sum += m_cpu_history[i];
+        if (m_cpu_history[i] > peak) {
+            peak = m_cpu_history[i];
+        }
+    }
+    m_cpu_mean_pct = (m_cpu_hist_count > 0) ? (sum / static_cast<int>(m_cpu_hist_count)) : current_load;
+    m_cpu_peak_pct = peak;
+}
+
 DiagnosticMonitor::DiagnosticMonitor(Bluetooth::BleAudioBroadcast& ble_broadcast, 
                                      Audio::ToneGenerator* tone_gen, 
                                      Hardware::LcdDisplay* lcd_display)
@@ -84,7 +104,6 @@ DiagnosticMonitor::~DiagnosticMonitor() {
 }
 
 esp_err_t DiagnosticMonitor::start() {
-    // 1. Initialize onboard ESP32-C6 Temperature Sensor
     temperature_sensor_config_t temp_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
     esp_err_t ret = temperature_sensor_install(&temp_cfg, &temp_handle);
     if (ret == ESP_OK) {
@@ -93,7 +112,6 @@ esp_err_t DiagnosticMonitor::start() {
         ESP_LOGW(TAG, "Temperature sensor install failed: %s", esp_err_to_name(ret));
     }
 
-    // 2. Create 1 Hz FreeRTOS Diagnostics Task
     m_is_running = true;
     BaseType_t task_ret = xTaskCreate(taskRoutine, "diag_1hz_task", DIAGNOSTICS_TASK_STACK_SIZE, this, DIAGNOSTICS_TASK_PRIORITY, &m_task_handle);
     if (task_ret == pdPASS) {
@@ -120,7 +138,7 @@ void DiagnosticMonitor::stop() {
 void DiagnosticMonitor::taskRoutine(void* pvParameters) {
     auto* instance = static_cast<DiagnosticMonitor*>(pvParameters);
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t interval_ticks = pdMS_TO_TICKS(DIAGNOSTICS_TASK_INTERVAL_MS); // 1000 ms
+    const TickType_t interval_ticks = pdMS_TO_TICKS(DIAGNOSTICS_TASK_INTERVAL_MS);
 
     while (instance->m_is_running) {
         instance->printDiagnostics();
@@ -133,7 +151,6 @@ void DiagnosticMonitor::taskRoutine(void* pvParameters) {
 void DiagnosticMonitor::printDiagnostics() {
     m_loop_count++;
 
-    // 1. Temperature Sensor Reading
     int cpu_temp_c = 0;
     if (temp_handle) {
         float raw_temp = 0.0f;
@@ -142,34 +159,60 @@ void DiagnosticMonitor::printDiagnostics() {
         }
     }
 
-    // 2. System Metrics
-    uint32_t uptime_sec = m_loop_count;
+    uint32_t uptime_sec = (m_loop_count * DIAGNOSTICS_TASK_INTERVAL_MS) / 1000;
     uint32_t free_heap = esp_get_free_heap_size();
     uint32_t min_free_heap = esp_get_minimum_free_heap_size();
-    int cpu_usage_pct = calculateCpuUsagePct();
-
-    // 3. Bluetooth Stream Metrics
-    const auto& stream = m_ble_broadcast.getStreamTelemetry();
-    const char* bt_state = m_ble_broadcast.getStateString();
-
-    const system_config_t* cfg = get_system_config();
-
-    ESP_LOGI("", "===== [%s] heartbeat #%lu | Uptime: %lu s =====", cfg->device_name, m_loop_count, uptime_sec);
-    ESP_LOGI("SYS", "CPU: %d%% @ %.0f MHz | Temp: %d C | Heap: %lu KB (%lu KB Min)",
-             cpu_usage_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024, min_free_heap / 1024);
-    ESP_LOGI("BT", "Role: %s | State: %s | Pkts: %lu | RSSI: %d dBm | BIS ID: %u",
-             (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
-             bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
-    ESP_LOGI("AUDIO", "Codec: %s | %d-ch %lu kbps | %u-bit @ %.1f kHz",
-             stream.codec_name.c_str(), stream.channels, stream.bitrate_kbps,
-             stream.bit_depth, static_cast<float>(stream.sample_rate) / 1000.0f);
-
-    if (cfg->node_role == NODE_ROLE_SOURCE && m_tone_gen) {
-        ESP_LOGI("SOURCE", "Gain %.0f%% (%.1f dB)  | Tone: %.1f Hz | VFO: %.2f Hz",
-            m_tone_gen->get_gain_pct(), m_tone_gen->get_gain_dB(), m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate());
+        /* Calculate CPU usage every 500 ms and update 10-element (5-sec) history ringbuffer */
+    TickType_t now_ticks = xTaskGetTickCount();
+    if (m_last_cpu_calc_tick == 0 || (now_ticks - m_last_cpu_calc_tick) >= pdMS_TO_TICKS(500)) {
+        m_last_cpu_calc_tick = now_ticks;
+        updateCpuLoadHistory();
     }
 
-    // 4. Render to 1.47" ST7789 LCD Console if available (Node20)
+    const auto& stream = m_ble_broadcast.getStreamTelemetry();
+    const char* bt_state = m_ble_broadcast.getStateString();
+    const system_config_t* cfg = get_system_config();
+
+    if ((m_loop_count % DIAGNOSTICS_REFRESH_RATE_HZ) == 0) {
+        uint32_t hb_count = m_loop_count / DIAGNOSTICS_REFRESH_RATE_HZ;
+        ESP_LOGI("", "===== [%s] heartbeat #%lu | Uptime: %lu s =====", cfg->device_name, hb_count, uptime_sec);
+        ESP_LOGI("SYS", "CPU: %d/%d%% @ %.0f MHz | Temp: %d C | Heap: %lu KB",
+                 m_cpu_mean_pct, m_cpu_peak_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
+        ESP_LOGI("BT", "Role: %s | State: %s | Pkts: %lu | RSSI: %d dBm | BIS ID: %u",
+                 (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
+                 bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
+
+        if (cfg->node_role == NODE_ROLE_SINK) {
+            ESP_LOGI("AUDIO", "Codec: %s | %s | VCS Vol: %u%% (%u/255 %s)",
+                     stream.getCodecString().c_str(), stream.getStatusString().c_str(),
+                     m_ble_broadcast.getVolumePercent(), m_ble_broadcast.getVolumeSetting(),
+                     m_ble_broadcast.isMuted() ? "MUTED" : "UNMUTED");
+        } else {
+            ESP_LOGI("AUDIO", "Codec: %s | %s", stream.getCodecString().c_str(), stream.getStatusString().c_str());
+        }
+
+        if (cfg->node_role == NODE_ROLE_SOURCE) {
+            if (m_tone_gen) {
+                ESP_LOGI("SOURCE", "Tone: %.1f Hz | VFO: %.2f Hz | Gain: %.0f%% (%.1f dB)",
+                    m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate(),
+                    m_tone_gen->get_gain_pct(), m_tone_gen->get_gain_dB());
+            }
+
+            /* Print Tracked SINK Nodes Table on SOURCE */
+            const auto& sinks = m_ble_broadcast.getTrackedSinks();
+            uint32_t now = xTaskGetTickCount();
+            ESP_LOGI("SINKS", "=== Tracked SINK Nodes (%u / %d max) ===", (unsigned int)sinks.size(), MAX_GATT_SINK_NODES);
+            for (size_t i = 0; i < sinks.size(); ++i) {
+                const auto& s = sinks[i];
+                uint32_t age_ms = (now - s.last_seen_tick) * portTICK_PERIOD_MS;
+                ESP_LOGI("SINK_NODE", "  [%u] '%s' | ConnHandle: %u | Vol: %.1f%% (%u/255) | BASS: %s | Age: %lu ms",
+                         (unsigned int)(i + 1), s.device_name.c_str(), s.conn_handle, s.volume_percent, s.volume_setting,
+                         (s.pa_sync_state == 2) ? "PA_SYNCED" : (s.connected ? "CONNECTED" : "DISCONNECTED"), age_ms);
+            }
+        }
+    }
+
+    // Render to 1.47" ST7789 LCD Console if available (Node20)
     if (m_lcd_display && m_lcd_display->isInitialized()) {
         char buf[128];
 
@@ -177,16 +220,15 @@ void DiagnosticMonitor::printDiagnostics() {
             (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", uptime_sec);
         m_lcd_display->printLine(0, buf, Hardware::COLOR_WHITE);
 
-        snprintf(buf, sizeof(buf), "CPU: %d%% @ %.0f MHz | %d C | %lu KB", 
-            cpu_usage_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
+        snprintf(buf, sizeof(buf), "CPU: %2d-%2d%% | %2d C | %3lu KB", 
+            m_cpu_mean_pct, m_cpu_peak_pct, cpu_temp_c, free_heap / 1024);
         m_lcd_display->printLine(1, buf, Hardware::COLOR_GREEN);
         
-        // Display Bluetooth status and Source 0x09 ID Name
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             snprintf(buf, sizeof(buf), "BT: %s | BIS: #%u", bt_state, stream.bis_index);
         } else {
             if (stream.is_synced) {
-                snprintf(buf, sizeof(buf), "BT: %d dBm | %s | #%lu", stream.rssi_dbm, bt_state, stream.packets_count);
+                snprintf(buf, sizeof(buf), "BT: %s | %+02d dBm | %.1f kpkts", bt_state, stream.rssi_dbm, static_cast<float>(stream.packets_count) / 1000.0f);
             } else {
                 snprintf(buf, sizeof(buf), "BT: Scanning...");
             }
@@ -196,10 +238,10 @@ void DiagnosticMonitor::printDiagnostics() {
         snprintf(buf, sizeof(buf), "BIS: #%u @ %s", stream.bis_index, stream.source_name.c_str());
         m_lcd_display->printLine(3, buf, Hardware::COLOR_CYAN);
 
-        snprintf(buf, sizeof(buf), "AUDIO: %.1f kHz %u-bit %s", static_cast<float>(stream.sample_rate) / 1000.0f, stream.bit_depth, (stream.channels == 1) ? "Mono" : "Stereo");
+        snprintf(buf, sizeof(buf), "AUDIO: %s", stream.getStatusString().c_str());
         m_lcd_display->printLine(4, buf, Hardware::COLOR_ORANGE);
 
-        snprintf(buf, sizeof(buf), "CODEC: %s @ %lu kbps", stream.codec_name.c_str(), stream.bitrate_kbps);
+        snprintf(buf, sizeof(buf), "CODEC: %s", stream.getCodecString().c_str());
         m_lcd_display->printLine(5, buf, Hardware::COLOR_ORANGE);
 
         if (cfg->node_role == NODE_ROLE_SOURCE && m_tone_gen) {
@@ -207,22 +249,22 @@ void DiagnosticMonitor::printDiagnostics() {
             m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate());
             m_lcd_display->printLine(6, buf, Hardware::COLOR_ORANGE);
         } else {
-            snprintf(buf, sizeof(buf), "DAC: MAX98357A I2S Mono");
+            snprintf(buf, sizeof(buf), "VOL: %3u%% | DAC: OK", m_ble_broadcast.getVolumePercent());
             m_lcd_display->printLine(6, buf, Hardware::COLOR_YELLOW);
         }
 
         m_lcd_display->flush();
     }
 
-    // 5. Update Unified WS2812B Status LED Controller across both Node20 and Node21
+    // Status LED
     if (strcmp(bt_state, "BROADCASTING") == 0) {
-        Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING); // BLINK_FAST, COLOR_BLUE @ 32
+        Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING);
     } else if (strcmp(bt_state, "STREAMING") == 0) {
-        Hardware::getStatusLed().setSystemState(Hardware::SystemState::STREAMING);    // BLINK_FAST, COLOR_TEAL @ 32
-    } else if (strcmp(bt_state, "SYNCED (PBP)") == 0 || strcmp(bt_state, "SYNCED") == 0) {
-        Hardware::getStatusLed().setSystemState(Hardware::SystemState::BT_SYNC);      // BLINK_SLOW, COLOR_TEAL @ 32
+        Hardware::getStatusLed().setSystemState(Hardware::SystemState::STREAMING);
+    } else if (strcmp(bt_state, "SCANNING") == 0) {
+        Hardware::getStatusLed().setSystemState(Hardware::SystemState::IDLE);
     } else {
-        Hardware::getStatusLed().setSystemState(Hardware::SystemState::IDLE);         // BLINK_SLOW, COLOR_GREEN @ 32
+        Hardware::getStatusLed().off();
     }
 }
 

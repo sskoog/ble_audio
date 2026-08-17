@@ -47,6 +47,7 @@ extern "C" void app_main(void)
         static Bluetooth::BleAudioBroadcast ble_broadcast(lc3_codec, &tone_gen, nullptr);
         ble_broadcast.init(NODE_ROLE_SOURCE);
         ble_broadcast.startAudioTask();
+        ble_broadcast.transitionTo(Bluetooth::BluetoothState::BROADCASTING);
 
         static Diagnostics::DiagnosticMonitor diag_monitor(ble_broadcast, &tone_gen, nullptr);
         diag_monitor.start();
@@ -64,6 +65,7 @@ extern "C" void app_main(void)
         static Bluetooth::BleAudioBroadcast ble_broadcast(lc3_codec, nullptr, &i2s_dac);
         ble_broadcast.init(NODE_ROLE_SINK);
         ble_broadcast.startAudioTask();
+        ble_broadcast.transitionTo(Bluetooth::BluetoothState::SCANNING);
 
         static Diagnostics::DiagnosticMonitor diag_monitor(ble_broadcast, nullptr, &lcd_display);
         diag_monitor.start();

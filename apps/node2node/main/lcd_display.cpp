@@ -195,7 +195,7 @@ esp_err_t LcdDisplay::init() {
     esp_lcd_panel_init(panel_handle);
     esp_lcd_panel_invert_color(panel_handle, true); // ST7789 color inversion
     esp_lcd_panel_swap_xy(panel_handle, true);      // Landscape orientation
-    esp_lcd_panel_mirror(panel_handle, true, false); // Mirror X for correct layout
+    esp_lcd_panel_mirror(panel_handle, false, true); // Mirror X for correct layout
     esp_lcd_panel_set_gap(panel_handle, 0, 34);     // Waveshare 1.47" ST7789 172x320 offset
     esp_lcd_panel_disp_on_off(panel_handle, true);
 
@@ -206,26 +206,7 @@ esp_err_t LcdDisplay::init() {
         return ESP_ERR_NO_MEM;
     }
 
-    // 6. Initialize WS2812B RGB LED on GPIO 8
-    led_strip_config_t strip_config = {};
-    strip_config.strip_gpio_num = RGB_LED_PIN;
-    strip_config.max_leds = 1;
-    strip_config.led_pixel_format = LED_PIXEL_FORMAT_GRB;
-    strip_config.led_model = LED_MODEL_WS2812;
-
-    led_strip_rmt_config_t rmt_config = {};
-    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
-    rmt_config.resolution_hz = 10 * 1000 * 1000; // 10 MHz
-    led_strip_handle_t led_strip = nullptr;
-    if (led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip) == ESP_OK) {
-        m_led_strip_handle = led_strip;
-        led_strip_clear(led_strip);
-        led_strip_set_pixel(led_strip, 0, 0, 51, 51); // Default 20% Cyan status
-        led_strip_refresh(led_strip);
-    } else {
-        ESP_LOGW(TAG, "RGB LED init skipped/failed.");
-    }
-
+    // Note: WS2812B RGB LED on GPIO 8 is managed by unified Hardware::getStatusLed()
     m_initialized = true;
     clear(COLOR_BLACK);
     drawHeader("    WAVESHARE ESP32-C6 BLE AUDIO");
@@ -317,15 +298,7 @@ void LcdDisplay::printLine(int row, const char* text, uint16_t color, uint16_t b
 }
 
 void LcdDisplay::setRgbColor(uint8_t red, uint8_t green, uint8_t blue) {
-    if (m_led_strip_handle) {
-        // Cap max brightness to 20% (max 51 out of 255)
-        uint8_t r = (red > 51) ? 51 : red;
-        uint8_t g = (green > 51) ? 51 : green;
-        uint8_t b = (blue > 51) ? 51 : blue;
-        auto* strip = static_cast<led_strip_handle_t>(m_led_strip_handle);
-        led_strip_set_pixel(strip, 0, r, g, b);
-        led_strip_refresh(strip);
-    }
+    Hardware::getStatusLed().setColor(red, green, blue);
 }
 
 void LcdDisplay::flush() {

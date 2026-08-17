@@ -45,6 +45,7 @@ extern "C" {
 #define AUDIO_PCM_FRAME_BYTES           (AUDIO_SAMPLES_PER_FRAME * sizeof(int16_t))             /* 882 bytes */
 #define AUDIO_LC3_OCTETS_PER_FRAME      80     /* 80 octets per 10ms frame = 64 kbps mono */
 #define AUDIO_BITRATE_KBPS              ((AUDIO_LC3_OCTETS_PER_FRAME * 8 * 1000) / (AUDIO_FRAME_DURATION_MS * 1000)) /* 64 kbps */
+#define AUDIO_SYNC_TIMEOUT_MS           500    /* 0.5 s sync loss timeout */
 
 /* =====================================================================
  *             VCO / VFO AUDIO TEST TONE GENERATOR CONFIG
@@ -69,10 +70,42 @@ extern "C" {
 /* =====================================================================
  *               DIAGNOSTICS & TELEMETRY CONFIGURATION
  * ===================================================================== */
-#define DIAGNOSTICS_REFRESH_RATE_HZ     1      /* 1 Hz periodic printout */
-#define DIAGNOSTICS_TASK_INTERVAL_MS    1000   /* 1000 ms period */
+#define DIAGNOSTICS_REFRESH_RATE_HZ     4      /* 4 Hz periodic printout */
+#define DIAGNOSTICS_TASK_INTERVAL_MS    (1000 / DIAGNOSTICS_REFRESH_RATE_HZ) /* Calculate period time in milliseconds */
 #define DIAGNOSTICS_TASK_STACK_SIZE     4096
 #define DIAGNOSTICS_TASK_PRIORITY       2
+
+/* =====================================================================
+ *             GATT LE AUDIO & VCS OSCILLATOR CONFIGURATION
+ * ===================================================================== */
+#define MAX_GATT_SINK_NODES             9      /* Track up to 9 SINKs */
+#define VCS_DEFAULT_VOLUME_PERCENT      30     /* Default 30% volume */
+#define VCS_VOLUME_MIN_PCT              10.0f  /* Min sine volume: 10% */
+#define VCS_VOLUME_MAX_PCT              50.0f  /* Max sine volume: 50% */
+#define VCS_SINE_MOD_FREQ_HZ            0.10f  /* 0.1 Hz LFO modulation */
+#define VCS_UPDATE_RATE_HZ              4      /* 4 Hz transmission rate */
+#define VCS_UPDATE_INTERVAL_MS          (1000 / VCS_UPDATE_RATE_HZ)
+
+/* Standard Bluetooth SIG 16-bit Service UUIDs */
+#define BLE_GATT_SVC_PACS_UUID16        0x184E /* Published Audio Capabilities Service */
+#define BLE_GATT_SVC_BASS_UUID16        0x184F /* Broadcast Audio Scan Service */
+#define BLE_GATT_SVC_VCS_UUID16         0x1844 /* Volume Control Service */
+#define BLE_GATT_SVC_CAS_UUID16         0x1853 /* Common Audio Service */
+
+/* Standard Bluetooth SIG 16-bit Characteristic UUIDs */
+#define BLE_GATT_CHR_PACS_SINK_PAC      0x2BC9 /* Sink PAC */
+#define BLE_GATT_CHR_PACS_SINK_LOC      0x2BCA /* Sink Audio Locations */
+#define BLE_GATT_CHR_PACS_SINK_CTX      0x2BCE /* Sink Audio Contexts */
+
+#define BLE_GATT_CHR_BASS_RECV_STATE    0x2BC8 /* Broadcast Receive State */
+#define BLE_GATT_CHR_BASS_CP            0x2BC7 /* Broadcast Audio Scan Control Point */
+
+#define BLE_GATT_CHR_VCS_STATE          0x2B7D /* Volume State */
+#define BLE_GATT_CHR_VCS_CP             0x2B7E /* Volume Control Point */
+#define BLE_GATT_CHR_VCS_FLAGS          0x2B7F /* Volume Flags */
+
+/* Standard Bluetooth SIG Appearance */
+#define BLE_GAP_APPEARANCE_HEADPHONES   0x0841 /* Stereo Headphones (LE Audio Sink) */
 
 /* System configuration structure */
 typedef struct {
