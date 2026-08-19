@@ -679,21 +679,16 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             }
             break;
         }
-        case BLE_GAP_EVENT_DISCONNECT: {
+                case BLE_GAP_EVENT_DISCONNECT: {
             uint16_t conn_handle = event->disconnect.conn.conn_handle;
             ESP_LOGW(TAG, "BLE GAP Disconnected! Conn Handle: %u, Reason: %d", conn_handle, event->disconnect.reason);
             s_broadcast_instance->m_is_connecting = false;
-            for (auto& sink : s_broadcast_instance->getTrackedSinksMutable()) {
-                if (sink.conn_handle == conn_handle) {
-                    sink.connected = false;
-                    sink.connecting = false;
-                    sink.bass_configured = false;
-                    sink.bass_cp_handle = 0;
-                    sink.vcs_cp_handle = 0;
-                    sink.vcs_state_handle = 0;
-                    sink.bass_state_handle = 0;
-                    sink.conn_handle = BLE_HS_CONN_HANDLE_NONE;
-                    break;
+            for (auto it = s_broadcast_instance->getTrackedSinksMutable().begin(); it != s_broadcast_instance->getTrackedSinksMutable().end(); ) {
+                if (it->conn_handle == conn_handle) {
+                    ESP_LOGI(TAG, "Removing disconnected SINK node '%s' from tracking table", it->device_name.c_str());
+                    it = s_broadcast_instance->getTrackedSinksMutable().erase(it);
+                } else {
+                    ++it;
                 }
             }
 

@@ -75,6 +75,7 @@ private:
     std::vector<int> m_client_fds;
     
     TickType_t m_last_broadcast_tick = 0;
+    TickType_t m_last_chart_sample_tick = 0;
 
     std::vector<int> m_mean_cpu_hist;
     std::vector<int> m_peak_cpu_hist;

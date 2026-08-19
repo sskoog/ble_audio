@@ -284,6 +284,7 @@ void DiagnosticMonitor::printDiagnostics() {
         dash_data.packets_count = stream.packets_count;
 
         for (const auto& s : m_ble_broadcast.getTrackedSinks()) {
+            if (!s.connected) continue;
             Web::TrackedSinkInfo sink_info;
             sink_info.name = s.device_name;
             sink_info.conn_handle = s.conn_handle;
