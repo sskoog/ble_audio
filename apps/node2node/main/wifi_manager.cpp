@@ -3,12 +3,9 @@
 #include "config.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "dhcpserver/dhcpserver.h"
 #include <cstring>
 
 static const char* TAG = "WIFI_MGR";
-
-#define DEFAULT_NODE_IP "192.168.68.21"
 
 namespace Network {
 
@@ -36,15 +33,6 @@ esp_err_t WifiManager::init() {
     m_sta_netif = esp_netif_create_default_wifi_sta();
     m_ap_netif  = esp_netif_create_default_wifi_ap();
 
-    /* Set SoftAP Static IP to 192.168.68.21 */
-    esp_netif_dhcps_stop(m_ap_netif);
-    esp_netif_ip_info_t ap_ip_info;
-    ap_ip_info.ip.addr = esp_ip4addr_aton(DEFAULT_NODE_IP);
-    ap_ip_info.gw.addr = esp_ip4addr_aton(DEFAULT_NODE_IP);
-    ap_ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
-    esp_netif_set_ip_info(m_ap_netif, &ap_ip_info);
-    esp_netif_dhcps_start(m_ap_netif);
-
     /* 3. Initialize Wi-Fi driver */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -61,7 +49,10 @@ esp_err_t WifiManager::init() {
                                                         this,
                                                         nullptr));
 
-    /* 5. Configure AP+STA Mode */
+    /* 5. Configure AP+STA Mode:
+     * - SoftAP is isolated on 192.168.4.1/24 to prevent subnet collision with 192.168.68.0/24.
+     * - Station connects to your router and acquires the reserved 192.168.68.21 IP.
+     */
     wifi_config_t sta_config = {};
     strncpy((char*)sta_config.sta.ssid, CONFIG_WIFI_SSID, sizeof(sta_config.sta.ssid) - 1);
     strncpy((char*)sta_config.sta.password, CONFIG_WIFI_PASSWORD, sizeof(sta_config.sta.password) - 1);
@@ -81,14 +72,13 @@ esp_err_t WifiManager::init() {
     ESP_ERROR_CHECK(esp_wifi_start());
 
     m_is_softap = true;
-    m_is_connected = true;
+    m_is_connected = false;
     m_ssid = "ESP32-Audio-Source";
-    m_ip_address = DEFAULT_NODE_IP;
+    m_ip_address = "192.168.4.1";
 
     ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "  Wi-Fi Initialized! IP: http://%s", DEFAULT_NODE_IP);
     ESP_LOGI(TAG, "  Connecting to Station SSID: '%s'...", CONFIG_WIFI_SSID);
-    ESP_LOGI(TAG, "  SoftAP Hotspot: 'ESP32-Audio-Source' (pass: forestchirp)");
+    ESP_LOGI(TAG, "  Hotspot: 'ESP32-Audio-Source' (pass: forestchirp) @ http://192.168.4.1");
     ESP_LOGI(TAG, "==================================================");
 
     return ESP_OK;
@@ -123,7 +113,7 @@ void WifiManager::ipEventHandler(void* arg, esp_event_base_t event_base, int32_t
         self->m_is_connected = true;
         ESP_LOGI(TAG, "==================================================");
         ESP_LOGI(TAG, "  Wi-Fi Station CONNECTED! SSID: '%s'", CONFIG_WIFI_SSID);
-        ESP_LOGI(TAG, "  Station URL: http://%s", ip_str);
+        ESP_LOGI(TAG, "  Dashboard Station URL: http://%s", ip_str);
         ESP_LOGI(TAG, "==================================================");
     }
 }
