@@ -72,7 +72,7 @@ extern "C" {
  * ===================================================================== */
 #define DIAGNOSTICS_REFRESH_RATE_HZ     4      /* 4 Hz periodic printout */
 #define DIAGNOSTICS_TASK_INTERVAL_MS    (1000 / DIAGNOSTICS_REFRESH_RATE_HZ) /* Calculate period time in milliseconds */
-#define DIAGNOSTICS_TASK_STACK_SIZE     4096
+#define DIAGNOSTICS_TASK_STACK_SIZE     8192
 #define DIAGNOSTICS_TASK_PRIORITY       2
 
 /* =====================================================================

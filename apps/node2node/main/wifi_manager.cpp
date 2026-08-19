@@ -94,9 +94,10 @@ int8_t WifiManager::getRssi() {
 
 void WifiManager::wifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi Station Started, connecting to AP...");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        ESP_LOGW(TAG, "Wi-Fi Station Disconnected, reconnecting...");
         esp_wifi_connect();
     }
 }

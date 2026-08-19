@@ -130,17 +130,17 @@ void WebDashboard::sendInitialData(int client_fd) {
       "\"title\":\"Auracast Audio Source\","
       "\"subtitle\":\"ESP32-C6 Dual-Node BLE 5.3 Control & Telemetry\","
       "\"groups\":["
-        "{\"id\":\"grp_sys\",\"title\":\"System\",\"cardIds\":[\"card_node\",\"card_cpu_chart\",\"card_heap\",\"card_temp\",\"card_uptime\"]},"
+        "{\"id\":\"grp_sys\",\"title\":\"System\",\"cardIds\":[\"card_node\",\"card_heap\",\"card_temp\",\"card_uptime\",\"card_cpu_chart\"]},"
         "{\"id\":\"grp_audio\",\"title\":\"Audio\",\"cardIds\":[\"ctrl_vco\",\"card_vfo\",\"ctrl_lfo\",\"ctrl_gain\",\"ctrl_vol\",\"card_codec\",\"card_channels\",\"card_samplerate\",\"card_bitdepth\"]},"
         "{\"id\":\"grp_bt\",\"title\":\"Bluetooth\",\"cardIds\":[\"card_bt_id\",\"card_bt_devs\",\"card_pkts\"]},"
         "{\"id\":\"grp_sinks\",\"title\":\"Connected SINK Nodes\",\"cardIds\":[\"card_sink_0\",\"card_sink_1\",\"card_sink_2\",\"card_sink_3\",\"card_sink_4\",\"card_sink_5\",\"card_sink_6\",\"card_sink_7\",\"card_sink_8\"]}"
       "],"
       "\"cards\":["
         "{\"id\":\"card_node\",\"type\":\"stat\",\"weight\":1,\"config\":{\"title\":\"Node Name\",\"value\":\"ESP32-C6-21\",\"unit\":\"SOURCE\",\"compact\":true,\"icon\":\"radio\"}},"
-        "{\"id\":\"card_cpu_chart\",\"type\":\"chart\",\"weight\":2,\"config\":{\"title\":\"CPU Load (2 Min History)\",\"chartType\":\"line\",\"sizeX\":2,\"sizeY\":2,\"min\":0,\"max\":100,\"series\":[{\"name\":\"Mean CPU %\",\"color\":\"primary\",\"data\":[]},{\"name\":\"Peak CPU %\",\"color\":\"danger\",\"data\":[]}]}},"
-        "{\"id\":\"card_heap\",\"type\":\"stat\",\"weight\":3,\"config\":{\"title\":\"Free DRAM\",\"value\":\"221 KB\",\"compact\":true,\"icon\":\"database\"}},"
-        "{\"id\":\"card_temp\",\"type\":\"stat\",\"weight\":4,\"config\":{\"title\":\"CPU Temp\",\"value\":\"30 °C\",\"compact\":true,\"icon\":\"thermometer\"}},"
-        "{\"id\":\"card_uptime\",\"type\":\"stat\",\"weight\":5,\"config\":{\"title\":\"Uptime\",\"value\":\"0 s\",\"compact\":true,\"icon\":\"clock\"}},"
+        "{\"id\":\"card_heap\",\"type\":\"stat\",\"weight\":2,\"config\":{\"title\":\"Free DRAM\",\"value\":\"221 KB\",\"compact\":true,\"icon\":\"database\"}},"
+        "{\"id\":\"card_temp\",\"type\":\"stat\",\"weight\":3,\"config\":{\"title\":\"CPU Temp\",\"value\":\"30 °C\",\"compact\":true,\"icon\":\"thermometer\"}},"
+        "{\"id\":\"card_uptime\",\"type\":\"stat\",\"weight\":4,\"config\":{\"title\":\"Uptime\",\"value\":\"0 s\",\"compact\":true,\"icon\":\"clock\"}},"
+        "{\"id\":\"card_cpu_chart\",\"type\":\"chart\",\"weight\":5,\"config\":{\"title\":\"CPU Load (2 Min History)\",\"chartType\":\"line\",\"sizeX\":2,\"sizeY\":2,\"min\":0,\"max\":100,\"series\":[{\"name\":\"Mean CPU %\",\"color\":\"primary\",\"data\":[]},{\"name\":\"Peak CPU %\",\"color\":\"danger\",\"data\":[]}]}},"
         "{\"id\":\"ctrl_vco\",\"type\":\"slider\",\"weight\":11,\"config\":{\"title\":\"VCO Tone Freq\",\"value\":440,\"min\":220,\"max\":880,\"step\":10,\"unit\":\"Hz\"}},"
         "{\"id\":\"card_vfo\",\"type\":\"stat\",\"weight\":12,\"config\":{\"title\":\"VFO Mod Rate\",\"value\":\"1.00 Hz\",\"compact\":true,\"icon\":\"activity\"}},"
         "{\"id\":\"ctrl_lfo\",\"type\":\"toggle\",\"weight\":13,\"config\":{\"title\":\"VCS LFO On/Off (0.10 Hz Sine)\",\"value\":true}},"
@@ -241,18 +241,18 @@ void WebDashboard::broadcastTelemetry(const DashboardTelemetry& data) {
     };
 
     auto sendCardUpdate = [&sendFrame](const char* card_id, const char* val_str) {
-        char payload[256];
+        static char payload[256];
         int len = snprintf(payload, sizeof(payload), 
                            "{\"type\":\"update\",\"cardId\":\"%s\",\"data\":{\"value\":\"%s\"}}",
                            card_id, val_str);
         sendFrame(payload, len);
     };
 
-    char buf[1024];
+    static char buf[1024];
 
     // 1. CPU Chart Update (2-minute window)
-    char mean_str[384] = "";
-    char peak_str[384] = "";
+    static char mean_str[384]; mean_str[0] = '\0';
+    static char peak_str[384]; peak_str[0] = '\0';
     int mean_offset = 0;
     int peak_offset = 0;
     for (size_t i = 0; i < m_mean_cpu_hist.size(); ++i) {
@@ -287,7 +287,7 @@ void WebDashboard::broadcastTelemetry(const DashboardTelemetry& data) {
 
     // 5. Dynamic SINK Cards Update
     if (data.sinks.empty()) {
-        char sink_payload[384];
+        static char sink_payload[384];
         int s_len = snprintf(sink_payload, sizeof(sink_payload),
             "{\"type\":\"update\",\"cardId\":\"card_sink_0\",\"data\":{\"title\":\"Connected SINK\",\"icon\":\"headphones\",\"variant\":\"warning\",\"label\":\"Waiting for SINK...\",\"message\":\"No SINK nodes connected. Audio BIS #1 is streaming.\"}}");
         sendFrame(sink_payload, s_len);
@@ -297,7 +297,7 @@ void WebDashboard::broadcastTelemetry(const DashboardTelemetry& data) {
             char sink_id[32];
             snprintf(sink_id, sizeof(sink_id), "card_sink_%u", (unsigned int)i);
 
-            char sink_payload[384];
+            static char sink_payload[384];
             int s_len = snprintf(sink_payload, sizeof(sink_payload),
                 "{\"type\":\"update\",\"cardId\":\"%s\",\"data\":{\"title\":\"%s\",\"icon\":\"headphones\",\"variant\":\"success\",\"label\":\"Volume: %.0f%%\",\"message\":\"Device: SINK Headset | RSSI: %d dBm | Handle: %u | %s | Age: %lu ms\"}}",
                 sink_id,
