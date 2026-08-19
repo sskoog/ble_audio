@@ -24,6 +24,7 @@ public:
     // Volume / Gain Control (Logarithmic mapping: 1% = -60 dB, 100% = 0 dB, <0.1% = Muted)
     void set_gain_dB(float gain_db);
     void set_gain_pct(float pct);
+    void setNominalFrequency(float nominal_freq_hz);
     float get_gain_dB() const { return m_gain_db; }
     float get_gain_pct() const { return m_gain_pct; }
 

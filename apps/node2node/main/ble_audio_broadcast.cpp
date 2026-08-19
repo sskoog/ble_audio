@@ -598,6 +598,17 @@ void BleAudioBroadcast::configureSinkBass(DiscoveredSinkNode& sink) {
     }
 }
 
+void BleAudioBroadcast::sendManualVolumeToAllSinks(uint8_t vol_pct) {
+    uint8_t vol_setting = (static_cast<uint16_t>(vol_pct) * 255) / 100;
+    ESP_LOGI(TAG, "Manual SINK Volume broadcast: %d%% (%d/255) to %u sinks", 
+             vol_pct, vol_setting, (unsigned int)m_tracked_sinks.size());
+    for (auto& sink : m_tracked_sinks) {
+        if (sink.connected && sink.vcs_cp_handle != 0) {
+            sendVcsVolumeToSink(sink, vol_setting);
+        }
+    }
+}
+
 void BleAudioBroadcast::sendVcsVolumeToSink(DiscoveredSinkNode& sink, uint8_t volume_setting) {
     if (sink.conn_handle == BLE_HS_CONN_HANDLE_NONE || sink.vcs_cp_handle == 0) return;
 
@@ -624,6 +635,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_EXT_DISC: {
             const auto &disc = event->ext_disc;
             s_broadcast_instance->parseAdvReport(disc.data, disc.length_data, disc.rssi, &disc.addr);
+            for (auto& s : s_broadcast_instance->getTrackedSinksMutable()) {
+                if (memcmp(s.addr.val, disc.addr.val, 6) == 0) {
+                    s.rssi = disc.rssi;
+                    s.last_seen_tick = xTaskGetTickCount();
+                }
+            }
             break;
         }
                 case BLE_GAP_EVENT_CONNECT: {

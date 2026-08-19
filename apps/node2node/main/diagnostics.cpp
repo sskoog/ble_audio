@@ -289,6 +289,7 @@ void DiagnosticMonitor::printDiagnostics() {
             sink_info.conn_handle = s.conn_handle;
             sink_info.volume_percent = s.volume_percent;
             sink_info.is_synced = (s.pa_sync_state == 2);
+            sink_info.rssi_dbm = s.rssi;
             sink_info.age_ms = (xTaskGetTickCount() - s.last_seen_tick) * portTICK_PERIOD_MS;
             dash_data.sinks.push_back(sink_info);
         }

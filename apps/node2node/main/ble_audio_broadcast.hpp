@@ -71,6 +71,7 @@ struct DiscoveredSinkNode {
     uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
     ble_addr_t addr = {};
     std::string device_name = "Unknown";
+    int8_t   rssi = -45;
     uint8_t  volume_setting = 77;        /* Volume level (0 - 255) */
     float    volume_percent = 30.0f;     /* Volume level in % */
     bool     is_muted = false;
@@ -153,6 +154,9 @@ public:
     void setVolumeSetting(uint8_t vol, bool notify = true);
     void setMute(bool mute, bool notify = true);
 
+    void setLfoEnabled(bool enabled) { m_lfo_enabled = enabled; }
+    bool isLfoEnabled() const { return m_lfo_enabled; }
+    void sendManualVolumeToAllSinks(uint8_t vol_pct);
     const std::vector<DiscoveredSinkNode>& getTrackedSinks() const { return m_tracked_sinks; }
     std::vector<DiscoveredSinkNode>& getTrackedSinksMutable() { return m_tracked_sinks; }
 
@@ -213,6 +217,7 @@ private:
     uint16_t m_bass_recv_state_handle = 0;
     uint16_t m_vcs_state_handle = 0;
     uint16_t m_vcs_flags_handle = 0;
+    bool m_lfo_enabled = true;
 
     /* SOURCE Multi-SINK Tracking Table */
     std::vector<DiscoveredSinkNode> m_tracked_sinks;

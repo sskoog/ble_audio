@@ -17,6 +17,7 @@ struct TrackedSinkInfo {
     uint16_t conn_handle;
     float volume_percent;
     bool is_synced;
+    int8_t rssi_dbm;
     uint32_t age_ms;
 };
 
@@ -40,6 +41,7 @@ struct DashboardTelemetry {
 typedef std::function<void(bool)> LfoToggleCallback;
 typedef std::function<void(uint8_t)> VolumeChangeCallback;
 typedef std::function<void(float)> GainChangeCallback;
+typedef std::function<void(float)> VcoFreqCallback;
 
 class WebDashboard {
 public:
@@ -53,6 +55,7 @@ public:
     void setLfoToggleCallback(LfoToggleCallback cb) { m_lfo_cb = cb; }
     void setVolumeChangeCallback(VolumeChangeCallback cb) { m_vol_cb = cb; }
     void setGainChangeCallback(GainChangeCallback cb) { m_gain_cb = cb; }
+    void setVcoFreqCallback(VcoFreqCallback cb) { m_vco_cb = cb; }
 
     size_t getActiveClientCount() const { return m_client_fds.size(); }
 
@@ -73,9 +76,13 @@ private:
     
     TickType_t m_last_broadcast_tick = 0;
 
+    std::vector<int> m_mean_cpu_hist;
+    std::vector<int> m_peak_cpu_hist;
+
     LfoToggleCallback m_lfo_cb = nullptr;
     VolumeChangeCallback m_vol_cb = nullptr;
     GainChangeCallback m_gain_cb = nullptr;
+    VcoFreqCallback m_vco_cb = nullptr;
 };
 
 } // namespace Web

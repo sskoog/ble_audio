@@ -58,23 +58,25 @@ extern "C" void app_main(void)
         Network::WifiManager::getInstance().init();
         Web::WebDashboard::getInstance().start();
 
-        Web::WebDashboard::getInstance().setLfoToggleCallback([](bool enabled) {
+        Web::WebDashboard::getInstance().setLfoToggleCallback([&ble_broadcast](bool enabled) {
             ESP_LOGI("APP", "Web Dashboard: LFO Sine Modulation %s", enabled ? "ENABLED" : "DISABLED");
+            ble_broadcast.setLfoEnabled(enabled);
         });
 
         Web::WebDashboard::getInstance().setVolumeChangeCallback([&ble_broadcast](uint8_t vol_pct) {
-            uint8_t vol_setting = (vol_pct * 255) / 100;
-            ESP_LOGI("APP", "Web Dashboard: Setting Manual SINK Volume to %d%% (%d/255)", vol_pct, vol_setting);
-            for (auto& sink : ble_broadcast.getTrackedSinksMutable()) {
-                if (sink.connected && sink.vcs_cp_handle != 0) {
-                    ble_broadcast.sendVcsVolumeToSink(sink, vol_setting);
-                }
-            }
+            ESP_LOGI("APP", "Web Dashboard: Manual SINK Volume override to %d%%", vol_pct);
+            ble_broadcast.setLfoEnabled(false); // Pause LFO when manual volume is adjusted
+            ble_broadcast.sendManualVolumeToAllSinks(vol_pct);
         });
 
         Web::WebDashboard::getInstance().setGainChangeCallback([&tone_gen](float gain_pct) {
             ESP_LOGI("APP", "Web Dashboard: Setting Tone Gain to %.1f%%", gain_pct);
             tone_gen.set_gain_pct(gain_pct);
+        });
+
+        Web::WebDashboard::getInstance().setVcoFreqCallback([&tone_gen](float freq_hz) {
+            ESP_LOGI("APP", "Web Dashboard: Setting VCO Tone Frequency to %.1f Hz", freq_hz);
+            tone_gen.setNominalFrequency(freq_hz);
         });
 
     } else {

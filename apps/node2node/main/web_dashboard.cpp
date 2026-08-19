@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 static const char* TAG = "WEB_DASH";
 
@@ -69,7 +70,6 @@ void WebDashboard::stop() {
 }
 
 esp_err_t WebDashboard::indexGetHandler(httpd_req_t* req) {
-    /* Serve GZIP-compressed dashboard.html from Flash */
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000");
@@ -85,7 +85,6 @@ esp_err_t WebDashboard::wsHandler(httpd_req_t* req) {
         int client_fd = httpd_req_to_sockfd(req);
         ESP_LOGI(TAG, "WebSocket Handshake Success! Client FD: %d", client_fd);
 
-        /* Limit to 2 concurrent WebSocket clients */
         if (self->m_client_fds.size() >= 2) {
             ESP_LOGW(TAG, "Max WebSocket clients reached. Rejecting client FD %d", client_fd);
             return ESP_FAIL;
@@ -100,7 +99,7 @@ esp_err_t WebDashboard::wsHandler(httpd_req_t* req) {
     }
 
     httpd_ws_frame_t ws_pkt = {};
-    uint8_t buf[256] = {0};
+    uint8_t buf[512] = {0};
     ws_pkt.payload = buf;
 
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, sizeof(buf) - 1);
@@ -125,27 +124,36 @@ esp_err_t WebDashboard::wsHandler(httpd_req_t* req) {
 }
 
 void WebDashboard::sendInitialData(int client_fd) {
-    /*
-     * Build standard ESP-DashboardPlus init payload defining card layout
-     */
     static const char init_manifest[] = 
     "{"
       "\"type\":\"init\","
       "\"title\":\"Auracast Audio Source\","
-      "\"subtitle\":\"ESP32-C6 LE Audio Broadcaster & GATT Orchestrator\","
+      "\"subtitle\":\"ESP32-C6 Dual-Node BLE 5.3 Control & Telemetry\","
+      "\"groups\":["
+        "{\"id\":\"grp_sys\",\"title\":\"System\",\"cardIds\":[\"card_node\",\"card_cpu_chart\",\"card_heap\",\"card_temp\",\"card_uptime\"]},"
+        "{\"id\":\"grp_audio\",\"title\":\"Audio\",\"cardIds\":[\"ctrl_vco\",\"card_vfo\",\"ctrl_lfo\",\"ctrl_gain\",\"ctrl_vol\",\"card_codec\",\"card_channels\",\"card_samplerate\",\"card_bitdepth\"]},"
+        "{\"id\":\"grp_bt\",\"title\":\"Bluetooth\",\"cardIds\":[\"card_bt_id\",\"card_bt_devs\",\"card_pkts\"]},"
+        "{\"id\":\"grp_sinks\",\"title\":\"Connected SINK Nodes\",\"cardIds\":[\"card_sink_0\",\"card_sink_1\",\"card_sink_2\",\"card_sink_3\",\"card_sink_4\",\"card_sink_5\",\"card_sink_6\",\"card_sink_7\",\"card_sink_8\"]}"
+      "],"
       "\"cards\":["
-        "{\"id\":\"card_node\",\"type\":\"stat\",\"config\":{\"title\":\"Broadcast Node\",\"value\":\"ESP32-C6-21\",\"unit\":\"Active\",\"icon\":\"radio\"}},"
-        "{\"id\":\"card_cpu\",\"type\":\"stat\",\"config\":{\"title\":\"CPU Load (5s Avg/Peak)\",\"value\":\"12 / 16%\",\"unit\":\"%\",\"icon\":\"cpu\"}},"
-        "{\"id\":\"card_heap\",\"type\":\"stat\",\"config\":{\"title\":\"Free DRAM\",\"value\":\"345 KB\",\"icon\":\"database\"}},"
-        "{\"id\":\"card_temp\",\"type\":\"stat\",\"config\":{\"title\":\"Core Temp\",\"value\":\"24 °C\",\"icon\":\"thermometer\"}},"
-        "{\"id\":\"card_uptime\",\"type\":\"stat\",\"config\":{\"title\":\"Uptime\",\"value\":\"0 s\",\"icon\":\"clock\"}},"
-        "{\"id\":\"card_vco\",\"type\":\"stat\",\"config\":{\"title\":\"VCO Tone Freq\",\"value\":\"440.0 Hz\",\"icon\":\"activity\"}},"
-        "{\"id\":\"card_vfo\",\"type\":\"stat\",\"config\":{\"title\":\"VFO Mod Rate\",\"value\":\"1.00 Hz\",\"icon\":\"zap\"}},"
-        "{\"id\":\"card_pkts\",\"type\":\"stat\",\"config\":{\"title\":\"Transmitted BIS Frames\",\"value\":\"0\",\"icon\":\"send\"}},"
-        "{\"id\":\"ctrl_lfo\",\"type\":\"toggle\",\"config\":{\"title\":\"0.10 Hz Sine VCS LFO\",\"value\":true}},"
-        "{\"id\":\"ctrl_vol\",\"type\":\"slider\",\"config\":{\"title\":\"Manual SINK Volume Override\",\"value\":30,\"min\":10,\"max\":100}},"
-        "{\"id\":\"ctrl_gain\",\"type\":\"slider\",\"config\":{\"title\":\"Tone Generator Gain\",\"value\":30,\"min\":0,\"max\":100}},"
-        "{\"id\":\"card_sinks\",\"type\":\"stat\",\"config\":{\"title\":\"Connected SINK Nodes\",\"value\":\"Scanning...\",\"icon\":\"headphones\"}}"
+        "{\"id\":\"card_node\",\"type\":\"stat\",\"weight\":1,\"config\":{\"title\":\"Node Name\",\"value\":\"ESP32-C6-21\",\"unit\":\"SOURCE\",\"icon\":\"radio\"}},"
+        "{\"id\":\"card_cpu_chart\",\"type\":\"chart\",\"weight\":2,\"config\":{\"title\":\"CPU Load (5s Sliding Window)\",\"chartType\":\"line\",\"sizeX\":2,\"series\":[{\"name\":\"Mean CPU %%\",\"color\":\"primary\",\"data\":[12,12]},{\"name\":\"Peak CPU %%\",\"color\":\"danger\",\"data\":[16,16]}]}},"
+        "{\"id\":\"card_heap\",\"type\":\"stat\",\"weight\":3,\"config\":{\"title\":\"Free DRAM\",\"value\":\"221 KB\",\"icon\":\"database\"}},"
+        "{\"id\":\"card_temp\",\"type\":\"stat\",\"weight\":4,\"config\":{\"title\":\"CPU Temp\",\"value\":\"30 °C\",\"icon\":\"thermometer\"}},"
+        "{\"id\":\"card_uptime\",\"type\":\"stat\",\"weight\":5,\"config\":{\"title\":\"Uptime\",\"value\":\"0 s\",\"icon\":\"clock\"}},"
+        "{\"id\":\"ctrl_vco\",\"type\":\"slider\",\"weight\":11,\"config\":{\"title\":\"VCO Tone Freq\",\"value\":440,\"min\":220,\"max\":880,\"step\":10,\"unit\":\"Hz\"}},"
+        "{\"id\":\"card_vfo\",\"type\":\"stat\",\"weight\":12,\"config\":{\"title\":\"VFO Mod Rate\",\"value\":\"1.00 Hz\",\"icon\":\"activity\"}},"
+        "{\"id\":\"ctrl_lfo\",\"type\":\"toggle\",\"weight\":13,\"config\":{\"title\":\"VCS LFO On/Off (0.10 Hz Sine)\",\"value\":true}},"
+        "{\"id\":\"ctrl_gain\",\"type\":\"slider\",\"weight\":14,\"config\":{\"title\":\"Tone Generator Gain\",\"value\":30,\"min\":0,\"max\":100,\"step\":5,\"unit\":\"%\"}},"
+        "{\"id\":\"ctrl_vol\",\"type\":\"slider\",\"weight\":15,\"config\":{\"title\":\"Manual SINK Volume\",\"value\":30,\"min\":10,\"max\":100,\"step\":1,\"unit\":\"%\"}},"
+        "{\"id\":\"card_codec\",\"type\":\"stat\",\"weight\":16,\"config\":{\"title\":\"Streaming Codec & Bitrate\",\"value\":\"LC3 fixp @ 64 kbps\",\"icon\":\"disc\"}},"
+        "{\"id\":\"card_channels\",\"type\":\"stat\",\"weight\":17,\"config\":{\"title\":\"Audio Channels\",\"value\":\"1 (Mono)\",\"icon\":\"volume-2\"}},"
+        "{\"id\":\"card_samplerate\",\"type\":\"stat\",\"weight\":18,\"config\":{\"title\":\"Sampling Frequency\",\"value\":\"44.1 kHz\",\"icon\":\"layers\"}},"
+        "{\"id\":\"card_bitdepth\",\"type\":\"stat\",\"weight\":19,\"config\":{\"title\":\"Bit Depth\",\"value\":\"16-bit PCM\",\"icon\":\"hash\"}},"
+        "{\"id\":\"card_bt_id\",\"type\":\"stat\",\"weight\":21,\"config\":{\"title\":\"Broadcast GATT ID\",\"value\":\"0x123456 (BIS #1)\",\"icon\":\"bluetooth\"}},"
+        "{\"id\":\"card_bt_devs\",\"type\":\"stat\",\"weight\":22,\"config\":{\"title\":\"Connected Devices\",\"value\":\"0 / 9 max\",\"icon\":\"users\"}},"
+        "{\"id\":\"card_pkts\",\"type\":\"stat\",\"weight\":23,\"config\":{\"title\":\"Transmitted BIS-Frames\",\"value\":\"0\",\"icon\":\"send\"}},"
+        "{\"id\":\"card_sink_0\",\"type\":\"status\",\"weight\":31,\"config\":{\"title\":\"Connected SINK\",\"sizeX\":2,\"icon\":\"headphones\",\"variant\":\"warning\",\"label\":\"Waiting for SINK...\",\"message\":\"No SINK nodes connected. Audio BIS #1 is streaming.\"}}"
       "]"
     "}";
 
@@ -155,13 +163,12 @@ void WebDashboard::sendInitialData(int client_fd) {
     ws_pkt.len = strlen(init_manifest);
 
     httpd_ws_send_frame_async(m_server, client_fd, &ws_pkt);
-    ESP_LOGI(TAG, "Sent Initial Dashboard Manifest to Client FD %d", client_fd);
+    ESP_LOGI(TAG, "Sent Initial Grouped Dashboard Manifest to Client FD %d", client_fd);
 }
 
 void WebDashboard::handleIncomingAction(const char* json_str, size_t len) {
     ESP_LOGI(TAG, "Received WebSocket Action: %s", json_str);
 
-    /* Quick parser for control card interactions */
     if (strstr(json_str, "ctrl_lfo")) {
         bool state = (strstr(json_str, "true") != nullptr);
         if (m_lfo_cb) m_lfo_cb(state);
@@ -184,6 +191,15 @@ void WebDashboard::handleIncomingAction(const char* json_str, size_t len) {
             if (m_gain_cb) m_gain_cb(gain);
             ESP_LOGI(TAG, "Action: Tone Gain set to %.1f%%", gain);
         }
+    } else if (strstr(json_str, "ctrl_vco")) {
+        const char* val_ptr = strstr(json_str, "\"value\":");
+        if (val_ptr) {
+            float freq = (float)atof(val_ptr + 8);
+            if (freq < 100.0f) freq = 100.0f;
+            if (freq > 2000.0f) freq = 2000.0f;
+            if (m_vco_cb) m_vco_cb(freq);
+            ESP_LOGI(TAG, "Action: VCO Nominal Freq set to %.1f Hz", freq);
+        }
     }
 }
 
@@ -197,21 +213,15 @@ void WebDashboard::broadcastTelemetry(const DashboardTelemetry& data) {
     }
     m_last_broadcast_tick = now;
 
-    char buf[512];
-
-    /* Format SINKs summary string */
-    char sinks_str[128] = "No SINKs connected";
-    if (!data.sinks.empty()) {
-        snprintf(sinks_str, sizeof(sinks_str), "%u Connected (Vol: %.0f%%)",
-                 (unsigned int)data.sinks.size(), data.sinks[0].volume_percent);
+    // Maintain 12 data points history for CPU chart
+    m_mean_cpu_hist.push_back(data.cpu_mean_pct);
+    m_peak_cpu_hist.push_back(data.cpu_peak_pct);
+    if (m_mean_cpu_hist.size() > 12) {
+        m_mean_cpu_hist.erase(m_mean_cpu_hist.begin());
+        m_peak_cpu_hist.erase(m_peak_cpu_hist.begin());
     }
 
-    /* Send batch updates */
-    auto sendCardUpdate = [this](const char* card_id, const char* val_str) {
-        char payload[192];
-        int len = snprintf(payload, sizeof(payload), 
-                           "{\"type\":\"update\",\"cardId\":\"%s\",\"data\":{\"value\":\"%s\"}}",
-                           card_id, val_str);
+    auto sendFrame = [this](const char* payload, size_t len) {
         httpd_ws_frame_t ws_pkt = {};
         ws_pkt.type = HTTPD_WS_TYPE_TEXT;
         ws_pkt.payload = (uint8_t*)payload;
@@ -227,9 +237,31 @@ void WebDashboard::broadcastTelemetry(const DashboardTelemetry& data) {
         }
     };
 
-    snprintf(buf, sizeof(buf), "%d / %d%%", data.cpu_mean_pct, data.cpu_peak_pct);
-    sendCardUpdate("card_cpu", buf);
+    auto sendCardUpdate = [&sendFrame](const char* card_id, const char* val_str) {
+        char payload[256];
+        int len = snprintf(payload, sizeof(payload), 
+                           "{\"type\":\"update\",\"cardId\":\"%s\",\"data\":{\"value\":\"%s\"}}",
+                           card_id, val_str);
+        sendFrame(payload, len);
+    };
 
+    char buf[512];
+
+    // 1. CPU Chart Update
+    char mean_str[128] = "";
+    char peak_str[128] = "";
+    int mean_offset = 0;
+    int peak_offset = 0;
+    for (size_t i = 0; i < m_mean_cpu_hist.size(); ++i) {
+        mean_offset += snprintf(mean_str + mean_offset, sizeof(mean_str) - mean_offset, "%s%d", (i > 0 ? "," : ""), m_mean_cpu_hist[i]);
+        peak_offset += snprintf(peak_str + peak_offset, sizeof(peak_str) - peak_offset, "%s%d", (i > 0 ? "," : ""), m_peak_cpu_hist[i]);
+    }
+    int chart_len = snprintf(buf, sizeof(buf),
+        "{\"type\":\"update\",\"cardId\":\"card_cpu_chart\",\"data\":{\"series\":[{\"name\":\"Mean CPU %%\",\"color\":\"primary\",\"data\":[%s]},{\"name\":\"Peak CPU %%\",\"color\":\"danger\",\"data\":[%s]}]}}",
+        mean_str, peak_str);
+    sendFrame(buf, chart_len);
+
+    // 2. System Stats
     snprintf(buf, sizeof(buf), "%lu KB", data.free_heap_kb);
     sendCardUpdate("card_heap", buf);
 
@@ -239,16 +271,43 @@ void WebDashboard::broadcastTelemetry(const DashboardTelemetry& data) {
     snprintf(buf, sizeof(buf), "%lu s", data.uptime_sec);
     sendCardUpdate("card_uptime", buf);
 
-    snprintf(buf, sizeof(buf), "%.1f Hz", data.vco_freq_hz);
-    sendCardUpdate("card_vco", buf);
-
+    // 3. Audio Stats
     snprintf(buf, sizeof(buf), "%.2f Hz", data.vfo_mod_rate_hz);
     sendCardUpdate("card_vfo", buf);
+
+    // 4. Bluetooth Stats
+    snprintf(buf, sizeof(buf), "%u / 9 max", (unsigned int)data.sinks.size());
+    sendCardUpdate("card_bt_devs", buf);
 
     snprintf(buf, sizeof(buf), "%lu", data.packets_count);
     sendCardUpdate("card_pkts", buf);
 
-    sendCardUpdate("card_sinks", sinks_str);
+    // 5. Dynamic SINK Cards Update
+    if (data.sinks.empty()) {
+        char sink_payload[384];
+        int s_len = snprintf(sink_payload, sizeof(sink_payload),
+            "{\"type\":\"update\",\"cardId\":\"card_sink_0\",\"data\":{\"title\":\"Connected SINK\",\"icon\":\"headphones\",\"variant\":\"warning\",\"label\":\"Waiting for SINK...\",\"message\":\"No SINK nodes connected. Audio BIS #1 is streaming.\"}}");
+        sendFrame(sink_payload, s_len);
+    } else {
+        for (size_t i = 0; i < data.sinks.size() && i < 9; ++i) {
+            const auto& sink = data.sinks[i];
+            char sink_id[32];
+            snprintf(sink_id, sizeof(sink_id), "card_sink_%u", (unsigned int)i);
+
+            char sink_payload[384];
+            int s_len = snprintf(sink_payload, sizeof(sink_payload),
+                "{\"type\":\"update\",\"cardId\":\"%s\",\"data\":{\"title\":\"%s\",\"icon\":\"headphones\",\"variant\":\"success\",\"label\":\"Volume: %.0f%% (%d/255)\",\"message\":\"RSSI: %d dBm | Handle: %u | %s | Age: %lu ms\"}}",
+                sink_id,
+                sink.name.c_str(),
+                sink.volume_percent,
+                (int)(sink.volume_percent * 2.55f + 0.5f),
+                sink.rssi_dbm,
+                sink.conn_handle,
+                sink.is_synced ? "SYNCED (BIS #1)" : "CONNECTED",
+                sink.age_ms);
+            sendFrame(sink_payload, s_len);
+        }
+    }
 }
 
 } // namespace Web

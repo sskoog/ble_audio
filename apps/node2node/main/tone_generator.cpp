@@ -49,6 +49,16 @@ void ToneGenerator::set_gain_dB(float gain_db) {
     m_peak_amplitude = static_cast<int16_t>(32767.0f * linear_scale + 0.5f);
 }
 
+void ToneGenerator::setNominalFrequency(float nominal_freq_hz) {
+    if (nominal_freq_hz < 100.0f) nominal_freq_hz = 100.0f;
+    if (nominal_freq_hz > 2000.0f) nominal_freq_hz = 2000.0f;
+    m_center_freq_hz = nominal_freq_hz;
+    m_min_freq_hz = nominal_freq_hz * 0.5f;
+    m_max_freq_hz = nominal_freq_hz * 2.0f;
+    m_freq_deviation_hz = (m_max_freq_hz - m_min_freq_hz) * 0.5f;
+    ESP_LOGI(TAG, "VCO Nominal Frequency updated to %.1f Hz", m_center_freq_hz);
+}
+
 void ToneGenerator::set_gain_pct(float pct) {
     if (pct < 0.1f) {
         // 0% or <0.1% means fully muted
