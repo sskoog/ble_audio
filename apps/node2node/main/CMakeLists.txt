@@ -9,6 +9,8 @@ idf_component_register(
         "status_led.cpp"
         "ble_audio_broadcast.cpp"
         "diagnostics.cpp"
+        "wifi_manager.cpp"
+        "web_dashboard.cpp"
     INCLUDE_DIRS 
         "."
     REQUIRES 
@@ -20,4 +22,9 @@ idf_component_register(
         esp_lcd
         esp-dsp
         led_strip
+        esp_wifi
+        esp_netif
+        esp_http_server
+        esp_coex
+        lwip
 )

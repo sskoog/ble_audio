@@ -1,3 +1,5 @@
+#include "wifi_manager.hpp"
+#include "web_dashboard.hpp"
 #include "diagnostics.hpp"
 #include "status_led.hpp"
 #include "config.h"
@@ -176,6 +178,14 @@ void DiagnosticMonitor::printDiagnostics() {
     if ((m_loop_count % DIAGNOSTICS_REFRESH_RATE_HZ) == 0) {
         uint32_t hb_count = m_loop_count / DIAGNOSTICS_REFRESH_RATE_HZ;
         ESP_LOGI("", "===== [%s] heartbeat #%lu | Uptime: %lu s =====", cfg->device_name, hb_count, uptime_sec);
+        if (cfg->node_role == NODE_ROLE_SOURCE) {
+            auto& wifi = Network::WifiManager::getInstance();
+            ESP_LOGI("NET", "Wi-Fi: %s (%s) | SSID: '%s' | URL: http://%s",
+                     wifi.isConnected() ? "ONLINE" : "OFFLINE",
+                     wifi.isSoftAp() ? "SoftAP" : "Station",
+                     wifi.getSsid().c_str(),
+                     wifi.getIpAddress().c_str());
+        }
         ESP_LOGI("SYS", "CPU: %d/%d%% @ %.0f MHz | Temp: %d C | Heap: %lu KB",
                  m_cpu_mean_pct, m_cpu_peak_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
         ESP_LOGI("BT", "Role: %s | State: %s | Pkts: %lu | RSSI: %d dBm | BIS ID: %u",
@@ -254,6 +264,36 @@ void DiagnosticMonitor::printDiagnostics() {
         }
 
         m_lcd_display->flush();
+    }
+
+    // Broadcast live telemetry to connected Web Dashboard clients (3 Hz)
+    if (cfg->node_role == NODE_ROLE_SOURCE && Web::WebDashboard::getInstance().getActiveClientCount() > 0) {
+        Web::DashboardTelemetry dash_data;
+        dash_data.node_name = cfg->device_name;
+        dash_data.bt_state = bt_state;
+        dash_data.cpu_mean_pct = m_cpu_mean_pct;
+        dash_data.cpu_peak_pct = m_cpu_peak_pct;
+        dash_data.cpu_temp_c = cpu_temp_c;
+        dash_data.free_heap_kb = free_heap / 1024;
+        dash_data.uptime_sec = uptime_sec;
+        if (m_tone_gen) {
+            dash_data.vco_freq_hz = m_tone_gen->getCurrentFrequency();
+            dash_data.vfo_mod_rate_hz = m_tone_gen->getModulationRate();
+            dash_data.tone_gain_pct = m_tone_gen->get_gain_pct();
+        }
+        dash_data.packets_count = stream.packets_count;
+
+        for (const auto& s : m_ble_broadcast.getTrackedSinks()) {
+            Web::TrackedSinkInfo sink_info;
+            sink_info.name = s.device_name;
+            sink_info.conn_handle = s.conn_handle;
+            sink_info.volume_percent = s.volume_percent;
+            sink_info.is_synced = (s.pa_sync_state == 2);
+            sink_info.age_ms = (xTaskGetTickCount() - s.last_seen_tick) * portTICK_PERIOD_MS;
+            dash_data.sinks.push_back(sink_info);
+        }
+
+        Web::WebDashboard::getInstance().broadcastTelemetry(dash_data);
     }
 
     // Status LED

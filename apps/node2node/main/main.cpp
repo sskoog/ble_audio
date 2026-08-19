@@ -11,6 +11,8 @@
 #include "status_led.hpp"
 #include "ble_audio_broadcast.hpp"
 #include "diagnostics.hpp"
+#include "wifi_manager.hpp"
+#include "web_dashboard.hpp"
 
 static const char* TAG = "MAIN";
 
@@ -32,14 +34,14 @@ extern "C" void app_main(void)
         }
     }
 
-    // 2. Initialize Hardware & Audio Subsystems according to Role
+    // 3. Initialize Hardware & Audio Subsystems according to Role
     static Codec::Lc3CodecEngine lc3_codec;
     static Audio::ToneGenerator tone_gen;
     static Hardware::I2sAudioDriver i2s_dac;
 
     if (cfg->node_role == NODE_ROLE_SOURCE) {
         // --- Audio SOURCE (Node21) ---
-        ESP_LOGI(TAG, "Configuring Node as Audio SOURCE (VCO Tone Generator + Broadcaster)...");
+        ESP_LOGI(TAG, "Configuring Node as Audio SOURCE (VCO Tone Generator + Broadcaster + Web Dashboard)...");
         
         // 440 Hz VCO modulated 220-880 Hz by 0.5-2.0 Hz VFO @ 30% amplitude
         tone_gen.init(AUDIO_SAMPLE_RATE_HZ, VCO_NOMINAL_FREQ_HZ, VCO_MIN_FREQ_HZ, VCO_MAX_FREQ_HZ, VCO_AMPLITUDE_PERCENT);
@@ -51,6 +53,29 @@ extern "C" void app_main(void)
 
         static Diagnostics::DiagnosticMonitor diag_monitor(ble_broadcast, &tone_gen, nullptr);
         diag_monitor.start();
+
+        // 4. Initialize Wi-Fi & Native Web Dashboard for Node21 (SOURCE)
+        Network::WifiManager::getInstance().init();
+        Web::WebDashboard::getInstance().start();
+
+        Web::WebDashboard::getInstance().setLfoToggleCallback([](bool enabled) {
+            ESP_LOGI("APP", "Web Dashboard: LFO Sine Modulation %s", enabled ? "ENABLED" : "DISABLED");
+        });
+
+        Web::WebDashboard::getInstance().setVolumeChangeCallback([&ble_broadcast](uint8_t vol_pct) {
+            uint8_t vol_setting = (vol_pct * 255) / 100;
+            ESP_LOGI("APP", "Web Dashboard: Setting Manual SINK Volume to %d%% (%d/255)", vol_pct, vol_setting);
+            for (auto& sink : ble_broadcast.getTrackedSinksMutable()) {
+                if (sink.connected && sink.vcs_cp_handle != 0) {
+                    ble_broadcast.sendVcsVolumeToSink(sink, vol_setting);
+                }
+            }
+        });
+
+        Web::WebDashboard::getInstance().setGainChangeCallback([&tone_gen](float gain_pct) {
+            ESP_LOGI("APP", "Web Dashboard: Setting Tone Gain to %.1f%%", gain_pct);
+            tone_gen.set_gain_pct(gain_pct);
+        });
 
     } else {
         // --- Audio SINK (Node20) ---
