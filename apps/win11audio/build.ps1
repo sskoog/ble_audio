@@ -21,10 +21,11 @@ if (-not $pythonExe) {
 
 $pyVersion = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 $pyPrefix = & python -c "import sys; print(sys.prefix)"
+$pyBasePrefix = & python -c "import sys; print(sys.base_prefix)"
 $extSuffix = & python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))"
 $pyInclude = & python -c "import sysconfig; print(sysconfig.get_path('include'))"
 $pybindInclude = & python -c "import pybind11; print(pybind11.get_include())"
-$pyLibDir = Join-Path $pyPrefix "libs"
+$pyLibDir = Join-Path $pyBasePrefix "libs"
 $pyLibName = "python" + ($pyVersion -replace '\.', '')
 
 Write-Host "[1/3] Python Environment:" -ForegroundColor Green
