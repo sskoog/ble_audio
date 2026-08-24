@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": ".agents"
+		},
+		{
+			"path": "apps"
+		},
+		{
+			"path": "components"
+		},
+		{
+			"path": "docs"
+		},
+		{
+			"path": "images"
+		}
+	]
+}

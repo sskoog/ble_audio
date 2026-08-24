@@ -210,40 +210,92 @@ def list_audio_devices():
         print(f"[{idx:2d}] {d['name']} ({host_api}) - In: {in_ch}, Out: {out_ch}{default_mark}")
     print()
 
-def resolve_device(target_device=None, loopback=False):
-    """Resolves device by index or name substring, configuring WASAPI loopback if requested."""
+def resolve_input_device(target_device=None, loopback=False, use_cable=False):
+    """Resolves input device by index or substring name, configuring WASAPI loopback or Virtual Cable if requested."""
     devices = sd.query_devices()
+    hostapis = sd.query_hostapis()
+    wasapi_idx = next((i for i, h in enumerate(hostapis) if "wasapi" in h['name'].lower()), None)
     dev_id = None
     extra_settings = None
+
+    if use_cable or (target_device is not None and "cable" in str(target_device).lower()):
+        # Search for CABLE Output (input stream from virtual cable)
+        cable_matches = [i for i, d in enumerate(devices) if d['max_input_channels'] > 0 and "cable" in d['name'].lower() and "output" in d['name'].lower()]
+        if not cable_matches:
+            cable_matches = [i for i, d in enumerate(devices) if d['max_input_channels'] > 0 and "cable" in d['name'].lower()]
+        if cable_matches:
+            wasapi_match = [i for i in cable_matches if wasapi_idx is not None and devices[i]['hostapi'] == wasapi_idx]
+            dev_id = wasapi_match[0] if wasapi_match else cable_matches[0]
+            print(f"[Audio Input] Selected Virtual Cable: [{dev_id}] {devices[dev_id]['name']} ({hostapis[devices[dev_id]['hostapi']]['name']})")
+        else:
+            print("[Audio Input Warning] No VB-Audio Cable input device found! Falling back to default input.", file=sys.stderr)
+
+    if dev_id is None and target_device is not None:
+        try:
+            dev_id = int(target_device)
+        except ValueError:
+            matches = [i for i, d in enumerate(devices) if d['max_input_channels'] > 0 and target_device.lower() in d['name'].lower()]
+            if not matches:
+                matches = [i for i, d in enumerate(devices) if target_device.lower() in d['name'].lower()]
+            if matches:
+                wasapi_match = [i for i in matches if wasapi_idx is not None and devices[i]['hostapi'] == wasapi_idx]
+                dev_id = wasapi_match[0] if wasapi_match else matches[0]
+
+    if loopback:
+        if dev_id is None:
+            if wasapi_idx is not None:
+                dev_id = next((i for i, d in enumerate(devices) if d['hostapi'] == wasapi_idx and d['max_output_channels'] >= 2), sd.default.device[1])
+            else:
+                dev_id = sd.default.device[1]
+        extra_settings = sd.WasapiSettings(loopback=True)
+        print(f"[Audio Input] Capturing via WASAPI Loopback on Device [{dev_id}]: {devices[dev_id]['name']}")
+    else:
+        if dev_id is None:
+            dev_id = sd.default.device[0]
+        host_name = hostapis[devices[dev_id]['hostapi']]['name'] if dev_id >= 0 else "Unknown"
+        print(f"[Audio Input] Input Device [{dev_id}]: {devices[dev_id]['name']} ({host_name})")
+
+    return dev_id, extra_settings
+
+
+def resolve_output_device(target_device=None):
+    """Resolves output playback device by index or substring, avoiding routing back into Virtual Cable if possible."""
+    devices = sd.query_devices()
+    hostapis = sd.query_hostapis()
+    wasapi_idx = next((i for i, h in enumerate(hostapis) if "wasapi" in h['name'].lower()), None)
+    dev_id = None
 
     if target_device is not None:
         try:
             dev_id = int(target_device)
         except ValueError:
-            matches = [i for i, d in enumerate(devices) if target_device.lower() in d['name'].lower()]
+            matches = [i for i, d in enumerate(devices) if d['max_output_channels'] > 0 and target_device.lower() in d['name'].lower()]
             if matches:
-                dev_id = matches[0]
+                wasapi_match = [i for i in matches if wasapi_idx is not None and devices[i]['hostapi'] == wasapi_idx]
+                dev_id = wasapi_match[0] if wasapi_match else matches[0]
 
-    if loopback:
+    if dev_id is None:
+        def_out = sd.default.device[1]
+        if def_out >= 0 and "cable" in devices[def_out]['name'].lower():
+            # If default output is CABLE Input (e.g. user set it in Win11 sound settings), avoid feedback loop by auto-selecting physical output
+            phys_matches = [i for i, d in enumerate(devices) if d['max_output_channels'] >= 2 and "cable" not in d['name'].lower() and ("speaker" in d['name'].lower() or "headphone" in d['name'].lower() or "realtek" in d['name'].lower() or "bose" in d['name'].lower() or "omnisonic" in d['name'].lower())]
+            if phys_matches:
+                wasapi_match = [i for i in phys_matches if wasapi_idx is not None and devices[i]['hostapi'] == wasapi_idx]
+                dev_id = wasapi_match[0] if wasapi_match else phys_matches[0]
+                print(f"[Audio Output] Default is Virtual Cable; auto-routed playback to physical device [{dev_id}]: {devices[dev_id]['name']}")
         if dev_id is None:
-            wasapi_api_idx = next((i for i, h in enumerate(sd.query_hostapis()) if "wasapi" in h['name'].lower()), None)
-            if wasapi_api_idx is not None:
-                dev_id = next((i for i, d in enumerate(devices) if d['hostapi'] == wasapi_api_idx and d['max_output_channels'] >= 2), sd.default.device[1])
-            else:
-                dev_id = sd.default.device[1]
-        extra_settings = sd.WasapiSettings(loopback=True)
-        print(f"[Audio Stream] Capturing via WASAPI Loopback on Device [{dev_id}]: {devices[dev_id]['name']}")
-    else:
-        if dev_id is None:
-            dev_id = sd.default.device[0]
-        print(f"[Audio Stream] Capturing from Input Device [{dev_id}]: {devices[dev_id]['name']}")
+            dev_id = def_out
 
-    return dev_id, extra_settings
+    host_name = hostapis[devices[dev_id]['hostapi']]['name'] if dev_id >= 0 else "Unknown"
+    print(f"[Audio Output] Playback Device [{dev_id}]: {devices[dev_id]['name']} ({host_name})")
+    return dev_id
 
-def run_streaming_mode(target_device=None, input_mode="ms", algo="swirl", hilbert="fir",
+
+def run_streaming_mode(target_device=None, out_device=None, use_cable=False, playback=True,
+                       input_mode="ms", algo="swirl", hilbert="fir",
                        num_channels=2, mix_ms=None, hpf_cutoff=None, loopback=False,
                        phase_shift_deg=45.0, dfs_offset_hz=5.0, dfs_step_hz=0.4,
-                       rotary_scale=1.0, rotary_depth_deg=90.0):
+                       rotary_scale=1.0, rotary_depth_deg=90.0, volume=1.0):
     if hpf_cutoff is None:
         hpf_cutoff = getattr(dsp_engine, "HPF_CUTOFF_HZ", 150.0)
     if mix_ms is None:
@@ -271,17 +323,28 @@ def run_streaming_mode(target_device=None, input_mode="ms", algo="swirl", hilber
     print(f"[Audio Stream] Input Matrix: {input_mode.upper()} | Spatial Algo: {algo.upper()} | Output Channels: {num_channels}")
     print(f"[Audio Stream] HPF Cutoff: {hpf_cutoff:.1f} Hz | Mix MS: {mix_ms:.2f} | Hilbert: {h_name}")
 
-    input_device_id, extra_settings = resolve_device(target_device, loopback=loopback)
+    input_device_id, extra_settings = resolve_input_device(target_device, loopback=loopback, use_cable=use_cable)
+    output_device_id = resolve_output_device(out_device) if playback else None
 
-    def callback(indata, frames, time_info, status):
+    def callback(indata, outdata, frames, time_info, status):
         if status:
             print(f"\n[Status Warning] {status}", file=sys.stderr)
         in_l = np.ascontiguousarray(indata[:, 0], dtype=np.float32)
         in_r = np.ascontiguousarray(indata[:, 1] if indata.shape[1] > 1 else indata[:, 0], dtype=np.float32)
         results = pipeline.process_frames(in_l, in_r)
         
-        # Monitor RMS of output channels
         out_ch = results["out_channels"]
+        
+        # Write processed spatial audio to physical output channels
+        if outdata is not None:
+            out_ch_count = outdata.shape[1]
+            for ch in range(out_ch_count):
+                if ch < out_ch.shape[0]:
+                    outdata[:, ch] = out_ch[ch] * volume
+                else:
+                    outdata[:, ch] = 0.0
+
+        # Monitor RMS of output channels
         rms_strs = []
         for ch in range(min(num_channels, 4)):
             ch_rms = float(np.sqrt(np.mean(out_ch[ch]**2)))
@@ -290,24 +353,48 @@ def run_streaming_mode(target_device=None, input_mode="ms", algo="swirl", hilber
         
         print("\r[RMS Levels] " + " | ".join(rms_strs) + "   ", end="", flush=True)
 
-    stream_kwargs = {
-        "device": input_device_id,
-        "channels": 2,
-        "samplerate": FS,
-        "blocksize": BLOCK_SIZE,
-        "dtype": 'float32',
-        "callback": callback
-    }
-    if extra_settings is not None:
-        stream_kwargs["extra_settings"] = extra_settings
+    if playback and output_device_id is not None:
+        stream_kwargs = {
+            "device": (input_device_id, output_device_id),
+            "channels": (2, 2 if num_channels <= 2 else min(num_channels, 8)),
+            "samplerate": FS,
+            "blocksize": BLOCK_SIZE,
+            "dtype": 'float32',
+            "callback": callback
+        }
+        if extra_settings is not None:
+            stream_kwargs["extra_settings"] = extra_settings
 
-    print("[Audio Stream] Streaming started. Press Ctrl+C to stop.")
-    with sd.InputStream(**stream_kwargs):
-        try:
-            while True:
-                sd.sleep(100)
-        except KeyboardInterrupt:
-            print("\n[Audio Stream] Stream terminated by user.")
+        print(f"[Audio Stream] Full-Duplex Processing & Playback active. Press Ctrl+C to stop.")
+        with sd.Stream(**stream_kwargs):
+            try:
+                while True:
+                    sd.sleep(100)
+            except KeyboardInterrupt:
+                print("\n[Audio Stream] Stream terminated by user.")
+    else:
+        def monitor_callback(indata, frames, time_info, status):
+            callback(indata, None, frames, time_info, status)
+
+        stream_kwargs = {
+            "device": input_device_id,
+            "channels": 2,
+            "samplerate": FS,
+            "blocksize": BLOCK_SIZE,
+            "dtype": 'float32',
+            "callback": monitor_callback
+        }
+        if extra_settings is not None:
+            stream_kwargs["extra_settings"] = extra_settings
+
+        print(f"[Audio Stream] Monitor-Only streaming active (no output playback). Press Ctrl+C to stop.")
+        with sd.InputStream(**stream_kwargs):
+            try:
+                while True:
+                    sd.sleep(100)
+            except KeyboardInterrupt:
+                print("\n[Audio Stream] Stream terminated by user.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Win11 Audio Spatial DSP Pipeline runner")
@@ -325,7 +412,11 @@ if __name__ == "__main__":
     parser.add_argument("--hpf-cutoff", type=float, default=getattr(dsp_engine, "HPF_CUTOFF_HZ", 150.0),
                         help="High-pass filter crossover frequency in Hz")
     parser.add_argument("--save-plot", type=str, default=None, help="Save analytical plots to an image file (e.g. analysis.png)")
-    parser.add_argument("--device", type=str, default=None, help="Device ID number or substring name")
+    parser.add_argument("--device", type=str, default=None, help="Input capture device ID number or substring name")
+    parser.add_argument("--cable", action="store_true", help="Auto-select VB-Audio Virtual Cable as the input capture device")
+    parser.add_argument("--out-device", type=str, default=None, help="Output playback device ID number or substring name (e.g. 'Speakers', 'Bose', 'Headphones')")
+    parser.add_argument("--no-playback", action="store_true", help="Disable audio output playback (monitor RMS levels only)")
+    parser.add_argument("--volume", type=float, default=1.0, help="Output playback volume multiplier (default: 1.0)")
     parser.add_argument("--loopback", action="store_true", help="Capture PC audio output via WASAPI Loopback")
     parser.add_argument("--phase-shift-deg", type=float, default=45.0, help="Static phase shift angle in degrees")
     parser.add_argument("--dfs-offset", type=float, default=5.0, help="Frequency shift offset in Hz for basic+ and DFS")
@@ -364,6 +455,9 @@ if __name__ == "__main__":
     else:
         run_streaming_mode(
             target_device=args.device,
+            out_device=args.out_device,
+            use_cable=args.cable,
+            playback=(not args.no_playback),
             input_mode=args.input_mode,
             algo=args.algo,
             hilbert=args.hilbert,
@@ -375,5 +469,6 @@ if __name__ == "__main__":
             dfs_offset_hz=args.dfs_offset,
             dfs_step_hz=args.dfs_step,
             rotary_scale=args.rotary_scale,
-            rotary_depth_deg=args.rotary_depth_deg
+            rotary_depth_deg=args.rotary_depth_deg,
+            volume=args.volume
         )

@@ -183,19 +183,53 @@ python dsp_app.py --mode stream --loopback --input-mode ms --algo heterodyne --c
 | `--rotary-scale` | Speed multiplier for prime LFO rotary rates | `1.0` |
 | `--rotary-depth-deg`| Rotary phase modulation depth in degrees | `90.0` |
 | `--loopback` | Enables Windows WASAPI loopback capture (captures speaker audio) | `False` |
-| `--device` | Device index number or substring name match | Default device |
+| `--device` | Input capture device ID number or substring name match | Default input device |
+| `--cable` | Auto-detects and binds to VB-Audio Virtual Cable input | `False` |
+| `--out-device` | Output playback device ID number or substring name (e.g. `'Speakers'`, `'Bose'`) | Default physical output |
+| `--no-playback` | Disables audio output playback (monitor RMS levels only) | `False` |
+| `--volume` | Output playback volume multiplier | `1.0` |
 | `--save-plot` | Path to save analysis plot image (e.g. `analysis_spatial.png`) | `None` |
 | `--list-devices` | Lists all audio input and output devices | `False` |
 
+# PC setups
+
+## Using a virtual audio cable in Win11
+1. **Install Virtual Cable**: Download and install [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/index.htm).
+2. **Route Specific App Audio**:
+   - Open Windows 11 **Settings > System > Sound > Volume mixer**.
+   - Under **Apps**, find your web browser or media player (e.g. Chrome, Edge, Spotify).
+   - Set its **Output device** to **`CABLE Input (VB-Audio Virtual Cable)`**.
+3. **Run `dsp_app` with Virtual Cable Input & Real-Time Playback**:
+   ```powershell
+   # Automatically capture from Virtual Cable and play spatial audio out to speakers/headphones:
+   python dsp_app.py --mode stream --cable --algo swirl
+
+   # Route playback to a specific Bluetooth headset:
+   python dsp_app.py --mode stream --cable --out-device "Bose" --algo rotary
+   ```
 
 ## Win11 PC SS-S9 specs
-* Microsoft Surface 9
+* Device name: SS-S9
+* Microsoft Surface Pro 9 for Business Model 2038 i7
+* Product ID: 00330-66940-27850-AAOEM
+* BIOS Version: 24.103.143 (2026-01-07)
+* SAM: 6.502.139
+* UEFI: 24.103.143
+* OS: Windows 11 Pro 25H2 (26200.9168)
 * CPU: 12th Gen Intel (Alder Lake-U) Core i7-1265U (2.70 GHz)
-* Installed RAM 16,0 GB (15,8 GB usable)
-* Graphics card Intel(R) Iris(R) Xe Graphics (128 MB)
-* Device ID 02FD5CED-A225-4A0B-AEC0-C524B09054AA
-* Product ID 00330-66940-27850-AAOEM
-* Intel Bluetooth chip: Intel Wi-Fi 6E AX211 / Killer AX1675i CNVi module
-  - Driver version 24.40.11.1
-* OS: Windows 11 Pro 25H2
-* Storage: 442 GB of 477 GB used
+* RAM: 16 GB
+* SSD: 0.5 TB
+* Graphics card: Intel Iris Xe Graphics (128 MB)
+* Wi-Fi driver: 23.160.0.4
+* Intel Bluetooth chip: Intel Wi-Fi 6E AX211, driver version: 24.40.11.1
+
+Windows 11 drivers does not natively support BLE Audio Broadcasting with the setup listed above.
+Microsoft has introduced experimental Auracast broadcasting in Windows 11 Insider preview builds for specific Copilot+ PCs (Qualcomm Snapdragon X Elite / select Intel Core Ultra).
+
+Best alternative to broadcast PC audio to multiple Bluetooth speakers is to use a dedicated BLE-audio 5.3/5.4 USB dongle.
+
+
+
+
+
+
