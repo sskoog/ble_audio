@@ -641,3 +641,59 @@ Connecting a Qualcomm Auracast module to a host microcontroller (such as the **E
 
 
 
+
+---
+
+## 3. Bluetooth 5.0+ Physical Layer (PHY) Modes in Auracast
+
+In Bluetooth 5.0 and later, the Physical Layer (PHY) determines the digital symbol rate, modulation scheme, and forward error correction (FEC) applied to radio signals over the 2.4 GHz ISM band. Selecting the optimal PHY is critical for balancing multi-channel audio bandwidth, range, and packet collision immunity.
+
+```
++----------------------------------------------------------------------------------------------------+
+|                                    BLUETOOTH 5.x PHYSICAL LAYERS                                   |
+|                                                                                                    |
+|  1. LE 1M PHY (1.0 Mbps)                                                                           |
+|     1 Data Bit ───► [ 1 Radio Symbol ] ───► Standard Range (~10-30m) (Stereo Audio Default)       |
+|                                                                                                    |
+|  2. LE 2M PHY (2.0 Mbps)                                                                           |
+|     1 Data Bit ───► [ 0.5 µs Symbol ]  ───► Halved Airtime, Multi-Channel Capacity (5-6 BIS)        |
+|                                                                                                    |
+|  3. LE Coded PHY (125 / 500 kbps)                                                                  |
+|     1 Data Bit ───► [ FEC + Spreader ] ───► 2x / 8x Symbols ───► Long Range Beacons & Control     |
++----------------------------------------------------------------------------------------------------+
+```
+
+### A. LE 1M PHY (`1.0 Mbps` - Uncoded Standard)
+* **Modulation**: 1.0 Mega-symbols/second (1 Msym/s) GFSK.
+* **Bit-to-Symbol Mapping**: 1 data bit per radio symbol (**1:1 Uncoded**). No Forward Error Correction (FEC) overhead.
+* **Sensitivity & Range**: ~ -97 dBm sensitivity on ESP32-C6 / Nordic SoCs. Typical indoor coverage of **10–30 meters** (line-of-sight ~50–100m).
+* **Airtime**: Transmitting a 100-byte LC3 frame takes **~1000 µs (1.0 ms)**.
+* **Role in Auracast**: Standard baseline for **1–2 channel stereo broadcasts** and legacy compatibility with entry-level BLE receivers.
+
+### B. LE 2M PHY (`2.0 Mbps` - High-Speed Multi-Channel Engine)
+* **Modulation**: 2.0 Mega-symbols/second (2 Msym/s) GFSK.
+* **Halved Packet Airtime**: Transmitting a 100-byte LC3 frame takes only **~500 µs (0.5 ms)**.
+* **Multi-Channel Capacity**: In an Isochronous Group (BIG) with 5–6 discrete BIS streams (e.g. 5.1 surround sound), all channels must fit within a single 10 ms audio interval. LE 2M consumes only **~2.5 ms for 5 channels**, compared to ~5.0 ms on LE 1M.
+* **Dropout-Free Retransmissions (RTN)**: Because Auracast is connectionless (no ACK/NACK from sinks), the broadcaster sends redundant packet bursts (**RTN = 2 to 4**) across different frequency channels. LE 2M provides ample remaining airtime in each 10 ms window to retransmit every audio channel 2–4 times, dramatically reducing Wi-Fi interference dropouts.
+* **Sensitivity & Range**: ~ -94 dBm sensitivity (~3 dB lower link budget than 1M), yielding **15–20 meters indoor coverage**, perfectly suited for room/stage listening.
+
+### C. LE Coded PHY (`125 kbps / 500 kbps` - Long-Range Discovery & Control)
+* **Modulation**: 1.0 Msym/s GFSK with **Forward Error Correction (FEC)** convolutional coding and pattern spreading:
+  * **`S=2` (500 kbps)**: 1 data bit encoded into 2 symbols (2x redundancy) -> **~2x range gain**.
+  * **`S=8` (125 kbps)**: 1 data bit encoded into 8 symbols (8x redundancy) -> **~4x to 8x range gain (up to 500m–1000m line-of-sight)**.
+* **Hardware Viterbi Decoding**: Receiver sensitivity improves to **`-105 dBm`**, allowing the radio to reconstruct weak signals buried below the noise floor.
+* **Role in High-Fidelity Audio Systems**: Due to its 125/500 kbps bandwidth ceiling, **LE Coded is not used for multi-channel audio data payloads**, but serves three vital supporting functions:
+  1. **Long-Range Discovery Beacons**: Public Broadcast Announcements (PBA) and Basic Audio Announcements (BASE) broadcast on Coded PHY can be discovered by receivers hundreds of meters away before entering audio range.
+  2. **Unbreakable GATT Control Plane**: Volume Control (VCS) and Scan Delegation (BASS) links running over Coded PHY maintain connectivity even if a speaker is positioned at the extreme venue perimeter.
+  3. **Emergency Voice Fallback**: High-priority low-bitrate mono voice (16 kHz LC3 @ 24 kbps) can fit inside Coded PHY for emergency paging over extreme distances.
+
+---
+
+### Optimal PHY Allocation Matrix for High-Fidelity Multi-Channel Auracast
+
+| Broadcast Stream / Link Component | Target PHY | Rationale & Architectural Benefit |
+| :--- | :--- | :--- |
+| **Broadcast Isochronous Streams (BIS 1–6)** | **`LE 2M PHY`** | High throughput, lowest latency, supports 5.1 surround sound with RTN=2-4 retransmissions. |
+| **Periodic Advertising (BigInfo / BASE)** | **`LE 1M PHY`** | Universal synchronization compatibility across all Bluetooth SIG compliant receivers. |
+| **Extended Advertising Discovery Beacons** | **`LE 1M` / `LE Coded`** | Dual-PHY beaconing for both standard room discovery (1M) and long-range announcement (Coded). |
+| **GATT Control Plane (VCS, BASS, PACS)** | **`LE 1M` / `LE Coded`** | Ultra-reliable, low-power parameter exchange and telemetry reporting. |

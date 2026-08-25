@@ -158,3 +158,53 @@ Commercial Bluetooth LE Audio ecosystems operate under strict roles:
    - Transmit continuous BIS audio streams while listening for BASS client requests.
 3. **Firmware Strategy for forestChirp / ble_audio**:
    - Implementing **BASS (`0x184F`)** directly on the ESP32-C6 SINK firmware ensures that the node can be controlled by our custom ESP32-C6 SOURCE today, and seamlessly controlled by **Android 17 / Pixel devices** as a standard Auracast audio receiver tomorrow.
+
+---
+
+## 7. GAP Discovery Architecture & PHY Layer Selection in Dual-Plane Control
+
+Orchestrating a multi-node BLE Audio network requires decoupling high-throughput isochronous audio from the bidirectional control and telemetry plane.
+
+```
++----------------------------------------------------------------------------------------------------+
+|                                DUAL-PLANE GAP & PHY ARCHITECTURE                                   |
+|                                                                                                    |
+|    [ SOURCE / CENTRAL ]                                                   [ SINK / PERIPHERAL ]     |
+|             |                                                                     |                |
+|             | === 1. ISO AUDIO BROADCAST (LE 2M PHY) ===========================> | (I2S DMA DAC)  |
+|             |    (5x Mono BIS Streams, RTN=3 Retransmission Bursts, 10ms Frame)   |                |
+|             |                                                                     |                |
+|             | <--- 2. GATT CONTROL & TELEMETRY (LE 1M / LE Coded PHY) <---------> | (PACS/BASS/VCS)|
+|             |    (Volume State, BASS Delegation, RSSI/CPU/Temp Telemetry)         |                |
+|             |                                                                     |                |
+|             | <--- 3. EXTENDED DISCOVERY BEACONS (BLE_GAP_EVENT_EXT_DISC) <------- |                |
+|             |    (254-Byte AE PDU across 37 Data Channels, Active Scan Mode)      |                |
++----------------------------------------------------------------------------------------------------+
+```
+
+### A. `BLE_GAP_EVENT_DISC` vs `BLE_GAP_EVENT_EXT_DISC`
+
+The Bluetooth Low Energy stack (NimBLE / ESP-IDF) surfaces two distinct advertising discovery events depending on the advertising PDU type:
+
+| Characteristic | Legacy Discovery (`BLE_GAP_EVENT_DISC`) | Extended Discovery (`BLE_GAP_EVENT_EXT_DISC`) |
+| :--- | :--- | :--- |
+| **Originating Specification** | Bluetooth 4.0 / 4.2 Legacy Advertising | Bluetooth 5.0+ Advertising Extensions (AE) |
+| **Channels Used** | Strictly 3 Primary Channels (37, 38, 39) | Pointer on 37-39 -> Data on 37 Secondary Channels (0-36) |
+| **Maximum Payload** | **31 bytes** per packet | **254 bytes** (chained up to 1650 bytes) |
+| **Multi-PHY Support** | 1M PHY only | **1M PHY, 2M PHY, and Coded PHY** |
+| **Auracast Compatibility** | Legacy beacons only | **Mandatory** (carries PBA, BAA, BASE, BigInfo) |
+| **Stack Event Trigger** | Fired during standard `ble_gap_disc()` | Fired during extended `ble_gap_ext_disc()` |
+
+> [!TIP]
+> **Active vs. Passive Extended Scanning**:
+> * **Passive Scanning (`passive = 1`)**: Listens silently to incoming advertisement packets. Conserves energy but cannot request auxiliary Scan Response PDUs.
+> * **Active Scanning (`passive = 0`)**: Automatically sends an `AUX_SCAN_REQ` upon detecting an extended advertisement to solicit an `AUX_SCAN_RSP` containing complete broadcast stream names (`ForestChirp Auracast`) and extended vendor metadata. Active scanning is enabled by default on our SINK scanner.
+
+### B. Control Plane PHY Strategy (LE 1M vs. LE Coded)
+
+1. **LE 1M PHY for Standard GATT Control**:
+   * Default for low-latency (<30 ms) volume stepping, mute toggles, and 4 Hz real-time telemetry updates.
+   * Consumes minimal energy and maintains universal compatibility with smartphone Broadcast Assistants.
+2. **LE Coded PHY for Ultra-Robust Venue Orchestration**:
+   * For large outdoor or multi-room installations, the GATT Control Plane can negotiate **LE Coded PHY (`S=2` or `S=8`)** upon connection establishment.
+   * Provides **`-105 dBm` receiver sensitivity (+8 dB link margin)**, guaranteeing that central volume control, muting, and health telemetry will never disconnect, even if a speaker node is operating at the outer perimeter where audio drops.
