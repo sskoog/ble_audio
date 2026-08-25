@@ -23,8 +23,8 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_nu
     // Configure Hardware Gain pin if assigned (e.g. GP0 on Waveshare Zero)
     if (gain_pin >= 0) {
         m_gain_pin = static_cast<gpio_num_t>(gain_pin);
-        setGain(GAIN_9DB); // Default to nominal 9 dB gain
-        ESP_LOGI(TAG, "Configured MAX98357A GAIN pin on GPIO %d (Set to 9 dB)", gain_pin);
+        setGain(GAIN_12DB); // Default to 12 dB gain for speaker
+        ESP_LOGI(TAG, "Configured MAX98357A GAIN pin on GPIO %d (Set to 12 dB)", gain_pin);
     } else {
         m_gain_pin = GPIO_NUM_NC;
     }

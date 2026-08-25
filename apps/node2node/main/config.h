@@ -109,7 +109,7 @@ extern "C" {
  *             GATT LE AUDIO & VCS OSCILLATOR CONFIGURATION
  * ===================================================================== */
 #define MAX_GATT_SINK_NODES             9      /* Track up to 9 SINKs */
-#define VCS_DEFAULT_VOLUME_PERCENT      30     /* Default 30% volume */
+#define VCS_DEFAULT_VOLUME_PERCENT      50     /* Default 30% volume */
 #define VCS_VOLUME_MIN_PCT              10.0f  /* Min sine volume: 10% */
 #define VCS_VOLUME_MAX_PCT              50.0f  /* Max sine volume: 50% */
 #define VCS_SINE_MOD_FREQ_HZ            0.10f  /* 0.1 Hz LFO modulation */

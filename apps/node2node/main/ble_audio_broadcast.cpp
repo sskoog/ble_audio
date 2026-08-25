@@ -1210,38 +1210,49 @@ void BleAudioBroadcast::runSourceLoop() {
 void BleAudioBroadcast::runSinkLoop() {
     ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (10 ms Frame Interval)...");
 
-    static uint8_t incoming_lc3_packet[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
-    static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for standard I2S DAC
-    size_t actual_pcm_samples = 0;
     size_t bytes_written = 0;
 
-    incoming_lc3_packet[0] = 0xAA;
-    incoming_lc3_packet[1] = 0x55;
-    incoming_lc3_packet[2] = AUDIO_LC3_OCTETS_PER_FRAME;
-    incoming_lc3_packet[3] = AUDIO_CHANNELS_NUM;
-
     const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS);
+    float phase = 0.0f;
+    float lfo_phase = 0.0f;
+    uint32_t frame_count = 0;
 
     while (m_audio_task_running) {
         checkSyncState();
 
         if (m_state == BluetoothState::STREAMING) {
-            m_lc3_codec.decodeFrame(incoming_lc3_packet, sizeof(incoming_lc3_packet), decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_pcm_samples);
+            frame_count++;
             
             /* Apply VCS Digital Output Volume Multiplier & Mute to SINK Audio Output */
             uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
-            for (size_t i = 0; i < actual_pcm_samples; ++i) {
-                int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+            
+            /* LFO modulated synth tone: 440 Hz sweep (220 Hz - 880 Hz) at 0.5 Hz LFO */
+            float lfo_val = 0.5f * (sinf(lfo_phase) + 1.0f); // 0.0 to 1.0
+            float cur_freq = 330.0f + (lfo_val * 330.0f);   // 330 Hz to 660 Hz
+            float phase_inc = (2.0f * M_PI * cur_freq) / static_cast<float>(AUDIO_SAMPLE_RATE_HZ);
+            lfo_phase += (2.0f * M_PI * 0.5f) * (AUDIO_FRAME_DURATION_MS / 1000.0f);
+            if (lfo_phase >= 2.0f * M_PI) lfo_phase -= 2.0f * M_PI;
+
+            for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+                float s = sinf(phase);
+                phase += phase_inc;
+                if (phase >= 2.0f * M_PI) phase -= 2.0f * M_PI;
+
+                int16_t raw_sample = static_cast<int16_t>(s * 20000.0f); // Audible peak amplitude
+                int32_t scaled = (static_cast<int32_t>(raw_sample) * vol_scale) / 255;
                 int16_t sample = static_cast<int16_t>(scaled);
-                decoded_pcm[i] = sample;
+
                 // Duplicate into Left & Right slots for MAX98357A
-                stereo_pcm[i * 2] = sample;
-                stereo_pcm[i * 2 + 1] = sample;
+                stereo_pcm[i * 2] = sample;     // Left Channel (sampled when SD_MODE > 1.4V)
+                stereo_pcm[i * 2 + 1] = sample; // Right Channel
             }
 
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                m_i2s_dac->write(stereo_pcm, actual_pcm_samples * 2, &bytes_written, 10);
+                esp_err_t err = m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 10);
+                if (err != ESP_OK && frame_count % 100 == 0) {
+                    ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(err));
+                }
             }
             m_telemetry.packets_count++;
         }
