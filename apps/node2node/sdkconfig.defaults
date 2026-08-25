@@ -53,3 +53,6 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # ESP System Temperature Sensor
 CONFIG_TEMP_SENSOR_ENABLE_DEFAULT_CONVERSION=y
+
+# Main Task Stack Size (prevent stack overflow during BLE/GATT initialization)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

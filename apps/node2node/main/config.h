@@ -62,6 +62,7 @@ extern "C" {
 #define AUDIO_LC3_OCTETS_PER_FRAME      80     /* 80 octets per 10ms frame = 64 kbps mono */
 #define AUDIO_BITRATE_KBPS              ((AUDIO_LC3_OCTETS_PER_FRAME * 8 * 1000) / (AUDIO_FRAME_DURATION_MS * 1000)) /* 64 kbps */
 #define AUDIO_SYNC_TIMEOUT_MS           500    /* 0.5 s sync loss timeout */
+#define AUDIO_TASK_STACK_SIZE           8192   /* 8 KB stack for audio decoding & I2S DMA write */
 
 /* =====================================================================
  *             VCO / VFO AUDIO TEST TONE GENERATOR CONFIG

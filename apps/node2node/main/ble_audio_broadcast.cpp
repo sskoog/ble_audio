@@ -634,9 +634,6 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
         case BLE_GAP_EVENT_EXT_DISC: {
             const auto &disc = event->ext_disc;
-            ESP_LOGI(TAG, "BLE_GAP_EVENT_EXT_DISC from %02X:%02X:%02X:%02X:%02X:%02X, RSSI: %d, Len: %d, props: 0x%04X, prim_phy: %d, sec_phy: %d, sid: %d",
-                     disc.addr.val[5], disc.addr.val[4], disc.addr.val[3], disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
-                     disc.rssi, disc.length_data, disc.props, disc.prim_phy, disc.sec_phy, disc.sid);
             s_broadcast_instance->parseAdvReport(disc.data, disc.length_data, disc.rssi, &disc.addr);
             for (auto& s : s_broadcast_instance->getTrackedSinksMutable()) {
                 if (memcmp(s.addr.val, disc.addr.val, 6) == 0) {
@@ -648,9 +645,6 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         }
         case BLE_GAP_EVENT_DISC: {
             const auto &disc = event->disc;
-            ESP_LOGI(TAG, "BLE_GAP_EVENT_DISC from %02X:%02X:%02X:%02X:%02X:%02X, RSSI: %d, Len: %d",
-                     disc.addr.val[5], disc.addr.val[4], disc.addr.val[3], disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
-                     disc.rssi, disc.length_data);
             s_broadcast_instance->parseAdvReport(disc.data, disc.length_data, disc.rssi, &disc.addr);
             break;
         }
@@ -926,11 +920,7 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
     bool is_le_audio_broadcast = false;
     char found_name[48] = {0};
 
-    // Print raw bytes for extended packets with length > 15
-    if (length_data > 15) {
-        ESP_LOGI(TAG, "Parsing Adv (Len %d, RSSI %d dBm):", length_data, rssi);
-        esp_log_buffer_hex_internal(TAG, data, length_data, ESP_LOG_INFO);
-    }
+
 
     size_t offset = 0;
     while (offset < length_data) {
@@ -1173,7 +1163,7 @@ void BleAudioBroadcast::hostTaskRoutine(void* param) {
 void BleAudioBroadcast::startAudioTask() {
     if (!m_audio_task_running) {
         m_audio_task_running = true;
-        xTaskCreate(audioTaskRoutine, "ble_audio_task", 4096, this, 3, nullptr);
+        xTaskCreate(audioTaskRoutine, "ble_audio_task", AUDIO_TASK_STACK_SIZE, this, 3, nullptr);
     }
 
     if (m_node_role == NODE_ROLE_SOURCE && !m_vcs_task_running) {
@@ -1199,8 +1189,8 @@ void BleAudioBroadcast::vcsOscillatorTaskRoutine(void* param) {
 void BleAudioBroadcast::runSourceLoop() {
     ESP_LOGI(TAG, "Node21: Audio Source Processing Loop Started (10 ms Frame Interval)...");
 
-    int16_t pcm_buffer[AUDIO_SAMPLES_PER_FRAME] = {0};
-    uint8_t lc3_buffer[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
+    static int16_t pcm_buffer[AUDIO_SAMPLES_PER_FRAME] = {0};
+    static uint8_t lc3_buffer[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
     size_t actual_encoded_bytes = 0;
 
     const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS);
@@ -1220,8 +1210,9 @@ void BleAudioBroadcast::runSourceLoop() {
 void BleAudioBroadcast::runSinkLoop() {
     ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (10 ms Frame Interval)...");
 
-    uint8_t incoming_lc3_packet[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
-    int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
+    static uint8_t incoming_lc3_packet[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
+    static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
+    static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for standard I2S DAC
     size_t actual_pcm_samples = 0;
     size_t bytes_written = 0;
 
@@ -1242,11 +1233,15 @@ void BleAudioBroadcast::runSinkLoop() {
             uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
             for (size_t i = 0; i < actual_pcm_samples; ++i) {
                 int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
-                decoded_pcm[i] = static_cast<int16_t>(scaled);
+                int16_t sample = static_cast<int16_t>(scaled);
+                decoded_pcm[i] = sample;
+                // Duplicate into Left & Right slots for MAX98357A
+                stereo_pcm[i * 2] = sample;
+                stereo_pcm[i * 2 + 1] = sample;
             }
 
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                m_i2s_dac->write(decoded_pcm, actual_pcm_samples, &bytes_written, 10);
+                m_i2s_dac->write(stereo_pcm, actual_pcm_samples * 2, &bytes_written, 10);
             }
             m_telemetry.packets_count++;
         }
