@@ -2,11 +2,11 @@
 
 ![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
 ![Target: ESP32-C6](https://img.shields.io/badge/Platform-ESP32--C6-orange.svg)
-![ESP-IDF: v5.2 / v6.0](https://img.shields.io/badge/ESP--IDF-v5.2%20%7C%20v6.0-red.svg)
+![ESP-IDF: v6.0.2 / v6.0](https://img.shields.io/badge/ESP--IDF-v6.0.2%20%7C%20v6.0-red.svg)
 ![Bluetooth: BLE 5.3 LE Audio](https://img.shields.io/badge/Bluetooth-5.3%20LE%20Audio-blue.svg)
 ![Codec: Espressif Fixed-Point LC3](https://img.shields.io/badge/Codec-Espressif%20LC3%20(Fixp)-green.svg)
 
-Production-grade, low-latency multi-node Bluetooth Low Energy (BLE 5.3) Audio Broadcasting mesh and SINK receiver network built on **ESP-IDF v5.2 / v6.0** for the **Espressif ESP32-C6** (Single-Core 32-bit RISC-V @ 160 MHz).
+Production-grade, low-latency multi-node Bluetooth Low Energy (BLE 5.3) Audio Broadcasting mesh and SINK receiver network built on **ESP-IDF v6.0.2 / v6.0** for the **Espressif ESP32-C6** (Single-Core 32-bit RISC-V @ 160 MHz).
 
 ---
 
