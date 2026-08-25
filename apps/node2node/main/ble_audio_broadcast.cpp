@@ -634,6 +634,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
         case BLE_GAP_EVENT_EXT_DISC: {
             const auto &disc = event->ext_disc;
+            ESP_LOGI(TAG, "BLE_GAP_EVENT_EXT_DISC from %02X:%02X:%02X:%02X:%02X:%02X, RSSI: %d, Len: %d, props: 0x%04X, prim_phy: %d, sec_phy: %d, sid: %d",
+                     disc.addr.val[5], disc.addr.val[4], disc.addr.val[3], disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
+                     disc.rssi, disc.length_data, disc.props, disc.prim_phy, disc.sec_phy, disc.sid);
             s_broadcast_instance->parseAdvReport(disc.data, disc.length_data, disc.rssi, &disc.addr);
             for (auto& s : s_broadcast_instance->getTrackedSinksMutable()) {
                 if (memcmp(s.addr.val, disc.addr.val, 6) == 0) {
@@ -645,6 +648,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         }
         case BLE_GAP_EVENT_DISC: {
             const auto &disc = event->disc;
+            ESP_LOGI(TAG, "BLE_GAP_EVENT_DISC from %02X:%02X:%02X:%02X:%02X:%02X, RSSI: %d, Len: %d",
+                     disc.addr.val[5], disc.addr.val[4], disc.addr.val[3], disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
+                     disc.rssi, disc.length_data);
             s_broadcast_instance->parseAdvReport(disc.data, disc.length_data, disc.rssi, &disc.addr);
             break;
         }
@@ -919,6 +925,12 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
 
     bool is_le_audio_broadcast = false;
     char found_name[48] = {0};
+
+    // Print raw bytes for extended packets with length > 15
+    if (length_data > 15) {
+        ESP_LOGI(TAG, "Parsing Adv (Len %d, RSSI %d dBm):", length_data, rssi);
+        esp_log_buffer_hex_internal(TAG, data, length_data, ESP_LOG_INFO);
+    }
 
     size_t offset = 0;
     while (offset < length_data) {

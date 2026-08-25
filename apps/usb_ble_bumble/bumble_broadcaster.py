@@ -241,23 +241,27 @@ async def run_broadcaster(args):
 
         # 2. Configure HCI Controller
         print(f"[1/4] Configuring Extended Advertising (Set 0)...", flush=True)
-        await device.send_command(HCI_LE_Set_Extended_Advertising_Parameters_Command(
-            advertising_handle=0,
-            advertising_event_properties=0x0000, # Non-connectable, Non-scannable, Undirected
-            primary_advertising_interval_min=160, # 100 ms
-            primary_advertising_interval_max=160,
-            primary_advertising_channel_map=0x07, # Channels 37, 38, 39
-            own_address_type=0x01, # Random Address
-            peer_address_type=0x00,
-            peer_address=Address("00:00:00:00:00:00"),
-            advertising_filter_policy=0x00,
-            advertising_tx_power=10, # +10 dBm
-            primary_advertising_phy=HCI_LE_1M_PHY,
-            secondary_advertising_max_skip=0,
-            secondary_advertising_phy=HCI_LE_2M_PHY,
-            advertising_sid=0,
-            scan_request_notification_enable=0
-        ))
+        try:
+            resp = await device.send_command(HCI_LE_Set_Extended_Advertising_Parameters_Command(
+                advertising_handle=0,
+                advertising_event_properties=0x0000, # Non-connectable, Non-scannable, Undirected
+                primary_advertising_interval_min=160, # 100 ms
+                primary_advertising_interval_max=160,
+                primary_advertising_channel_map=0x07, # Channels 37, 38, 39
+                own_address_type=0x00, # Public Device Address (Factory IEEE MAC)
+                peer_address_type=0x00,
+                peer_address=Address("00:00:00:00:00:00"),
+                advertising_filter_policy=0x00,
+                advertising_tx_power=10, # +10 dBm
+                primary_advertising_phy=HCI_LE_1M_PHY,
+                secondary_advertising_max_skip=0,
+                secondary_advertising_phy=HCI_LE_2M_PHY,
+                advertising_sid=0,
+                scan_request_notification_enable=0
+            ))
+            print(f"  -> Extended Advertising Parameters Configured (Resp: {resp})", flush=True)
+        except Exception as e:
+            print(f"  [ERROR] Failed to set Extended Advertising Parameters: {e}", flush=True)
 
         await device.send_command(HCI_LE_Set_Extended_Advertising_Data_Command(
             advertising_handle=0,
