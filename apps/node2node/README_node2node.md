@@ -1,226 +1,147 @@
-# ESP32-C6 Dual-Node BLE 5.3 LE Audio (Auracast) & GATT Control Architecture
+# Node2Node: BLE 5.3 Auracast Audio Broadcast & Distributed Volume Control
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](../../LICENSE)
-[![Target: ESP32-C6](https://img.shields.io/badge/ESP--IDF-v5.2-red.svg)](https://docs.espressif.com/projects/esp-idf/en/v5.2/esp32c6/index.html)
-[![Bluetooth: 5.3](https://img.shields.io/badge/Bluetooth-5.3_LE_Audio-brightgreen.svg)](https://www.bluetooth.com/specifications/specs/)
-[![Codec: LC3](https://img.shields.io/badge/Codec-LC3_Fixed--Point-orange.svg)](https://www.bluetooth.com/specifications/specs/low-complexity-communication-codec-1-0/)
+![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
+![Target: ESP32-C6](https://img.shields.io/badge/Platform-ESP32--C6-orange.svg)
+![ESP-IDF: v5.2 / v6.0](https://img.shields.io/badge/ESP--IDF-v5.2%20%7C%20v6.0-red.svg)
+![Bluetooth: BLE 5.3 LE Audio](https://img.shields.io/badge/Bluetooth-5.3%20LE%20Audio-blue.svg)
+![Codec: Espressif Fixed-Point LC3](https://img.shields.io/badge/Codec-Espressif%20LC3%20(Fixp)-green.svg)
 
-A complete, production-grade **Bluetooth 5.3 LE Audio (Auracast) Broadcast and Bidirectional GATT Control System** implemented on the single-core RISC-V **ESP32-C6** microcontroller using the Apache NimBLE stack.
-
-This architecture decouples high-efficiency **connectionless Broadcast Isochronous Streams (BIS)** for lossless real-time audio distribution from an official Bluetooth SIG standard **GATT Control Plane** (PACS, BASS, VCS) for bidirectional orchestration, telemetry, and per-node volume control.
+Production-grade, low-latency multi-node Bluetooth Low Energy (BLE 5.3) Audio Broadcasting mesh and SINK receiver network built on **ESP-IDF v5.2 / v6.0** for the **Espressif ESP32-C6** (Single-Core 32-bit RISC-V @ 160 MHz).
 
 ---
 
 ## 1. System Architecture Overview
 
+The `node2node` ecosystem implements an **Auracast Broadcast Audio** topology combined with standard Bluetooth LE Audio GATT profiles for distributed telemetry and volume control:
+
 ```
-+---------------------------------------------------------------------------------------------------+
-|                                     BLE 5.3 AUDIO & GATT CONTROL                                  |
-|                                                                                                   |
-|    +-----------------------------+                           +-----------------------------+      |
-|    |      Node21 (SOURCE)        |                           |       Node20 (SINK)         |      |
-|    |  ESP32-C6-WROOM-1 DevKit    |                           |    Waveshare ESP32-C6-LCD   |      |
-|    +--------------+--------------+                           +--------------+--------------+      |
-|                   |                                                         |                     |
-|                   | >>>>>>>> 1. BROADCAST ISOCHRONOUS STREAM (BIS) >>>>>>>>>|                     |
-|                   |      (44.1 kHz, 16-bit Mono, 10 ms LC3 Frame, 64 kbps)  |                     |
-|                   |      (Periodic Advertising + BigInfo Sync)              |                     |
-|                   |                                                         |                     |
-|                   | <<<<<<<< 2. BIDIRECTIONAL GATT CONTROL PLANE <<<<<<<<<  |                     |
-|                   |      - PACS (0x184E): Sink Audio Capabilities & PAC     |                     |
-|                   |      - BASS (0x184F): Broadcast Audio Scan Service      |                     |
-|                   |      - VCS  (0x1844): Volume Control Service & Feedback |                     |
-|                   |      - GAP Appearance: Stereo Headphones (0x0841)       |                     |
-|                   |                                                         |                     |
-|    +--------------v--------------+                           +--------------v--------------+      |
-|    | 0.10 Hz Sine LFO Orchestrator|                           | Real-Time Hardware Volume    |      |
-|    | - 4 Hz VCS Volume Updates   |                           | - PCM Sample Gain Scaling   |      |
-|    | - Up to 9 Tracked SINKs     |                           | - MAX98357A I2S Master DAC   |      |
-|    +--------------+--------------+                           +--------------+--------------+      |
-|                   |                                                         |                     |
-|    +--------------v--------------+                           +--------------v--------------+      |
-|    | 1 Hz USB Serial Telemetry   |                           | 4 Hz ST7789 LCD Console     |      |
-|    | - CPU Mean/Peak, Free Heap  |                           | - 5-sec Mean/Peak CPU Load  |      |
-|    | - Tracked SINK Table & Ages |                           | - Live VCS Volume & RSSI    |      |
-|    +-----------------------------+                           +-----------------------------+      |
-+---------------------------------------------------------------------------------------------------+
+                                  +------------------------------------------------------+
+                                  |                     AUDIO SOURCE                     |
+                                  |    Node21 (ESP32-C6 DevKit) or Node22 (Bumble PC)   |
+                                  +------------------------------------------------------+
+                                            |                                |
+                Extended Advertising Train  |                                |  GATT Volume Control Service
+                   (PAwR / PBA / BASE)      |                                |   (VCS 0x1844 Absolute Vol)
+                   48 kHz / 64 kbps LC3     |                                |
+                                            v                                v
+    +-----------------------------------------------+   +-----------------------------------------------+
+    |             AUDIO SINK 1 (Node23)             |   |             AUDIO SINK 2 (Node24)             |
+    |       Waveshare ESP32-C6-Zero + MAX98357A     |   |       Waveshare ESP32-C6-Zero + MAX98357A     |
+    |        (48 kHz Mono 16-bit, 12 dB Gain)       |   |        (48 kHz Mono 16-bit, 12 dB Gain)       |
+    +-----------------------------------------------+   +-----------------------------------------------+
 ```
 
-### Hardware Node Profiles & COM Port Mapping
+### Core Architectural Features:
+* **Audio Pipeline**: Real-time **48.0 kHz 16-bit Mono** stream encoded and decoded with Espressif's native **Fixed-Point LC3** (`esp_audio_codec`) at 64 kbps (80 octets per 10 ms frame).
+* **Zero Float Emulation Overhead**: Pure 32-bit integer arithmetic (Q15/Q31) tailored for the single-core ESP32-C6 RISC-V processor without hardware FPU, delivering **100.0 Hz continuous playback** at low CPU load.
+* **Continuous I2S DMA Engine**: Dual-slot Philips standard stereo output with 8 DMA descriptors x 480 frames depth (80 ms total buffer margin), completely eliminating buffer underruns and harmonic distortion.
+* **Universal Auto-Lock Discovery**: Passive scanner (`passive = 1`) locking onto any Auracast broadcast train on both **1M and LE Coded PHYs** (`0x1851` BASE / `0x1852` PBA).
+* **Multi-Node Volume Control**: Full compliance with the Bluetooth Volume Control Service (VCS `0x1844`) and Broadcast Audio Scan Service (BASS `0x184F`).
+* **Visual Status Feedback**: Onboard WS2812 RGB LED (`GPIO 8`) providing instant feedback for Scanning (Soft Green pulse), Streaming (Fast Cyan/Teal pulse), and Sync Loss (Red strobe).
 
-| Identifier | Target Role | Hardware Board / Module | Physical Interfaces | Default COM Port |
+---
+
+## 2. Hardware Topology & Node Mapping
+
+| Node Identifier | Serial Port | Hardware Board & Modules | Active Role | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| **Node21** | **Audio SOURCE** (Broadcaster + Central) | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) DevKit | USB Serial JTAG + Web Dashboard + WS2812B LED | **COM21 / COM22** |
-| **Node20** | **Audio SINK** (Receiver + Server) | [Waveshare ESP32-C6-LCD](https://www.amazon.se/dp/B0DHTMYTCY) | 1.47" ST7789 SPI LCD + WS2812B LED + MAX98357A DAC | **COM20** |
-| **Node23** | **Audio SINK** (Receiver + Server) | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) 18-Pin | USB-C Serial JTAG + WS2812B LED + MAX98357A DAC + Speaker | **COM23** |
-| **Node24** | **Audio SINK** (Receiver + Server) | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) 18-Pin | USB-C Serial JTAG + WS2812B LED + MAX98357A DAC + Speaker | **COM24** |
-| **Node25** | **Audio SINK** (Receiver + Server) | [Heemol ESP32-C6 Mini](https://www.amazon.se/dp/B0H33M4Y9R) 20-Pin | USB-C Serial JTAG + WS2812B LED + MAX98357A DAC + Speaker | **COM25** |
-| **Node26** | **Audio SINK** (Receiver + Server) | [Heemol ESP32-C6 Mini](https://www.amazon.se/dp/B0H33M4Y9R) 20-Pin | USB-C Serial JTAG + WS2812B LED + MAX98357A DAC + Speaker | **COM26** |
+| **`Node20`** | `COM20` | Waveshare ESP32-C6-LCD (1.47" ST7789) | **SINK** (Receiver) | Visual LCD SINK with real-time waveform display & volume gauges. |
+| **`Node21`** | `COM21` | ESP32-C6-WROOM-1 DevKit + Wi-Fi Dashboard | **SOURCE** (Broadcaster) | Hardware Tone Generator, LFO volume oscillator, and Web Dashboard. |
+| **`Node22`** | `COM22` | ESP32-C6-WROOM-1 USB Dongle (HCI UART) | **SOURCE** (Bumble) | Python Bumble HCI broadcaster streaming live PC / synthesized audio. |
+| **`Node23`** | `COM23` | Waveshare ESP32-C6-Zero + MAX98357A DAC | **SINK** (Receiver) | Dedicated audio playback node with speaker & 12 dB hardware gain. |
+| **`Node24`** | `COM24` | Waveshare ESP32-C6-Zero + MAX98357A DAC | **SINK** (Receiver) | Multi-speaker secondary audio playback node. |
 
 ---
 
-## 2. Key Features
+## 3. Hardware Pinout & Wiring
 
-### A. Official Bluetooth SIG LE Audio GATT Services
-* **PACS (`0x184E` - Published Audio Capabilities Service):**
-  * Exposes `Sink PAC` (`0x2BC9`) specifying LC3 codec capability at 44.1 kHz / 48 kHz, 7.5 ms / 10 ms frame durations, and 20–120 octets/frame.
-  * Exposes `Sink Audio Locations` (`0x2BCA`) specifying Front Left + Front Right stereo capabilities (`0x00000003`).
-  * Exposes `Sink Audio Contexts` (`0x2BCE`) specifying Media context (`0x0004`).
-* **BASS (`0x184F` - Broadcast Audio Scan Service):**
-  * Exposes `Broadcast Receive State` (`0x2BC8`, Read & Notify) and `BASS Control Point` (`0x2BC7`, Write).
-  * Fully handles standard opcodes: `Add Source` (`0x02`), `Modify Source` (`0x03`), and `Remove Source` (`0x05`).
-  * Enables the Central SOURCE node to delegate and command the SINK to synchronize to its active `Broadcast_ID` (`0x123456`) and BIS index.
-* **VCS (`0x1844` - Volume Control Service):**
-  * Exposes `Volume State` (`0x2B7D`, Read & Notify), `Volume Control Point` (`0x2B7E`, Write), and `Volume Flags` (`0x2B7F`).
-  * Fully handles `Set Absolute Volume` (`0x04`), relative volume steps, and mute/unmute commands.
-  * SINK automatically pushes instant notification updates back to the SOURCE whenever volume changes.
-* **Standard GAP Appearance:**
-  * SINK advertises standard Bluetooth SIG Appearance `0x0841` (Stereo Wireless Headphones / LE Audio Sink).
+### Waveshare ESP32-C6-Zero to MAX98357A I2S DAC Module
 
-### B. Multi-SINK Orchestration & 0.10 Hz Sine LFO Volume Modulation
-* **Multi-Node Tracking:** SOURCE actively tracks up to **9 SINK nodes** simultaneously in a dynamic registry with MAC addresses, connection handles, volume percentages, BASS sync states, and timestamp ages.
-* **0.10 Hz Sine LFO Volume Wave:** A dedicated FreeRTOS task on SOURCE runs at **4 Hz** (every 250 ms), generating a 0.10 Hz sine wave (10-second period) in the 10% to 50% volume range (~25 to 128 units out of 255) and transmitting `Set Absolute Volume` (`0x04`) via VCS to all connected SINKs.
-* **Direct Hardware Audio Gain Scaling:** Decoded 16-bit PCM audio samples are scaled in real time by `(sample * volume_setting) / 255` directly before DMA transfer to the MAX98357A I2S DAC.
-
-### C. Automatic Reconnection & Advertising Recovery
-* **Self-Healing GATT Control Plane:**
-  * When a GATT link drops, SINK instantly restarts its connectable extended advertisement instance (`Instance 1`) and SOURCE resumes active discovery.
-  * Upon SOURCE reboot, GATT connection, service discovery, BASS stream delegation, and VCS modulation resume automatically in <1 second.
-* **0.5 s BIS Loss Detection:** If no broadcast audio frames are received within **500 ms (0.5 s)**, SINK automatically flags sync loss and transitions to `SCANNING` to re-acquire the stream.
-
-### D. Advanced Diagnostic Telemetry & Display
-* **5-Second CPU Load Sliding Window:**
-  * Calls `calculateCpuUsagePct()` every **500 ms** and maintains a **10-element ring buffer** (10 x 500 ms = 5.0 s).
-  * Computes and displays the true **5-second Mean** and **5-second Peak** CPU load.
-* **4 Hz ST7789 LCD Console Display (Node20):**
-  * Line 0: `NODE: SINK | UP: xx s`
-  * Line 1: `CPU: %2d-%2d%% | %2d C | %3lu KB` (5-sec mean-peak load, CPU temp, free DRAM)
-  * Line 2: `BT: STREAMING | %+02d dBm | %.1f kpkts` (Live signed RSSI and packet count)
-  * Line 3: `BIS: #1 @ ESP32-C6-21` (Synchronized broadcast stream & source name)
-  * Line 4: `AUDIO: Mono 16-bit 44.1 kHz` (Stream status)
-  * Line 5: `CODEC: LC3 fixp @ 64 kbps` (Audio codec profile)
-  * Line 6: `VOL: %3u%% | DAC: OK` (Live VCS volume percentage and DAC status)
-* **Convenience Debug Helpers:**
-  * `printGATTcommand()` and `printGATTnotification()` output clean, human-readable logs of all BASS and VCS packet transfers.
-
----
-
-## 3. Directory Layout
-
-```
-apps/node2node/
-├── CMakeLists.txt                      # Top-level ESP-IDF CMake configuration (Target: esp32c6)
-├── partitions.csv                      # Custom 8MB flash partition table
-├── sdkconfig.defaults                  # SDK defaults (NimBLE BT 5.3, FreeRTOS stats, Dual Console)
-├── README.md                           # System architecture documentation
-└── main/
-    ├── CMakeLists.txt                  # Component build script (esp_lcd, esp-dsp, led_strip)
-    ├── idf_component.yml               # ESP Component Manager dependencies
-    ├── config.h                        # Centralized system constants, GATT UUIDs & role selection
-    ├── config.c                        # Runtime system configuration structure
-    ├── lc3_codec.hpp / .cpp            # Fixed-Point LC3 Audio Encoder & Decoder engine
-    ├── tone_generator.hpp / .cpp       # 440 Hz VCO modulated by 0.5-2.0 Hz randomized VFO
-    ├── ble_audio_broadcast.hpp / .cpp  # NimBLE BIS Broadcast, GATT Server/Client & VCS LFO
-    ├── i2s_audio.hpp / .cpp            # MAX98357A I2S Master TX driver (driver/i2s_std.h)
-    ├── lcd_display.hpp / .cpp          # Waveshare 1.47" ST7789 LCD (SPI) & WS2812 RGB LED driver
-    ├── diagnostics.hpp / .cpp          # 4 Hz Telemetry task with 5-sec CPU load ringbuffer
-    └── main.cpp                        # Application entry point (app_main)
-```
-
----
-
-## 4. Hardware Pinout & Wiring Guides
-
-### A. Node20 (Waveshare ESP32-C6-LCD with Integrated ST7789 & MAX98357A)
-
-| Interface | Signal | ESP32-C6 GPIO | Notes |
-| :--- | :--- | :--- | :--- |
-| **I2S DAC** | `BCLK` | **GPIO 16** | Bit Clock |
-| **I2S DAC** | `WS` | **GPIO 17** | Word Select / Frame Clock |
-| **I2S DAC** | `DOUT` | **GPIO 18** | Serial Data Out |
-| **ST7789 LCD** | `MOSI` | **GPIO 6** | SPI Data |
-| **ST7789 LCD** | `SCLK` | **GPIO 7** | SPI Clock |
-| **ST7789 LCD** | `CS` | **GPIO 14** | Chip Select |
-| **ST7789 LCD** | `DC` | **GPIO 15** | Data / Command |
-| **ST7789 LCD** | `RST` | **GPIO 21** | Reset |
-| **ST7789 LCD** | `BL` | **GPIO 22** | Backlight Control |
-| **RGB LED** | `DATA` | **GPIO 8** | Onboard WS2812B RGB LED |
-
----
-
-### B. Node23 / Node24 Audio SINKs: Waveshare ESP32-C6-Zero + MAX98357A I2S DAC
-
-#### Supported Hardware Modules:
-* **Microcontroller Board**: [Waveshare ESP32-C6-Zero 18-Pin Thumb-Size Module](https://www.amazon.se/dp/B0F12PRH9G) (ESP32-C6FH4/FH8 RISC-V 32-bit single core @ 160 MHz, 2.4 GHz Wi-Fi 6, Bluetooth 5.3 LE, USB-C native Serial/JTAG, onboard WS2812 RGB LED).
-* **Audio Amplifier / DAC Module**: [MAX98357A I2S 3.2W Class-D Mono Amplifier](https://www.aliexpress.com/item/1005012453004931.html) ([Alternative AliExpress Source](https://www.aliexpress.com/item/1005010273388760.html)).
-
-#### Optimal 7-Pin Clean Header Wiring Diagram:
-
-On the **Waveshare ESP32-C6-Zero**, all required power and audio pins are located **consecutively on the Left 9-Pin Header**, enabling neat, direct 1-to-1 jumper wiring without crossing boards:
+On the **Waveshare ESP32-C6-Zero**, all required power, control, and audio pins are arranged **consecutively on the Left 9-Pin Header**, enabling direct, clean 1-to-1 jumper wiring:
 
 ```
 +------------------------------------+              +------------------------------------+
 |      Waveshare ESP32-C6-Zero       |              |      MAX98357A I2S DAC Module      |
 |       (Left 9-Pin Header)          |              |          (7-Pin Breakout)          |
 |                                    |              |                                    |
-|   Pin 1 [ 5V / VBUS ] -------------|------------> | [ VIN / VDD ] (2.5V - 5.5V Power)  |
+|   Pin 1 [ 5V / VBUS ] -------------|------------> | [ VIN ]       (5V Power Supply)    |
 |   Pin 2 [ GND ]       -------------|------------> | [ GND ]       (Common Ground)      |
 |   Pin 3 [ 3V3 ]       -------------|------------> | [ SD_MODE ]   (High = Left Channel)|
-|   Pin 4 [ GP0 ]       -------------|------------> | (Optional Mute Control / NC)       |
-|   Pin 5 [ GP1 ]       -------------|------------> | [ BCLK ]      (Continuous Bit Clk) |
-|   Pin 6 [ GP2 ]       -------------|------------> | [ LRC / WS ]  (Left/Right Clock)   |
-|   Pin 7 [ GP3 ]       -------------|------------> | [ DIN / SD ]  (Serial Audio Data)  |
+|   Pin 4 [ GP0 ]       -------------|------------> | [ GAIN ]      (High = 12 dB Gain)  |
+|   Pin 5 [ GP1 ]       -------------|------------> | [ BCLK ]      (Bit Clock)          |
+|   Pin 6 [ GP2 ]       -------------|------------> | [ LRC / WS ]  (Word Select Clock)  |
+|   Pin 7 [ GP3 ]       -------------|------------> | [ DIN ]       (Serial Audio Data)  |
 |                                    |              |                                    |
-|   (Leave Floating) ----------------|------------> | [ GAIN ]      (Float = 9 dB Gain)  |
-|                                    |              |                                    |
-|                                    |              |   [ SPK+ / SPK- ] -> 4-8 Ohm Spkr  |
+|   Pin 8 [ GP8 ] (Onboard WS2812)   |              |   [ SPK+ / SPK- ] -> 4-8 Ohm Spkr  |
 +------------------------------------+              +------------------------------------+
 ```
 
-#### Detailed Pin Mapping & Signal Descriptions:
+### Detailed Signal Pin Mapping:
 
-| MAX98357A Pin | Pin Function | Waveshare ESP32-C6-Zero Pin | Connection Details & Configuration |
+| Signal | ESP32-C6-Zero Pin | MAX98357A Pin | Purpose / Operating Mode |
 | :--- | :--- | :--- | :--- |
-| **`VIN` / `VDD`** | Amplifier Power Supply | **Pin 1: `5V` (VBUS)** | Connect to the **`5V`** rail for maximum output power (**3.2W into 4Ω** or **1.7W into 8Ω** with high dynamic range and low distortion). Alternatively, connect to **`3.3V`** if 5V is unavailable (~0.7W output). |
-| **`GND`** | Power & Signal Ground | **Pin 2: `GND`** | Common ground reference with the ESP32-C6-Zero. |
-| **`SD_MODE`** | Shutdown & Channel Selection | **Pin 3: `3V3`** (or **`GP0`**) | • **Left Channel (Default)**: Connect to **`3V3`** (or leave floating if breakout has an onboard pull-up resistor, $>1.4\text{V}$).<br>• **Software Mute / Low Power**: Connect to **`GP0`** (HIGH = Active, LOW = Low-power Sleep $<1\,\mu\text{A}$).<br>• **Right Channel**: Connect via a 100kΩ resistor divider to VDD ($0.77\text{V} - 1.4\text{V}$). |
-| **`BCLK`** | I2S Continuous Bit Clock | **Pin 5: `GP1`** | Clock line for PCM bit serialization ($F_s \times 2 \times 16 = 1.4112\text{ MHz}$). |
-| **`LRC` / `WS`** | I2S Word Select / Frame Sync | **Pin 6: `GP2`** | Word Select clock running at audio sample rate ($44.1\text{ kHz}$). High = Right, Low = Left. |
-| **`DIN` / `SD`** | I2S Serial PCM Data Input | **Pin 7: `GP3`** | Serial audio data stream directly driven by the ESP32-C6 I2S Master TX DMA channel. |
-| **`GAIN`** | Gain Setting | **NC (Floating)** | **Leave Unconnected / Floating** for default **9 dB gain** (optimal for standard 4Ω–8Ω mini speakers). <br>• Tied to `GND`: **6 dB** (for high-sensitivity headphones)<br>• 100kΩ to `GND`: **3 dB**<br>• Tied to `VDD`: **12 dB**<br>• 100kΩ to `VDD`: **15 dB** |
+| **Power (5V)** | **Left Header Pin 1 (`5V`)** | `VIN` | 5V rail for maximum Class-D speaker output power (up to 3.2W into 4Ω). |
+| **Ground** | **Left Header Pin 2 (`GND`)** | `GND` | Common ground reference. |
+| **Channel Select** | **Left Header Pin 3 (`3V3`)** | `SD_MODE` | Tied to 3.3V to cleanly latch the internal comparator to **Left Channel** playback. |
+| **Hardware Gain** | **Left Header Pin 4 (`GP0`)** | `GAIN` | Driven **HIGH (3.3V)** on boot for **12 dB maximum gain** (Floating = 9 dB, LOW = 6 dB). |
+| **I2S Bit Clock** | **Left Header Pin 5 (`GP1`)** | `BCLK` | Continuous bit clock ($F_s 	imes 2 	imes 16 = 1.536	ext{ MHz}$ @ 48 kHz). |
+| **I2S Word Select** | **Left Header Pin 6 (`GP2`)** | `LRC / WS` | Frame sync clock running at **48.0 kHz** (Low = Left, High = Right). |
+| **I2S Serial Data** | **Left Header Pin 7 (`GP3`)** | `DIN` | 16-bit interleaved stereo PCM audio data from DMA transmitter. |
+| **Status LED** | **Onboard (`GPIO 8`)** | N/A | Onboard WS2812B RGB status indicator with GRB color order compensation. |
 
 ---
 
-### C. Pin Collision Avoidance Analysis (ESP32-C6 Single-Core RISC-V)
+## 4. Audio Engine: Espressif Fixed-Point LC3 Codec
 
-To guarantee flawless boot stability, native USB-C flashing, and peripheral integrity, the following pin constraints were designed into the pinout:
+The project utilizes Espressif's official **`esp_audio_codec`** component (`espressif/esp_audio_codec`):
 
-| Reserved / Critical ESP32-C6 Function | GPIOs | Why Avoided for Audio DAC |
-| :--- | :--- | :--- |
-| **Boot Strapping & Onboard RGB LED** | `GPIO 8` | Controls internal chip boot mode during power-up and drives the onboard WS2812 RGB status LED. |
-| **Boot Mode Selection Button** | `GPIO 9` | Physical BOOT button and download mode strapping. External load on reset could force bootloader ROM mode. |
-| **Native USB Serial JTAG** | `GPIO 12` (`USB_D-`), `GPIO 13` (`USB_D+`) | Dedicated native USB differential lines for flashing, debugging, and serial terminal over USB-C. |
-| **Hardware JTAG Debugging** | `GPIO 4`, `GPIO 5`, `GPIO 14`, `GPIO 15` | Dedicated MTMS, MTDI, MTCK, MTDO pins. Kept unassigned to maintain OpenOCD JTAG debugging capabilities. |
-| **Safe Dedicated Audio I2S Matrix** | **`GPIO 16`, `GPIO 17`, `GPIO 18`, `GPIO 19`** | **100% safe general-purpose I/O**. Completely free of strapping constraints, allowing reliable cold boot, runtime DMA streaming, and identical pin assignment across all SINK profiles. |
+```
++---------------------------------------------------------------------------------+
+|                              AUDIO PROCESSING PIPELINE                          |
+|                                                                                 |
+|  [ 48 kHz SINK Audio Loop ]                                                     |
+|            |                                                                    |
+|            v                                                                    |
+|  [ esp_lc3_dec_decode() ] --------> Pure 32-bit Integer DSP (Q15/Q31)           |
+|            |                        No Software Float Emulation                 |
+|            v                                                                    |
+|  [ VCS Volume Modulation ] -------> SINK Absolute Digital Gain Scaling (0-255)  |
+|            |                                                                    |
+|            v                                                                    |
+|  [ Dual-Slot Interleaving ] ------> Duplicate Mono PCM into Left + Right Slots  |
+|            |                                                                    |
+|            v                                                                    |
+|  [ i2s_channel_write() ] ---------> 8 Descriptors x 480 Frame DMA Ping-Pong    |
+|            |                        Paced synchronously at 100.00 Hz            |
+|            v                                                                    |
+|  [ MAX98357A Class-D DAC ] -------> 4-8 Ohm Speaker (12 dB Crisp Audio)         |
++---------------------------------------------------------------------------------+
+```
+
+### Codec Operating Specifications:
+* **Sampling Frequency ($F_s$)**: `48000 Hz`
+* **Frame Duration**: `10000 µs (10 ms / 100 dms)`
+* **Compressed Frame Budget**: `80 octets / frame`
+* **Bitrate**: `64.0 kbps`
+* **Samples per Frame**: `480 samples`
+* **Packet Loss Concealment (PLC)**: Enabled natively in `esp_lc3_dec_cfg_t`
 
 ---
 
-## 5. Build and Flashing Instructions
+## 5. Build, Flash, and Monitor Instructions
 
-### PowerShell Environment Setup
+### Environment Setup (PowerShell on Windows)
 ```powershell
 $env:IDF_TOOLS_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
 $env:IDF_PYTHON_ENV_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env"
 $env:PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\riscv32-esp-elf\esp-13.2.0_20230928\riscv32-esp-elf\bin;C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\cmake\3.24.0\bin;C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\ninja\1.11.1;C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts;" + $env:PATH
 ```
 
-### 1. Build and Flash Audio SINK (Node20 on COM20)
-1. Ensure `#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK` in `main/config.h`.
-2. Compile and flash:
+### 1. Build and Flash Audio SINK (Node23 on COM23)
 ```powershell
 cd c:\Git_ble_audio\apps\node2node
 idf.py build
-python -m esptool --chip esp32c6 -p COM20 -b 460800 --before default_reset --after hard_reset write_flash 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
+python -m esptool --chip esp32c6 -p COM23 -b 460800 --before default_reset --after hard_reset write_flash 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
 ```
 
 ### 2. Build and Flash Audio SOURCE (Node21 on COM21)
@@ -232,22 +153,48 @@ idf.py build
 python -m esptool --chip esp32c6 -p COM21 -b 460800 --before default_reset --after hard_reset write_flash 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
 ```
 
+### 3. Running the Python Bumble Broadcaster (Node22 on COM22)
+```powershell
+cd c:\Git_ble_audio
+& venv_ble_audio\Scripts\python.exe apps\usb_ble_bumble\bumble_broadcaster.py --port COM22 --sample-rate 48000
+```
+
 ---
 
-## 6. Live Serial & Telemetry Trace
+## 6. Live Diagnostic Telemetry Trace
 
 ```text
-[NODE21_SRC]  I (12475) SINKS: === Tracked SINK Nodes (1 / 9 max) ===
-[NODE21_SRC]  I (12482) SINK_NODE:   [1] 'ESP32-C6-20' | ConnHandle: 1 | Vol: 49.0% (125/255) | BASS: CONNECTED | Age: 58 ms
-[NODE21_SRC]  I (12587) NimBLE: GATT procedure initiated: write; att_handle=28 len=2
-[NODE20_SINK] I (31465) GATT_CMD: [VCS 0x2B7E Write: SET_ABSOLUTE_VOLUME] Target: 49.8% (127/255)
-[NODE20_SINK] I (31465) NimBLE: GATT procedure initiated: notify; att_handle=25
-[NODE21_SRC]  I (12667) GATT_NOTIF: [VCS 0x2B7D Notification] Volume: 49.8% (127/255) | Mute: UNMUTED | Counter: #88
-[NODE20_SINK] I (31528) : ===== [ESP32-C6-20] heartbeat #31 | Uptime: 31 s =====
-[NODE20_SINK] I (31529) SYS: CPU: 11-14% @ 160 MHz | Temp: 27 C | Heap: 231 KB
-[NODE20_SINK] I (31532) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 1205 | RSSI: -41 dBm | BIS ID: 1
-[NODE20_SINK] I (31541) AUDIO: Codec: LC3 fixp @ 64 kbps | Mono 16-bit 44.1 kHz | VCS Vol: 49% (127/255 UNMUTED)
+[NODE23] I (593) I2S_AUDIO: I2S DAC Driver Initialized: Fs=48000 Hz, Mono 16-bit, BCLK=1, WS=2, DOUT=3
+[NODE23] I (738) ESP_LC3: Espressif Fixed-Point LC3 Decoder Initialized: 48000 Hz, 1-ch, 10000 us duration, 80 octets/frame
+[NODE23] I (889) BLE_AUDIO: Bluetooth State Transition: [SCANNING] ---> [STREAMING]
+[NODE23] I (1579) : ===== [ESP32-C6-23] heartbeat #1 | Uptime: 1 s =====
+[NODE23] I (1581) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 73 | RSSI: -43 dBm | BIS ID: 1
+[NODE23] I (1591) AUDIO: Codec: LC3 fixp @ 64 kbps | Mono 16-bit 48.0 kHz | VCS Vol: 30% (77/255 UNMUTED)
+[NODE23] I (2580) : ===== [ESP32-C6-23] heartbeat #2 | Uptime: 2 s =====
+[NODE23] I (2583) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 173 | RSSI: -39 dBm | BIS ID: 1
+[NODE23] I (3574) : ===== [ESP32-C6-23] heartbeat #3 | Uptime: 3 s =====
+[NODE23] I (3582) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 273 | RSSI: -43 dBm | BIS ID: 1
+[NODE23] I (4574) : ===== [ESP32-C6-23] heartbeat #4 | Uptime: 4 s =====
+[NODE23] I (4577) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 373 | RSSI: -36 dBm | BIS ID: 1
+[NODE23] I (5575) : ===== [ESP32-C6-23] heartbeat #5 | Uptime: 5 s =====
+[NODE23] I (5578) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 473 | RSSI: -42 dBm | BIS ID: 1
+[NODE23] I (6577) : ===== [ESP32-C6-23] heartbeat #6 | Uptime: 6 s =====
+[NODE23] I (6579) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 573 | RSSI: -41 dBm | BIS ID: 1
+[NODE23] I (7579) : ===== [ESP32-C6-23] heartbeat #7 | Uptime: 7 s =====
+[NODE23] I (7588) BT: Role: SINK (Receiver) | State: STREAMING | Pkts: 674 | RSSI: -44 dBm | BIS ID: 1
 ```
+
+---
+
+## 7. Troubleshooting & Hardware Verification
+
+| Symptom | Probable Cause | Corrective Action |
+| :--- | :--- | :--- |
+| **Complete Silence** | `SD_MODE` floating near threshold | Tie `SD_MODE` directly to **`3.3V` (Left Header Pin 3)**. |
+| **Low / Quiet Volume** | Amplifier gain set to 6 dB | `GP0` automatically sets **12 dB gain**; verify wire is firmly connected. |
+| **Digital Distortion / Buzzing** | FreeRTOS task delay choking DMA | Do not call `vTaskDelay` during streaming; let `i2s_channel_write()` pace continuous DMA buffers. |
+| **Task Watchdog Panic (`IDLE CPU 0`)** | Task priority or missing yield | Set `ble_audio_task` priority to `3` and ensure `vTaskDelay(1)` is executed when yielding. |
+| **RGB LED Blinks Red during Idle** | GRB vs RGB byte order swap | `status_led.cpp` handles byte order compensation automatically. |
 
 ---
 
