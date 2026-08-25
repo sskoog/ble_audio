@@ -52,6 +52,7 @@ This architecture decouples high-efficiency **connectionless Broadcast Isochrono
 | :--- | :--- | :--- | :--- | :--- |
 | **Node21** | **Audio SOURCE** (Broadcaster + Central) | ESP32-C6-WROOM-1 DevKit | USB Serial JTAG + WS2812B RGB LED | **COM21 / COM22** |
 | **Node20** | **Audio SINK** (Receiver + Server) | Waveshare ESP32-C6-LCD | 1.47" ST7789 SPI LCD + WS2812B RGB LED + MAX98357A I2S DAC | **COM20** |
+| **Node22 / Node23** | **Audio SINK Prototype** (Receiver + Server) | Heemol ESP32-C6 Mini (Zero 20-Pin) | USB Serial JTAG + MAX98357A I2S DAC Module (3.2W Mono Amp) | Custom / Auto |
 
 ---
 
@@ -125,9 +126,9 @@ apps/node2node/
 
 ---
 
-## 4. Hardware Pinout
+## 4. Hardware Pinout & Wiring Guides
 
-### Node20 (Waveshare ESP32-C6-LCD + MAX98357A I2S DAC)
+### A. Node20 (Waveshare ESP32-C6-LCD with Integrated ST7789 & MAX98357A)
 
 | Interface | Signal | ESP32-C6 GPIO | Notes |
 | :--- | :--- | :--- | :--- |
@@ -141,6 +142,60 @@ apps/node2node/
 | **ST7789 LCD** | `RST` | **GPIO 21** | Reset |
 | **ST7789 LCD** | `BL` | **GPIO 22** | Backlight Control |
 | **RGB LED** | `DATA` | **GPIO 8** | Onboard WS2812B RGB LED |
+
+---
+
+### B. Node22 / Node23 Audio SINK Prototypes: Heemol ESP32-C6 Mini + MAX98357A I2S DAC
+
+#### Supported Hardware Modules:
+* **Microcontroller Module**: [Heemol ESP32-C6 Mini 20-Pin Thumb-Size Dev Board](https://www.amazon.se/dp/B0H33M4Y9R) (ESP32-C6-Zero form factor, 160 MHz RISC-V 32-bit CPU, 2.4 GHz Wi-Fi 6, Bluetooth 5.3 LE, USB-C native Serial/JTAG).
+* **Audio Amplifier / DAC Module**: [MAX98357A I2S 3.2W Class-D Mono Amplifier](https://www.aliexpress.com/item/1005012453004931.html) ([Alternative AliExpress Source](https://www.aliexpress.com/item/1005010273388760.html)).
+
+#### Wiring Diagram:
+
+```
++------------------------------------+              +------------------------------------+
+|       Heemol ESP32-C6 Mini         |              |      MAX98357A I2S DAC Module      |
+|           (20-Pin Module)          |              |          (7-Pin Breakout)          |
+|                                    |              |                                    |
+|   [ 5V / VBUS ] -------------------|------------> | [ VIN / VDD ] (2.5V - 5.5V Power)  |
+|   [ GND ]       -------------------|------------> | [ GND ]       (Common Ground)      |
+|   [ GPIO 16 ]   -------------------|------------> | [ BCLK ]      (Continuous Bit Clk) |
+|   [ GPIO 17 ]   -------------------|------------> | [ LRC / WS ]  (Left/Right Clock)   |
+|   [ GPIO 18 ]   -------------------|------------> | [ DIN / SD ]  (Serial Audio Data)  |
+|                                    |              |                                    |
+|   (Unconnected) -------------------|------------> | [ GAIN ]      (Float = 9 dB Gain)  |
+|   [ 3.3V / GPIO 19 ] --------------|------------> | [ SD_MODE ]   (High = Left Channel)|
+|                                    |              |                                    |
+|                                    |              |   [ SPK+ / SPK- ] -> 4-8 Ohm Spkr  |
++------------------------------------+              +------------------------------------+
+```
+
+#### Detailed Pin Mapping & Signal Descriptions:
+
+| MAX98357A Pin | Pin Function | ESP32-C6 Mini Pin | Connection Details & Configuration |
+| :--- | :--- | :--- | :--- |
+| **`VIN` / `VDD`** | Amplifier Power Supply | **`5V` (VBUS)** | Connect to the **`5V`** rail for maximum output power (**3.2W into 4Ω** or **1.7W into 8Ω** with high dynamic range and low distortion). Alternatively, connect to **`3.3V`** if 5V is unavailable (~0.7W output). |
+| **`GND`** | Power & Signal Ground | **`GND`** | Common ground reference with the ESP32-C6 Mini. |
+| **`BCLK`** | I2S Continuous Bit Clock | **`GPIO 16`** | Clock line for PCM bit serialization ($F_s \times 2 \times 16 = 1.4112\text{ MHz}$). |
+| **`LRC` / `WS`** | I2S Word Select / Frame Sync | **`GPIO 17`** | Word Select clock running at audio sample rate ($44.1\text{ kHz}$). High = Right, Low = Left. |
+| **`DIN` / `SD`** | I2S Serial PCM Data Input | **`GPIO 18`** | Serial audio data stream directly driven by the ESP32-C6 I2S Master TX DMA channel. |
+| **`GAIN`** | Gain Setting | **NC (Floating)** | **Leave Unconnected / Floating** for default **9 dB gain** (optimal for standard 4Ω–8Ω mini speakers). <br>• Tied to `GND`: **6 dB** (for high-sensitivity headphones)<br>• 100kΩ to `GND`: **3 dB**<br>• Tied to `VDD`: **12 dB**<br>• 100kΩ to `VDD`: **15 dB** |
+| **`SD_MODE`** | Shutdown & Channel Selection | **`3.3V` / `GPIO 19`** | • **Left Channel (Default)**: Connect to **`3.3V`** or leave floating if breakout has an onboard pull-up resistor ($>1.4\text{V}$).<br>• **Software Mute / Power Saving**: Connect to **`GPIO 19`** (HIGH = Active, LOW = Low-power Shutdown $<1\,\mu\text{A}$).<br>• **Right Channel**: Connect via a 100kΩ resistor divider to VDD ($0.77\text{V} - 1.4\text{V}$). |
+
+---
+
+### C. Pin Collision Avoidance Analysis (ESP32-C6 Single-Core RISC-V)
+
+To guarantee flawless boot stability, native USB-C flashing, and peripheral integrity, the following pin constraints were designed into the pinout:
+
+| Reserved / Critical ESP32-C6 Function | GPIOs | Why Avoided for Audio DAC |
+| :--- | :--- | :--- |
+| **Boot Strapping & Onboard RGB LED** | `GPIO 8` | Controls internal chip boot mode during power-up and drives the onboard WS2812 RGB status LED. |
+| **Boot Mode Selection Button** | `GPIO 9` | Physical BOOT button and download mode strapping. External load on reset could force bootloader ROM mode. |
+| **Native USB Serial JTAG** | `GPIO 12` (`USB_D-`), `GPIO 13` (`USB_D+`) | Dedicated native USB differential lines for flashing, debugging, and serial terminal over USB-C. |
+| **Hardware JTAG Debugging** | `GPIO 4`, `GPIO 5`, `GPIO 14`, `GPIO 15` | Dedicated MTMS, MTDI, MTCK, MTDO pins. Kept unassigned to maintain OpenOCD JTAG debugging capabilities. |
+| **Safe Dedicated Audio I2S Matrix** | **`GPIO 16`, `GPIO 17`, `GPIO 18`, `GPIO 19`** | **100% safe general-purpose I/O**. Completely free of strapping constraints, allowing reliable cold boot, runtime DMA streaming, and identical pin assignment across all SINK profiles. |
 
 ---
 
