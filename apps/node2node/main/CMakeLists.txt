@@ -17,6 +17,12 @@ idf_component_register(
         bt
         nvs_flash
         driver
+        esp_driver_tsens
+        esp_driver_gpio
+        esp_driver_i2s
+        esp_driver_ledc
+        esp_driver_spi
+        esp_driver_gptimer
         esp_timer
         esp_hw_support
         esp_lcd
@@ -29,3 +35,5 @@ idf_component_register(
         lwip
         espressif__esp_audio_codec
 )
+
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)

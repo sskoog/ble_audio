@@ -138,7 +138,7 @@ esp_err_t LcdDisplay::init() {
     ledc_channel.speed_mode = LEDC_LOW_SPEED_MODE;
     ledc_channel.channel = LEDC_CHANNEL_0;
     ledc_channel.timer_sel = LEDC_TIMER_0;
-    ledc_channel.intr_type = LEDC_INTR_DISABLE;
+    // intr_type handled automatically in v6
     ledc_channel.gpio_num = LCD_PIN_BL;
     ledc_channel.duty = 205; // 20% Duty Cycle (205 / 1023)
     ledc_channel.hpoint = 0;
@@ -180,7 +180,7 @@ esp_err_t LcdDisplay::init() {
     // 4. Panel Driver Config (ST7789)
     esp_lcd_panel_dev_config_t panel_cfg = {};
     panel_cfg.reset_gpio_num = LCD_PIN_RST;
-    panel_cfg.rgb_endian = LCD_RGB_ENDIAN_BGR;
+    panel_cfg.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
     panel_cfg.bits_per_pixel = 16;
 
     esp_lcd_panel_handle_t panel_handle = nullptr;

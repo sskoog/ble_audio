@@ -1,3 +1,4 @@
+#include "esp_heap_caps.h"
 /*
  * SPDX-FileCopyrightText: 2022-2023 Espressif Systems (Shanghai) CO LTD
  *
