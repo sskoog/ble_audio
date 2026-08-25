@@ -13,12 +13,21 @@ I2sAudioDriver::~I2sAudioDriver() {
     deinit();
 }
 
-esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout) {
+esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, int gain_pin) {
     if (m_initialized) {
         deinit();
     }
 
     m_sample_rate = sample_rate_hz;
+
+    // Configure Hardware Gain pin if assigned (e.g. GP0 on Waveshare Zero)
+    if (gain_pin >= 0) {
+        m_gain_pin = static_cast<gpio_num_t>(gain_pin);
+        setGain(GAIN_9DB); // Default to nominal 9 dB gain
+        ESP_LOGI(TAG, "Configured MAX98357A GAIN pin on GPIO %d (Set to 9 dB)", gain_pin);
+    } else {
+        m_gain_pin = GPIO_NUM_NC;
+    }
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 6;
@@ -70,6 +79,28 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_nu
     ESP_LOGI(TAG, "I2S DAC Driver Initialized: Fs=%lu Hz, Mono 16-bit, BCLK=%d, WS=%d, DOUT=%d",
              m_sample_rate, static_cast<int>(bclk), static_cast<int>(ws), static_cast<int>(dout));
     return ESP_OK;
+}
+
+void I2sAudioDriver::setGain(Max98357Gain gain) {
+    if (m_gain_pin == GPIO_NUM_NC) return;
+
+    if (gain == GAIN_9DB) {
+        // High-Z Float -> 9 dB
+        gpio_set_direction(m_gain_pin, GPIO_MODE_INPUT);
+        gpio_pullup_dis(m_gain_pin);
+        gpio_pulldown_dis(m_gain_pin);
+        ESP_LOGI(TAG, "MAX98357A Hardware Gain set to 9 dB (Floating)");
+    } else if (gain == GAIN_6DB) {
+        // Output LOW -> 6 dB
+        gpio_set_direction(m_gain_pin, GPIO_MODE_OUTPUT);
+        gpio_set_level(m_gain_pin, 0);
+        ESP_LOGI(TAG, "MAX98357A Hardware Gain set to 6 dB (GND)");
+    } else if (gain == GAIN_12DB) {
+        // Output HIGH -> 12 dB
+        gpio_set_direction(m_gain_pin, GPIO_MODE_OUTPUT);
+        gpio_set_level(m_gain_pin, 1);
+        ESP_LOGI(TAG, "MAX98357A Hardware Gain set to 12 dB (VDD)");
+    }
 }
 
 void I2sAudioDriver::deinit() {

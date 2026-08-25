@@ -83,11 +83,12 @@ extern "C" void app_main(void)
         // --- Audio SINK (Node20) ---
         ESP_LOGI(TAG, "Configuring Node as Audio SINK (PBP/BIG Receiver + MAX98357A DAC)...");
 
-        // Initialize MAX98357A I2S DAC Driver
+        // Initialize MAX98357A I2S DAC Driver with GAIN Pin
         i2s_dac.init(AUDIO_SAMPLE_RATE_HZ, 
                      static_cast<gpio_num_t>(I2S_DAC_BCLK_PIN), 
                      static_cast<gpio_num_t>(I2S_DAC_WS_PIN), 
-                     static_cast<gpio_num_t>(I2S_DAC_DOUT_PIN));
+                     static_cast<gpio_num_t>(I2S_DAC_DOUT_PIN),
+                     I2S_DAC_GAIN_PIN);
 
         static Bluetooth::BleAudioBroadcast ble_broadcast(lc3_codec, nullptr, &i2s_dac);
         ble_broadcast.init(NODE_ROLE_SINK);

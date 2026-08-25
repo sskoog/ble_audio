@@ -17,7 +17,7 @@ extern "C" {
 
 /* Set active role here (can be overridden via compiler flags -DCONFIG_NODE_ROLE=...) */
 #ifndef CONFIG_ACTIVE_NODE_ROLE
-#define CONFIG_ACTIVE_NODE_ROLE         NODE_ROLE_SOURCE
+#define CONFIG_ACTIVE_NODE_ROLE         NODE_ROLE_SINK
 #endif
 
 /* =====================================================================
@@ -78,18 +78,18 @@ extern "C" {
  *                 MAX98357A I2S DAC HARDWARE PINOUT
  * ===================================================================== */
 #if ACTIVE_BOARD_TYPE == BOARD_WAVESHARE_ZERO
-/* Waveshare ESP32-C6-Zero 18-Pin Mini (Left Header GP1, GP2, GP3) */
+/* Waveshare ESP32-C6-Zero 18-Pin Mini (Left Header GP1, GP2, GP3, GP0) */
 #define I2S_DAC_BCLK_PIN                1      /* Bit Clock (GP1) */
 #define I2S_DAC_WS_PIN                  2      /* Word Select / Frame Clock (GP2) */
 #define I2S_DAC_DOUT_PIN                3      /* Serial Data Out (GP3) */
-#define I2S_DAC_SD_MODE_PIN             0      /* Optional Software Mute (GP0) */
+#define I2S_DAC_GAIN_PIN                0      /* Tri-state Hardware Gain Control (GP0) */
 #define STATUS_LED_PIN                  8      /* Onboard WS2812 RGB LED (GP8) */
 #else
 /* Waveshare LCD (Node20) / Generic WROOM (Node21) / Heemol Mini */
 #define I2S_DAC_BCLK_PIN                16     /* Bit Clock */
 #define I2S_DAC_WS_PIN                  17     /* Word Select / Frame Clock */
 #define I2S_DAC_DOUT_PIN                18     /* Serial Data Out */
-#define I2S_DAC_SD_MODE_PIN             19     /* Optional Software Mute */
+#define I2S_DAC_GAIN_PIN                -1     /* Unassigned */
 #define STATUS_LED_PIN                  8      /* Onboard WS2812 RGB LED */
 #endif
 

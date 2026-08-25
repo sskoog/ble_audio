@@ -960,9 +960,16 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
         }
     }
 
-    /* SINK Node: Transition to STREAMING if matching broadcast source found */
+    /* SINK Node: Listen for ANY BLE Audio / Auracast broadcast and lock on to the best/first source */
     if (m_node_role == NODE_ROLE_SINK) {
-        if (is_le_audio_broadcast && found_name[0] != '\0') {
+        if (is_le_audio_broadcast || strstr(found_name, "ESP32") != nullptr || strstr(found_name, "Source") != nullptr || strstr(found_name, "Node21") != nullptr) {
+            if (found_name[0] == '\0') {
+                if (addr) {
+                    snprintf(found_name, sizeof(found_name), "SRC-%02X%02X", addr->val[1], addr->val[0]);
+                } else {
+                    strncpy(found_name, "Auracast-SRC", sizeof(found_name) - 1);
+                }
+            }
             notifyAdvReceived(found_name, rssi);
         }
     }
