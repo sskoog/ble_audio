@@ -643,6 +643,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             }
             break;
         }
+        case BLE_GAP_EVENT_DISC: {
+            const auto &disc = event->disc;
+            s_broadcast_instance->parseAdvReport(disc.data, disc.length_data, disc.rssi, &disc.addr);
+            break;
+        }
                 case BLE_GAP_EVENT_CONNECT: {
             s_broadcast_instance->m_is_connecting = false;
             if (event->connect.status == 0) {
@@ -913,7 +918,7 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
     if (!data || length_data == 0) return;
 
     bool is_le_audio_broadcast = false;
-    char found_name[32] = {0};
+    char found_name[48] = {0};
 
     size_t offset = 0;
     while (offset < length_data) {
@@ -922,7 +927,7 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
 
         uint8_t ad_type = data[offset + 1];
         const uint8_t *ad_payload = &data[offset + 2];
-        uint8_t payload_len = ad_len - 1;
+        uint8_t payload_len = (ad_len > 0) ? (ad_len - 1) : 0;
 
         /* Extract Complete or Shortened Local Name (AD Types 0x09, 0x08) */
         if (ad_type == 0x09 || ad_type == 0x08) {
@@ -931,20 +936,20 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             found_name[copy_len] = '\0';
         }
 
-        /* Filter for 16-bit Service UUIDs (AD Types 0x02, 0x03): BAA (0x1852), BASS (0x184F), PACS (0x184E), PBA (0x1856) */
+        /* Filter for 16-bit Service UUIDs (AD Types 0x02, 0x03): BASE (0x1851), BAA/PBA (0x1852), BASS (0x184F), PACS (0x184E), PBA (0x1856) */
         if (ad_type == 0x02 || ad_type == 0x03) {
             for (size_t i = 0; i + 1 < payload_len; i += 2) {
                 uint16_t uuid = ad_payload[i] | (ad_payload[i + 1] << 8);
-                if (uuid == 0x1852 || uuid == 0x184F || uuid == 0x184E || uuid == 0x1856) {
+                if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x184E || uuid == 0x1856 || uuid == 0x1850) {
                     is_le_audio_broadcast = true;
                 }
             }
         }
 
-        /* Filter for Service Data (AD Type 0x16) matching BAA (0x1852) or PBA (0x1856) */
+        /* Filter for Service Data (AD Type 0x16): BASE (0x1851), BAA/PBA (0x1852), BASS (0x184F), PBA (0x1856) */
         if (ad_type == 0x16 && payload_len >= 2) {
             uint16_t uuid = ad_payload[0] | (ad_payload[1] << 8);
-            if (uuid == 0x1852 || uuid == 0x1856) {
+            if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x1856 || uuid == 0x1850) {
                 is_le_audio_broadcast = true;
             }
         }
@@ -955,14 +960,18 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
     if (found_name[0] != '\0') {
         if (strstr(found_name, "ESP32") != nullptr || 
             strstr(found_name, "Auracast") != nullptr || 
-            strstr(found_name, "Pixel") != nullptr) {
+            strstr(found_name, "ForestChirp") != nullptr ||
+            strstr(found_name, "Bumble") != nullptr ||
+            strstr(found_name, "Pixel") != nullptr ||
+            strstr(found_name, "Broadcast") != nullptr) {
             is_le_audio_broadcast = true;
         }
     }
 
-    /* SINK Node: Listen for ANY BLE Audio / Auracast broadcast and lock on to the best/first source */
+    /* SINK Node: Listen for ANY BLE Audio / Auracast / Bumble broadcast and lock on */
     if (m_node_role == NODE_ROLE_SINK) {
-        if (is_le_audio_broadcast || strstr(found_name, "ESP32") != nullptr || strstr(found_name, "Source") != nullptr || strstr(found_name, "Node21") != nullptr) {
+        if (is_le_audio_broadcast || 
+            (found_name[0] != '\0' && (strstr(found_name, "ForestChirp") != nullptr || strstr(found_name, "Auracast") != nullptr || strstr(found_name, "ESP32") != nullptr || strstr(found_name, "Source") != nullptr))) {
             if (found_name[0] == '\0') {
                 if (addr) {
                     snprintf(found_name, sizeof(found_name), "SRC-%02X%02X", addr->val[1], addr->val[0]);
