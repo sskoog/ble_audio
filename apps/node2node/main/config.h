@@ -12,8 +12,8 @@ extern "C" {
 /* =====================================================================
  *                       NODE ROLE SELECTION
  * ===================================================================== */
-#define NODE_ROLE_SINK                  1   /* Node20: Audio SINK (LCD, Receiver, I2S DAC) */
-#define NODE_ROLE_SOURCE                2   /* Node21: Audio SOURCE (Tone Gen, Broadcaster) */
+#define NODE_ROLE_SINK                  1   /* Audio SINK (Receiver + I2S DAC) */
+#define NODE_ROLE_SOURCE                2   /* Audio SOURCE (Tone Gen, Broadcaster) */
 
 /* Set active role here (can be overridden via compiler flags -DCONFIG_NODE_ROLE=...) */
 #ifndef CONFIG_ACTIVE_NODE_ROLE
@@ -23,15 +23,31 @@ extern "C" {
 /* =====================================================================
  *                   HARDWARE PROFILE DEFINITIONS
  * ===================================================================== */
-#define BOARD_WAVESHARE_LCD             1   /* 1.47" ST7789 LCD + WS2812 RGB LED */
-#define BOARD_ESP32C6_WROOM             2   /* Generic ESP32-C6-WROOM-1 DevKit */
+#define BOARD_WAVESHARE_LCD             1   /* 1.47" ST7789 LCD + WS2812 RGB LED (Node20 on COM20) */
+#define BOARD_ESP32C6_WROOM             2   /* Generic ESP32-C6-WROOM-1 DevKit (Node21 on COM21/22) */
+#define BOARD_WAVESHARE_ZERO            3   /* Waveshare ESP32-C6-Zero 18-Pin Mini (Node23/24 on COM23/24) */
+#define BOARD_HEEMOL_MINI               4   /* Heemol ESP32-C6 Mini 20-Pin (Node25/26 on COM25/26) */
 
+/* Set active board type here (can be overridden via -DCONFIG_ACTIVE_BOARD_TYPE=...) */
+#ifndef CONFIG_ACTIVE_BOARD_TYPE
 #if CONFIG_ACTIVE_NODE_ROLE == NODE_ROLE_SINK
-#define ACTIVE_BOARD_TYPE               BOARD_WAVESHARE_LCD
-#define NODE_DEVICE_NAME                "ESP32-C6-20"
+#define ACTIVE_BOARD_TYPE               BOARD_WAVESHARE_ZERO
 #else
 #define ACTIVE_BOARD_TYPE               BOARD_ESP32C6_WROOM
+#endif
+#endif
+
+/* Node Device Name */
+#ifndef NODE_DEVICE_NAME
+#if ACTIVE_BOARD_TYPE == BOARD_WAVESHARE_LCD
+#define NODE_DEVICE_NAME                "ESP32-C6-20"
+#elif ACTIVE_BOARD_TYPE == BOARD_WAVESHARE_ZERO
+#define NODE_DEVICE_NAME                "ESP32-C6-23"
+#elif ACTIVE_BOARD_TYPE == BOARD_HEEMOL_MINI
+#define NODE_DEVICE_NAME                "ESP32-C6-25"
+#else
 #define NODE_DEVICE_NAME                "ESP32-C6-21"
+#endif
 #endif
 
 /* =====================================================================
@@ -61,9 +77,22 @@ extern "C" {
 /* =====================================================================
  *                 MAX98357A I2S DAC HARDWARE PINOUT
  * ===================================================================== */
+#if ACTIVE_BOARD_TYPE == BOARD_WAVESHARE_ZERO
+/* Waveshare ESP32-C6-Zero 18-Pin Mini (Left Header GP1, GP2, GP3) */
+#define I2S_DAC_BCLK_PIN                1      /* Bit Clock (GP1) */
+#define I2S_DAC_WS_PIN                  2      /* Word Select / Frame Clock (GP2) */
+#define I2S_DAC_DOUT_PIN                3      /* Serial Data Out (GP3) */
+#define I2S_DAC_SD_MODE_PIN             0      /* Optional Software Mute (GP0) */
+#define STATUS_LED_PIN                  8      /* Onboard WS2812 RGB LED (GP8) */
+#else
+/* Waveshare LCD (Node20) / Generic WROOM (Node21) / Heemol Mini */
 #define I2S_DAC_BCLK_PIN                16     /* Bit Clock */
 #define I2S_DAC_WS_PIN                  17     /* Word Select / Frame Clock */
 #define I2S_DAC_DOUT_PIN                18     /* Serial Data Out */
+#define I2S_DAC_SD_MODE_PIN             19     /* Optional Software Mute */
+#define STATUS_LED_PIN                  8      /* Onboard WS2812 RGB LED */
+#endif
+
 #define I2S_DAC_DMA_DESC_NUM            6
 #define I2S_DAC_DMA_FRAME_NUM           240
 
