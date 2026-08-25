@@ -285,8 +285,8 @@ async def run_broadcaster(args):
             resp = await device.send_command(HCI_LE_Set_Extended_Advertising_Parameters_Command(
                 advertising_handle=0,
                 advertising_event_properties=0x0000, # Non-connectable, Non-scannable, Undirected
-                primary_advertising_interval_min=160, # 100 ms
-                primary_advertising_interval_max=160,
+                primary_advertising_interval_min=32, # 20 ms (Fast Discovery)
+                primary_advertising_interval_max=32,
                 primary_advertising_channel_map=0x07, # Channels 37, 38, 39
                 own_address_type=0x00, # Public Device Address (Factory IEEE MAC)
                 peer_address_type=0x00,
@@ -313,8 +313,8 @@ async def run_broadcaster(args):
         print(f"[2/4] Configuring Periodic Advertising with BAP BASE Descriptor...", flush=True)
         await device.send_command(HCI_LE_Set_Periodic_Advertising_Parameters_Command(
             advertising_handle=0,
-            periodic_advertising_interval_min=10, # 12.5 ms (Fast Real-Time Audio Train)
-            periodic_advertising_interval_max=16, # 20 ms
+            periodic_advertising_interval_min=8, # 10.0 ms (Exact 10ms Audio Frame Pacing)
+            periodic_advertising_interval_max=8,
             periodic_advertising_properties=0x0000
         ))
 
@@ -409,7 +409,8 @@ async def run_broadcaster(args):
                         )
                         try:
                             hci_sink.on_packet(bytes(iso_pkt))
-                            # Broadcast LC3 Left Channel in Periodic Advertising Train
+
+                            # 1. Update Periodic Advertising Data with LC3 Audio Frame (UUID 0x1851)
                             per_adv = bytearray()
                             base_service_data = bytes([0x51, 0x18]) + lc3_l
                             per_adv.extend([len(base_service_data) + 1, 0x16])
@@ -419,9 +420,26 @@ async def run_broadcaster(args):
                                 operation=0x03,
                                 advertising_data=bytes(per_adv)
                             ))
+
+                            # 2. Update Extended Advertising Data with LC3 Audio Frame (Espressif 0x02E5)
+                            adv_data = bytearray()
+                            adv_data.extend([2 + 1, 0x01, 0x06]) # Flags
+                            adv_data.extend([4, 0x16, 0x52, 0x18, 0x01]) # PBA UUID 0x1852
+                            mfg_payload = bytes([0xE5, 0x02]) + lc3_l
+                            adv_data.extend([len(mfg_payload) + 1, 0xFF])
+                            adv_data.extend(mfg_payload)
+                            name_bytes = args.adv_name.encode('utf-8')
+                            adv_data.extend([len(name_bytes) + 1, 0x09])
+                            adv_data.extend(name_bytes)
+                            await device.send_command(HCI_LE_Set_Extended_Advertising_Data_Command(
+                                advertising_handle=0,
+                                operation=0x03,
+                                fragment_preference=0,
+                                advertising_data=bytes(adv_data)
+                            ))
                         except Exception as e:
-                            print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
-                            break
+                            if seq % 100 == 1:
+                                print(f"[Broadcaster TX Warning] {e}", flush=True)
                     else:
                         # Multi-Channel: Encode 1 Mono LC3 frame per BIS stream
                         for bis_idx, bis_handle in enumerate(bis_handles):

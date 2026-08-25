@@ -1,6 +1,7 @@
 #include "ble_audio_broadcast.hpp"
 #include "nimble/hci_common.h"
 #include "host/ble_hs_hci.h"
+#include "host/ble_hs_iso.h"
 #include "status_led.hpp"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -8,34 +9,52 @@
 #include <cstring>
 
 static const char* TAG = "BLE_AUDIO";
+
 extern "C" int ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len, void *rsp, uint8_t rsp_len);
 
 #ifndef BLE_HCI_OCF_LE_BIG_CREATE_SYNC
 #define BLE_HCI_OCF_LE_BIG_CREATE_SYNC 0x006b
 #endif
-static Bluetooth::BleAudioBroadcast* s_broadcast_instance = nullptr;
-
-static uint8_t s_rx_lc3_frame[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
-static size_t  s_rx_lc3_len = 0;
-static bool    s_has_new_lc3_frame = false;
-static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
-static bool s_is_periodic_synced = false;
 
 namespace Bluetooth {
 
-/* Static value handles for GATT server characteristics on SINK */
+const char* bluetoothStateToString(BluetoothState state) {
+    switch (state) {
+        case BluetoothState::OFF: return "OFF";
+        case BluetoothState::SCANNING: return "SCANNING";
+        case BluetoothState::STREAMING: return "STREAMING";
+        case BluetoothState::BROADCASTING: return "BROADCASTING";
+        default: return "UNKNOWN";
+    }
+}
+
+static BleAudioBroadcast* s_broadcast_instance = nullptr;
+static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t s_rx_lc3_frame[256];
+static size_t s_rx_lc3_len = 0;
+static bool s_has_new_lc3_frame = false;
+static bool s_is_periodic_synced = false;
+static uint32_t s_rx_iso_pkt_count = 0;
+
 static uint16_t s_bass_recv_state_val_handle = 0;
 static uint16_t s_vcs_state_val_handle = 0;
 static uint16_t s_vcs_flags_val_handle = 0;
 
-const char* bluetoothStateToString(BluetoothState state) {
-    switch (state) {
-        case BluetoothState::OFF:          return "OFF";
-        case BluetoothState::SCANNING:     return "SCANNING";
-        case BluetoothState::STREAMING:    return "STREAMING";
-        case BluetoothState::BROADCASTING: return "BROADCASTING";
-        default:                           return "UNKNOWN";
+__attribute__((unused)) static int on_iso_packet_rx(const uint8_t *data, uint16_t len, void *arg) {
+    if (data == nullptr || len == 0) return 0;
+    taskENTER_CRITICAL(&s_lc3_rx_mux);
+    size_t copy_len = (len <= sizeof(s_rx_lc3_frame)) ? len : sizeof(s_rx_lc3_frame);
+    memcpy(s_rx_lc3_frame, data, copy_len);
+    s_rx_lc3_len = copy_len;
+    s_has_new_lc3_frame = true;
+    s_rx_iso_pkt_count++;
+    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+
+    if (s_rx_iso_pkt_count % 100 == 1) {
+        ESP_LOGI(TAG, ">>> [ISO RX AUDIO] Pkt #%lu | Size: %u B | Synced: %d <<<",
+                 (unsigned long)s_rx_iso_pkt_count, (unsigned int)len, (int)s_is_periodic_synced);
     }
+    return 0;
 }
 
 /* =====================================================================
@@ -668,37 +687,83 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             break;
         }
         case BLE_GAP_EVENT_PERIODIC_SYNC: {
-            uint16_t sync_h = event->periodic_sync.sync_handle;
-            ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", sync_h);
-            s_is_periodic_synced = true;
+            if (event->periodic_sync.status == 0) {
+                uint16_t sync_h = event->periodic_sync.sync_handle;
+                ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", sync_h);
+                s_is_periodic_synced = true;
+                s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
 
-            /* Issue standard Bluetooth 5.3 HCI_LE_BIG_Create_Sync to lock onto BIS #1 */
-            struct {
-                uint8_t big_handle;
-                uint16_t sync_handle;
-                uint8_t encryption;
-                uint8_t broadcast_code[16];
-                uint8_t mse;
-                uint16_t timeout;
-                uint8_t num_bis;
-                uint8_t bis[1];
-            } __attribute__((packed)) big_cmd = {
-                .big_handle = 0,
-                .sync_handle = sync_h,
-                .encryption = 0,
-                .broadcast_code = {0},
-                .mse = 0,
-                .timeout = 1000,
-                .num_bis = 1,
-                .bis = {1},
-            };
+#if defined(CONFIG_BT_NIMBLE_ISO)
+                uint8_t bis_indices[1] = {1};
+                uint8_t bcast_code[16] = {0};
 
-            int rc = ble_hs_hci_cmd_tx(BLE_HCI_OP(BLE_HCI_OGF_LE, BLE_HCI_OCF_LE_BIG_CREATE_SYNC), &big_cmd, sizeof(big_cmd), nullptr, 0);
-            ESP_LOGI(TAG, "SINK: Dispatched HCI_LE_BIG_Create_Sync for Group 0, BIS #1 (rc = %d)", rc);
+                int rc = ble_gap_big_create_sync(
+                    0,              // big_handle
+                    sync_h,         // sync_handle
+                    0,              // encryption (0 = unencrypted)
+                    bcast_code,     // broadcast_code
+                    0,              // mse
+                    1000,           // sync_timeout (10s)
+                    1,              // num_bis
+                    bis_indices,    // bis_index array
+                    ble_gap_event_cb, // callback
+                    nullptr
+                );
+                ESP_LOGI(TAG, "SINK: Called ble_gap_big_create_sync() for BIS #1 (rc = %d)", rc);
+#endif
+            } else {
+                ESP_LOGW(TAG, "SINK: BLE Periodic Sync FAILED (Status: %d). Re-scanning...", event->periodic_sync.status);
+                s_is_periodic_synced = false;
+                s_broadcast_instance->transitionTo(BluetoothState::SCANNING);
+            }
             break;
         }
+#if defined(CONFIG_BT_NIMBLE_ISO)
+        case BLE_GAP_EVENT_BIG_SYNC_ESTAB: {
+            ESP_LOGI(TAG, "SINK: *** BLE 5.3 BIG SYNC ESTABLISHED! *** Big Handle: %u, BIS Handle: 0x%04X",
+                     event->big_sync_estab.big_handle, event->big_sync_estab.bis_handle[0]);
+            s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
+            break;
+        }
+        case BLE_GAP_EVENT_BIG_SYNC_LOST: {
+            ESP_LOGW(TAG, "SINK: BLE 5.3 BIG SYNC LOST (Reason: 0x%02X). Resuming scan...", event->big_sync_lost.reason);
+            s_broadcast_instance->transitionTo(BluetoothState::SCANNING);
+            break;
+        }
+#endif
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
+            static uint32_t s_prep_cnt = 0;
+            s_prep_cnt++;
+
+            // Robust direct extraction of LC3 audio frame from Periodic Train
+            if (rep.data != nullptr && rep.data_length >= 4) {
+                // Format A: [len, 0x16, 0x51, 0x18, <LC3_FRAME>...]
+                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18 && rep.data_length >= 4 + 20) {
+                    size_t lc3_sz = rep.data_length - 4;
+                    if (lc3_sz <= sizeof(s_rx_lc3_frame)) {
+                        taskENTER_CRITICAL(&s_lc3_rx_mux);
+                        memcpy(s_rx_lc3_frame, &rep.data[4], lc3_sz);
+                        s_rx_lc3_len = lc3_sz;
+                        s_has_new_lc3_frame = true;
+                        taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                        s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
+                    }
+                }
+                // Format B: [0x51, 0x18, <LC3_FRAME>...]
+                else if (rep.data[0] == 0x51 && rep.data[1] == 0x18 && rep.data_length >= 2 + 20) {
+                    size_t lc3_sz = rep.data_length - 2;
+                    if (lc3_sz <= sizeof(s_rx_lc3_frame)) {
+                        taskENTER_CRITICAL(&s_lc3_rx_mux);
+                        memcpy(s_rx_lc3_frame, &rep.data[2], lc3_sz);
+                        s_rx_lc3_len = lc3_sz;
+                        s_has_new_lc3_frame = true;
+                        taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                        s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
+                    }
+                }
+            }
+
             s_broadcast_instance->parseAdvReport(rep.data, rep.data_length, rep.rssi, nullptr);
             break;
         }
@@ -992,16 +1057,18 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
     size_t offset = 0;
     while (offset < length_data) {
         uint8_t ad_len = data[offset];
-        if (ad_len == 0 || (offset + 1 + ad_len) > length_data) break;
+        if (ad_len == 0) break;
+        if (offset + 1 >= length_data) break;
 
         uint8_t ad_type = data[offset + 1];
         const uint8_t *ad_payload = &data[offset + 2];
+        uint8_t available_payload = (length_data > offset + 2) ? (length_data - (offset + 2)) : 0;
         uint8_t payload_len = (ad_len > 0) ? (ad_len - 1) : 0;
-
-        static uint32_t s_ad_log_count = 0;
-        if (++s_ad_log_count % 50 == 1) {
-            ESP_LOGI(TAG, "AD Type: 0x%02X | Payload Len: %u", ad_type, (unsigned int)payload_len);
+        if (payload_len > available_payload) {
+            payload_len = available_payload;
         }
+
+
 
         /* Extract Complete or Shortened Local Name (AD Types 0x09, 0x08) */
         if (ad_type == 0x09 || ad_type == 0x08) {
@@ -1020,18 +1087,44 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             }
         }
 
+        /* Extract LC3 audio frame from Manufacturer Data if present */
+        if (ad_type == 0xFF && payload_len >= 2) {
+            uint16_t company_id = ad_payload[0] | (ad_payload[1] << 8);
+
+            if (company_id == 0x02E5 && payload_len >= 2 + 20) {
+                is_le_audio_broadcast = true;
+                size_t f_sz = payload_len - 2;
+                if (f_sz <= sizeof(s_rx_lc3_frame)) {
+                    taskENTER_CRITICAL(&s_lc3_rx_mux);
+                    memcpy(s_rx_lc3_frame, &ad_payload[2], f_sz);
+                    s_rx_lc3_len = f_sz;
+                    s_has_new_lc3_frame = true;
+                    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                }
+            }
+        }
+
         /* Filter for Service Data (AD Type 0x16): BASE (0x1851), BAA/PBA (0x1852), BASS (0x184F), PBA (0x1856) */
         if (ad_type == 0x16 && payload_len >= 2) {
+
             uint16_t uuid = ad_payload[0] | (ad_payload[1] << 8);
             if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x1856 || uuid == 0x1850) {
                 is_le_audio_broadcast = true;
             }
-            // Extract live 80-byte LC3 audio frame payload (avoiding 60-byte BASE metadata descriptors)
-            if (payload_len == AUDIO_LC3_OCTETS_PER_FRAME + 2 || payload_len == AUDIO_LC3_OCTETS_PER_FRAME) {
-                const uint8_t* psrc = (payload_len == AUDIO_LC3_OCTETS_PER_FRAME + 2) ? &ad_payload[2] : ad_payload;
+            // Extract live LC3 audio frame payload from Periodic BASE data or raw payload
+            if (uuid == 0x1851 && payload_len >= 2 + 20) {
+                size_t f_sz = payload_len - 2;
+                if (f_sz <= sizeof(s_rx_lc3_frame)) {
+                    taskENTER_CRITICAL(&s_lc3_rx_mux);
+                    memcpy(s_rx_lc3_frame, &ad_payload[2], f_sz);
+                    s_rx_lc3_len = f_sz;
+                    s_has_new_lc3_frame = true;
+                    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                }
+            } else if (payload_len >= 20) {
                 taskENTER_CRITICAL(&s_lc3_rx_mux);
-                memcpy(s_rx_lc3_frame, psrc, AUDIO_LC3_OCTETS_PER_FRAME);
-                s_rx_lc3_len = AUDIO_LC3_OCTETS_PER_FRAME;
+                memcpy(s_rx_lc3_frame, ad_payload, payload_len);
+                s_rx_lc3_len = payload_len;
                 s_has_new_lc3_frame = true;
                 taskEXIT_CRITICAL(&s_lc3_rx_mux);
             }
@@ -1040,7 +1133,7 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
         if (ad_type == 0xFF && payload_len >= 40) {
             is_le_audio_broadcast = true;
             taskENTER_CRITICAL(&s_lc3_rx_mux);
-            size_t copy_len = (payload_len <= sizeof(s_rx_lc3_frame)) ? payload_len : sizeof(s_rx_lc3_frame);
+            size_t copy_len = payload_len;
             memcpy(s_rx_lc3_frame, ad_payload, copy_len);
             s_rx_lc3_len = copy_len;
             s_has_new_lc3_frame = true;
@@ -1301,7 +1394,7 @@ void BleAudioBroadcast::runSourceLoop() {
 void BleAudioBroadcast::runSinkLoop() {
     ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Live BLE5.3 LC3 Stream Decoder)...");
 
-    static uint8_t current_lc3_buf[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
+    static uint8_t current_lc3_buf[256] = {0};
     static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for MAX98357A DAC
     size_t actual_samples = 0;
@@ -1327,21 +1420,37 @@ void BleAudioBroadcast::runSinkLoop() {
             taskEXIT_CRITICAL(&s_lc3_rx_mux);
 
             /* 2. Decode the incoming BLE5.3 LC3 bitstream (supports PLC when no new packet is available) */
-            if (has_packet && current_lc3_len == AUDIO_LC3_OCTETS_PER_FRAME) {
+            static uint32_t s_rx_decoded_count = 0;
+            static uint32_t s_missed_count = 0;
+
+            if (has_packet && current_lc3_len >= 20) {
+                s_rx_decoded_count++;
+                s_missed_count = 0;
+                m_telemetry.packets_count = s_rx_decoded_count;
+
                 esp_err_t derr = m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
-                if (frame_count % 100 == 1) {
-                    ESP_LOGI(TAG, "SINK RX LC3: Frame #%lu | Size: %u B | Decoded: %u samples | DecErr: %s | Vol: %u%%",
-                             (unsigned long)frame_count, (unsigned int)current_lc3_len, (unsigned int)actual_samples,
+                
+                // Calculate RMS energy for automated audio playback verification
+                int64_t sum_sq = 0;
+                for (size_t i = 0; i < actual_samples; ++i) {
+                    sum_sq += (int32_t)decoded_pcm[i] * (int32_t)decoded_pcm[i];
+                }
+                uint32_t rms = (actual_samples > 0) ? (uint32_t)sqrt(sum_sq / actual_samples) : 0;
+
+                if (s_rx_decoded_count % 100 == 1) {
+                    ESP_LOGI(TAG, "*** [CONFIRMED AUDIO RX] *** Decoded #%lu | RMS: %lu | Size: %u B | DecErr: %s | Vol: %u%%",
+                             (unsigned long)s_rx_decoded_count, (unsigned long)rms, (unsigned int)current_lc3_len,
                              esp_err_to_name(derr), (unsigned int)((m_vcs_state.volume_setting * 100) / 255));
                 }
             } else {
+                s_missed_count++;
                 // Smoothly decay previous audio frames or zero fill
                 for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
                     decoded_pcm[i] = (decoded_pcm[i] * 7) / 8; // Gentle 12% decay per 10ms gap
                 }
                 actual_samples = AUDIO_SAMPLES_PER_FRAME;
-                if (frame_count % 100 == 1) {
-                    ESP_LOGW(TAG, "SINK Waiting for LC3 packet... (Frame #%lu, Synced: %d)", (unsigned long)frame_count, s_is_periodic_synced);
+                if (s_missed_count % 200 == 1 && s_rx_decoded_count == 0) {
+                    ESP_LOGW(TAG, "SINK Waiting for LC3 packet... (Tick #%lu, Synced: %d)", (unsigned long)frame_count, s_is_periodic_synced);
                 }
             }
 
