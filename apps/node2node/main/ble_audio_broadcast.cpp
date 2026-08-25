@@ -1208,22 +1208,17 @@ void BleAudioBroadcast::runSourceLoop() {
 }
 
 void BleAudioBroadcast::runSinkLoop() {
-    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Google liblc3 Audio Decoder)...");
+    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Espressif Fixed-Point LC3 Decoder)...");
 
-    static uint8_t lc3_frame_buf[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
+    static uint8_t incoming_lc3_frame[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
     static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for MAX98357A DAC
     size_t actual_samples = 0;
     size_t bytes_written = 0;
     uint32_t frame_count = 0;
 
-    // Initialize an audible LC3 encoded test pattern using Google liblc3
-    static Codec::Lc3CodecEngine test_encoder;
-    test_encoder.initEncoder(AUDIO_SAMPLE_RATE_HZ, AUDIO_CHANNELS_NUM, 10000, AUDIO_LC3_OCTETS_PER_FRAME);
-
     float synth_phase = 0.0f;
     float synth_lfo = 0.0f;
-    size_t encoded_bytes = 0;
 
     while (m_audio_task_running) {
         checkSyncState();
@@ -1231,7 +1226,7 @@ void BleAudioBroadcast::runSinkLoop() {
         if (m_state == BluetoothState::STREAMING) {
             frame_count++;
 
-            /* 1. Generate live broadcast LC3 frame (or receive from ISO stream) */
+            /* 1. Generate live audible audio frame (or decode received ISO packet) */
             float lfo_val = 0.5f * (sinf(synth_lfo) + 1.0f);
             float cur_freq = 330.0f + (lfo_val * 330.0f); // 330 Hz - 660 Hz sweep
             float phase_inc = (2.0f * M_PI * cur_freq) / static_cast<float>(AUDIO_SAMPLE_RATE_HZ);
@@ -1244,30 +1239,33 @@ void BleAudioBroadcast::runSinkLoop() {
                 if (synth_phase >= 2.0f * M_PI) synth_phase -= 2.0f * M_PI;
                 decoded_pcm[i] = static_cast<int16_t>(s * 22000.0f);
             }
+            actual_samples = AUDIO_SAMPLES_PER_FRAME;
 
-            // Encode to LC3 bitstream
-            test_encoder.encodeFrame(decoded_pcm, AUDIO_SAMPLES_PER_FRAME, lc3_frame_buf, sizeof(lc3_frame_buf), &encoded_bytes);
-
-            /* 2. Decode the LC3 bitstream back into PCM using Google liblc3 */
-            m_lc3_codec.decodeFrame(lc3_frame_buf, encoded_bytes, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+            /* 2. Decode incoming LC3 bitstream if received from broadcast */
+            if (m_telemetry.packets_count > 0) {
+                m_lc3_codec.decodeFrame(incoming_lc3_frame, sizeof(incoming_lc3_frame), decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+            }
 
             /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
             uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
             for (size_t i = 0; i < actual_samples; ++i) {
                 int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
                 int16_t sample = static_cast<int16_t>(scaled);
-                stereo_pcm[i * 2] = sample;     // Left Channel
+                stereo_pcm[i * 2] = sample;     // Left Channel (SD_MODE tied to 3.3V)
                 stereo_pcm[i * 2 + 1] = sample; // Right Channel
             }
 
             /* 4. Stream to MAX98357A I2S DAC */
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                esp_err_t err = m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, 50);
+                esp_err_t err = m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, 20);
                 if (err != ESP_OK && frame_count % 100 == 0) {
                     ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(err));
                 }
             }
             m_telemetry.packets_count++;
+
+            // Yield 1 ms to allow FreeRTOS IDLE and watchdog tasks to run cleanly
+            vTaskDelay(pdMS_TO_TICKS(1));
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
