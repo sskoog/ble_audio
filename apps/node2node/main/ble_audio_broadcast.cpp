@@ -1,4 +1,6 @@
 #include "ble_audio_broadcast.hpp"
+#include "nimble/hci_common.h"
+#include "host/ble_hs_hci.h"
 #include "status_led.hpp"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -6,6 +8,11 @@
 #include <cstring>
 
 static const char* TAG = "BLE_AUDIO";
+extern "C" int ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len, void *rsp, uint8_t rsp_len);
+
+#ifndef BLE_HCI_OCF_LE_BIG_CREATE_SYNC
+#define BLE_HCI_OCF_LE_BIG_CREATE_SYNC 0x006b
+#endif
 static Bluetooth::BleAudioBroadcast* s_broadcast_instance = nullptr;
 
 static uint8_t s_rx_lc3_frame[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
@@ -661,13 +668,51 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             break;
         }
         case BLE_GAP_EVENT_PERIODIC_SYNC: {
-            ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", event->periodic_sync.sync_handle);
+            uint16_t sync_h = event->periodic_sync.sync_handle;
+            ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", sync_h);
             s_is_periodic_synced = true;
+
+            /* Issue standard Bluetooth 5.3 HCI_LE_BIG_Create_Sync to lock onto BIS #1 */
+            struct {
+                uint8_t big_handle;
+                uint16_t sync_handle;
+                uint8_t encryption;
+                uint8_t broadcast_code[16];
+                uint8_t mse;
+                uint16_t timeout;
+                uint8_t num_bis;
+                uint8_t bis[1];
+            } __attribute__((packed)) big_cmd = {
+                .big_handle = 0,
+                .sync_handle = sync_h,
+                .encryption = 0,
+                .broadcast_code = {0},
+                .mse = 0,
+                .timeout = 1000,
+                .num_bis = 1,
+                .bis = {1},
+            };
+
+            int rc = ble_hs_hci_cmd_tx(BLE_HCI_OP(BLE_HCI_OGF_LE, BLE_HCI_OCF_LE_BIG_CREATE_SYNC), &big_cmd, sizeof(big_cmd), nullptr, 0);
+            ESP_LOGI(TAG, "SINK: Dispatched HCI_LE_BIG_Create_Sync for Group 0, BIS #1 (rc = %d)", rc);
             break;
         }
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
             s_broadcast_instance->parseAdvReport(rep.data, rep.data_length, rep.rssi, nullptr);
+            break;
+        }
+        case BLE_GAP_EVENT_NOTIFY_RX: {
+            if (event->notify_rx.om != nullptr) {
+                uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
+                if (len == AUDIO_LC3_OCTETS_PER_FRAME) {
+                    taskENTER_CRITICAL(&s_lc3_rx_mux);
+                    os_mbuf_copydata(event->notify_rx.om, 0, len, s_rx_lc3_frame);
+                    s_rx_lc3_len = len;
+                    s_has_new_lc3_frame = true;
+                    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                }
+            }
             break;
         }
         case BLE_GAP_EVENT_PERIODIC_SYNC_LOST: {
@@ -739,17 +784,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             }
             break;
         }
-        case BLE_GAP_EVENT_NOTIFY_RX: {
-            uint16_t conn_handle = event->notify_rx.conn_handle;
-            uint16_t attr_handle = event->notify_rx.attr_handle;
-            uint8_t data[64] = {0};
-            uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
-            if (len > sizeof(data)) len = sizeof(data);
-            os_mbuf_copydata(event->notify_rx.om, 0, len, data);
-
-            s_broadcast_instance->handleIncomingNotification(conn_handle, attr_handle, data, len);
-            break;
-        }
+        
         case BLE_GAP_EVENT_DISC_COMPLETE: {
             s_broadcast_instance->startScanning();
             break;
@@ -963,6 +998,11 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
         const uint8_t *ad_payload = &data[offset + 2];
         uint8_t payload_len = (ad_len > 0) ? (ad_len - 1) : 0;
 
+        static uint32_t s_ad_log_count = 0;
+        if (++s_ad_log_count % 50 == 1) {
+            ESP_LOGI(TAG, "AD Type: 0x%02X | Payload Len: %u", ad_type, (unsigned int)payload_len);
+        }
+
         /* Extract Complete or Shortened Local Name (AD Types 0x09, 0x08) */
         if (ad_type == 0x09 || ad_type == 0x08) {
             size_t copy_len = (payload_len < sizeof(found_name) - 1) ? payload_len : (sizeof(found_name) - 1);
@@ -986,12 +1026,12 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x1856 || uuid == 0x1850) {
                 is_le_audio_broadcast = true;
             }
-            // Extract live LC3 audio frame payload (if >= 40 bytes)
-            if (payload_len >= 42) {
+            // Extract live 80-byte LC3 audio frame payload (avoiding 60-byte BASE metadata descriptors)
+            if (payload_len == AUDIO_LC3_OCTETS_PER_FRAME + 2 || payload_len == AUDIO_LC3_OCTETS_PER_FRAME) {
+                const uint8_t* psrc = (payload_len == AUDIO_LC3_OCTETS_PER_FRAME + 2) ? &ad_payload[2] : ad_payload;
                 taskENTER_CRITICAL(&s_lc3_rx_mux);
-                size_t copy_len = (payload_len - 2 <= sizeof(s_rx_lc3_frame)) ? (payload_len - 2) : sizeof(s_rx_lc3_frame);
-                memcpy(s_rx_lc3_frame, &ad_payload[2], copy_len);
-                s_rx_lc3_len = copy_len;
+                memcpy(s_rx_lc3_frame, psrc, AUDIO_LC3_OCTETS_PER_FRAME);
+                s_rx_lc3_len = AUDIO_LC3_OCTETS_PER_FRAME;
                 s_has_new_lc3_frame = true;
                 taskEXIT_CRITICAL(&s_lc3_rx_mux);
             }
@@ -1287,7 +1327,7 @@ void BleAudioBroadcast::runSinkLoop() {
             taskEXIT_CRITICAL(&s_lc3_rx_mux);
 
             /* 2. Decode the incoming BLE5.3 LC3 bitstream (supports PLC when no new packet is available) */
-            if (has_packet && current_lc3_len > 0) {
+            if (has_packet && current_lc3_len == AUDIO_LC3_OCTETS_PER_FRAME) {
                 esp_err_t derr = m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
                 if (frame_count % 100 == 1) {
                     ESP_LOGI(TAG, "SINK RX LC3: Frame #%lu | Size: %u B | Decoded: %u samples | DecErr: %s | Vol: %u%%",
@@ -1295,8 +1335,11 @@ void BleAudioBroadcast::runSinkLoop() {
                              esp_err_to_name(derr), (unsigned int)((m_vcs_state.volume_setting * 100) / 255));
                 }
             } else {
-                // Packet loss concealment / zero frame reconstruction
-                m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                // Smoothly decay previous audio frames or zero fill
+                for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+                    decoded_pcm[i] = (decoded_pcm[i] * 7) / 8; // Gentle 12% decay per 10ms gap
+                }
+                actual_samples = AUDIO_SAMPLES_PER_FRAME;
                 if (frame_count % 100 == 1) {
                     ESP_LOGW(TAG, "SINK Waiting for LC3 packet... (Frame #%lu, Synced: %d)", (unsigned long)frame_count, s_is_periodic_synced);
                 }
