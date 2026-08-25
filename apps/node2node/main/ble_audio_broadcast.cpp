@@ -1288,10 +1288,18 @@ void BleAudioBroadcast::runSinkLoop() {
 
             /* 2. Decode the incoming BLE5.3 LC3 bitstream (supports PLC when no new packet is available) */
             if (has_packet && current_lc3_len > 0) {
-                m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                esp_err_t derr = m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                if (frame_count % 100 == 1) {
+                    ESP_LOGI(TAG, "SINK RX LC3: Frame #%lu | Size: %u B | Decoded: %u samples | DecErr: %s | Vol: %u%%",
+                             (unsigned long)frame_count, (unsigned int)current_lc3_len, (unsigned int)actual_samples,
+                             esp_err_to_name(derr), (unsigned int)((m_vcs_state.volume_setting * 100) / 255));
+                }
             } else {
                 // Packet loss concealment / zero frame reconstruction
                 m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                if (frame_count % 100 == 1) {
+                    ESP_LOGW(TAG, "SINK Waiting for LC3 packet... (Frame #%lu, Synced: %d)", (unsigned long)frame_count, s_is_periodic_synced);
+                }
             }
 
             /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */

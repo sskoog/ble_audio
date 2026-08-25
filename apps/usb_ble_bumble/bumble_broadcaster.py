@@ -409,6 +409,16 @@ async def run_broadcaster(args):
                         )
                         try:
                             hci_sink.on_packet(bytes(iso_pkt))
+                            # Broadcast LC3 Left Channel in Periodic Advertising Train
+                            per_adv = bytearray()
+                            base_service_data = bytes([0x51, 0x18]) + lc3_l
+                            per_adv.extend([len(base_service_data) + 1, 0x16])
+                            per_adv.extend(base_service_data)
+                            await device.send_command(HCI_LE_Set_Periodic_Advertising_Data_Command(
+                                advertising_handle=0,
+                                operation=0x03,
+                                advertising_data=bytes(per_adv)
+                            ))
                         except Exception as e:
                             print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
                             break
@@ -429,7 +439,6 @@ async def run_broadcaster(args):
                             )
                             try:
                                 hci_sink.on_packet(bytes(iso_pkt))
-                                # Also update periodic advertising data with the live LC3 audio frame
                                 if bis_idx == 0:
                                     per_adv = bytearray()
                                     base_service_data = bytes([0x51, 0x18]) + payload
