@@ -27,5 +27,5 @@ idf_component_register(
         esp_http_server
         esp_coex
         lwip
-        liblc3
+        espressif__esp_audio_codec
 )
