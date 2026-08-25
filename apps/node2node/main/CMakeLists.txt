@@ -27,4 +27,5 @@ idf_component_register(
         esp_http_server
         esp_coex
         lwip
+        liblc3
 )

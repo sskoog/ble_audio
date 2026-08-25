@@ -53,7 +53,7 @@ extern "C" {
 /* =====================================================================
  *                    AUDIO & CODEC CONFIGURATION
  * ===================================================================== */
-#define AUDIO_SAMPLE_RATE_HZ            44100
+#define AUDIO_SAMPLE_RATE_HZ            48000
 #define AUDIO_BIT_DEPTH                 16
 #define AUDIO_CHANNELS_NUM              1      /* Mono BIS */
 #define AUDIO_FRAME_DURATION_MS         10     /* 10 ms ISO frame */

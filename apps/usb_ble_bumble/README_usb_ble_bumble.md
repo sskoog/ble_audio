@@ -189,6 +189,12 @@ The ESP32-C6-WROOM-1 DevKit on-board addressable RGB LED provides real-time visu
 * **Problem**: `pip install liblc3` failed during metadata generation due to `mesonpy` disallowing internal DLL bundling in Windows wheels.
 * **Solution**: Built Google `liblc3` directly into `liblc3.dll` using WinLibs GCC (`gcc -O3 -shared -o liblc3.dll ...`) and loaded it via high-performance Python ctypes.
 
+### Pitfall 7: Host Abort & Link Layer Residual Broadcast
+* **Problem**: Aborting the host script left the ESP32 Link Layer actively emitting Extended and Periodic Advertising trains on 2.4 GHz, causing receivers to detect phantom broadcasts, and failing to detect hardware resets.
+* **Solution**:
+  1. Monitored `hci_source.terminated` on every packet transmission and sleep interval to immediately detect ESP32 disconnects/resets and abort cleanly.
+  2. Implemented `stop_broadcast(device)` executing `HCI_LE_Terminate_BIG_Command`, disabling Periodic & Extended Advertising, and issuing `HCI_Reset_Command`, immediately returning the controller to Standby and resetting the status LED to slow 0.5 Hz Green idle.
+
 ---
 
 ## 7. Verification & Test Plan

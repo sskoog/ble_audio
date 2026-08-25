@@ -1208,56 +1208,67 @@ void BleAudioBroadcast::runSourceLoop() {
 }
 
 void BleAudioBroadcast::runSinkLoop() {
-    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Continuous DMA Pacing)...");
+    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Google liblc3 Audio Decoder)...");
 
-    static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for standard I2S DAC
+    static uint8_t lc3_frame_buf[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
+    static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
+    static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for MAX98357A DAC
+    size_t actual_samples = 0;
     size_t bytes_written = 0;
-
-    float phase = 0.0f;
-    float lfo_phase = 0.0f;
     uint32_t frame_count = 0;
+
+    // Initialize an audible LC3 encoded test pattern using Google liblc3
+    static Codec::Lc3CodecEngine test_encoder;
+    test_encoder.initEncoder(AUDIO_SAMPLE_RATE_HZ, AUDIO_CHANNELS_NUM, 10000, AUDIO_LC3_OCTETS_PER_FRAME);
+
+    float synth_phase = 0.0f;
+    float synth_lfo = 0.0f;
+    size_t encoded_bytes = 0;
 
     while (m_audio_task_running) {
         checkSyncState();
 
         if (m_state == BluetoothState::STREAMING) {
             frame_count++;
-            
-            /* Apply VCS Digital Output Volume Multiplier & Mute to SINK Audio Output */
-            uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
-            
-            /* LFO modulated synth tone: 330 Hz to 660 Hz sweep at 0.5 Hz LFO */
-            float lfo_val = 0.5f * (sinf(lfo_phase) + 1.0f); // 0.0 to 1.0
-            float cur_freq = 330.0f + (lfo_val * 330.0f);   // 330 Hz to 660 Hz
+
+            /* 1. Generate live broadcast LC3 frame (or receive from ISO stream) */
+            float lfo_val = 0.5f * (sinf(synth_lfo) + 1.0f);
+            float cur_freq = 330.0f + (lfo_val * 330.0f); // 330 Hz - 660 Hz sweep
             float phase_inc = (2.0f * M_PI * cur_freq) / static_cast<float>(AUDIO_SAMPLE_RATE_HZ);
-            lfo_phase += (2.0f * M_PI * 0.5f) * (AUDIO_FRAME_DURATION_MS / 1000.0f);
-            if (lfo_phase >= 2.0f * M_PI) lfo_phase -= 2.0f * M_PI;
+            synth_lfo += (2.0f * M_PI * 0.5f) * (AUDIO_FRAME_DURATION_MS / 1000.0f);
+            if (synth_lfo >= 2.0f * M_PI) synth_lfo -= 2.0f * M_PI;
 
             for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
-                float s = sinf(phase);
-                phase += phase_inc;
-                if (phase >= 2.0f * M_PI) phase -= 2.0f * M_PI;
-
-                int16_t raw_sample = static_cast<int16_t>(s * 22000.0f); // Clean 67% peak amplitude
-                int32_t scaled = (static_cast<int32_t>(raw_sample) * vol_scale) / 255;
-                int16_t sample = static_cast<int16_t>(scaled);
-
-                // Duplicate into Left & Right slots for MAX98357A (SD_MODE tied to 3.3V = Left Channel)
-                stereo_pcm[i * 2] = sample;
-                stereo_pcm[i * 2 + 1] = sample;
+                float s = sinf(synth_phase);
+                synth_phase += phase_inc;
+                if (synth_phase >= 2.0f * M_PI) synth_phase -= 2.0f * M_PI;
+                decoded_pcm[i] = static_cast<int16_t>(s * 22000.0f);
             }
 
+            // Encode to LC3 bitstream
+            test_encoder.encodeFrame(decoded_pcm, AUDIO_SAMPLES_PER_FRAME, lc3_frame_buf, sizeof(lc3_frame_buf), &encoded_bytes);
+
+            /* 2. Decode the LC3 bitstream back into PCM using Google liblc3 */
+            m_lc3_codec.decodeFrame(lc3_frame_buf, encoded_bytes, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+
+            /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
+            uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
+            for (size_t i = 0; i < actual_samples; ++i) {
+                int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                int16_t sample = static_cast<int16_t>(scaled);
+                stereo_pcm[i * 2] = sample;     // Left Channel
+                stereo_pcm[i * 2 + 1] = sample; // Right Channel
+            }
+
+            /* 4. Stream to MAX98357A I2S DAC */
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                // Blocking DMA write naturally governs the 10 ms audio pacing without micro-silence gaps
-                esp_err_t err = m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 50);
+                esp_err_t err = m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, 50);
                 if (err != ESP_OK && frame_count % 100 == 0) {
                     ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(err));
                 }
             }
             m_telemetry.packets_count++;
-            // Note: No vTaskDelay here during streaming — I2S DMA write provides perfect continuous clock pacing
         } else {
-            // Idle or Scanning: Sleep 10 ms to yield CPU to other tasks
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }

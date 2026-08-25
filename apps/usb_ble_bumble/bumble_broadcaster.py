@@ -37,6 +37,7 @@ from bumble.hci import (
     HCI_LE_Set_Extended_Advertising_Enable_Command,
     HCI_LE_Create_BIG_Command,
     HCI_LE_Terminate_BIG_Command,
+    HCI_Reset_Command,
     HCI_IsoDataPacket
 )
 
@@ -85,6 +86,52 @@ def print_bap_options():
     print("    * Configured in milliseconds (5.0 ms to 250.0 ms, default: 40.0 ms).")
     print("    * Automatically packed into 24-bit Little-Endian microseconds representation.")
     print("=====================================================================\n")
+
+async def stop_broadcast(device: Device):
+    """
+    Gracefully terminates BIG, disables Periodic and Extended Advertising,
+    and resets the ESP32 Controller link layer to clean Standby/Idle state (Green LED).
+    """
+    print("\n[Teardown] Stopping Auracast broadcast on ESP32...", flush=True)
+    try:
+        await device.send_command(
+            HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x16),
+            check_result=False
+        )
+        print("  * Terminated Broadcast Isochronous Group (BIG Handle 0)", flush=True)
+    except Exception as e:
+        logging.debug(f"Terminate BIG notice: {e}")
+
+    try:
+        await device.send_command(
+            HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0),
+            check_result=False
+        )
+        print("  * Disabled Periodic Advertising (PA)", flush=True)
+    except Exception as e:
+        logging.debug(f"Disable PA notice: {e}")
+
+    try:
+        await device.send_command(
+            HCI_LE_Set_Extended_Advertising_Enable_Command(
+                enable=0,
+                advertising_handles=[0],
+                durations=[0],
+                max_extended_advertising_events=[0]
+            ),
+            check_result=False
+        )
+        print("  * Disabled Extended Advertising (EA)", flush=True)
+    except Exception as e:
+        logging.debug(f"Disable EA notice: {e}")
+
+    try:
+        await device.send_command(HCI_Reset_Command(), check_result=False)
+        print("  * Reset Controller Link Layer to Standby (LED -> Slow Green Idle)", flush=True)
+    except Exception as e:
+        logging.debug(f"HCI Reset notice: {e}")
+
+    print("[Teardown] Broadcast stopped cleanly. ESP32 is now in IDLE mode.\n", flush=True)
 
 # --------------------------------------------------------------------------
 # Main Broadcaster Loop
@@ -337,6 +384,11 @@ async def run_broadcaster(args):
 
         try:
             while True:
+                # Check for COM port disconnect or hardware reset
+                if hci_source.terminated.done():
+                    print("\n[ABORT] COM port connection to ESP32 was lost (hardware reset or USB disconnect). Aborting...", flush=True)
+                    break
+
                 t0 = time.perf_counter()
 
                 if audio_source:
@@ -358,7 +410,11 @@ async def run_broadcaster(args):
                             data_total_length=4 + len(payload),
                             iso_sdu_fragment=payload
                         )
-                        hci_sink.on_packet(bytes(iso_pkt))
+                        try:
+                            hci_sink.on_packet(bytes(iso_pkt))
+                        except Exception as e:
+                            print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
+                            break
                     else:
                         # Multi-Channel: Encode 1 Mono LC3 frame per BIS stream
                         for bis_idx, bis_handle in enumerate(bis_handles):
@@ -374,7 +430,11 @@ async def run_broadcaster(args):
                                 data_total_length=4 + len(payload),
                                 iso_sdu_fragment=payload
                             )
-                            hci_sink.on_packet(bytes(iso_pkt))
+                            try:
+                                hci_sink.on_packet(bytes(iso_pkt))
+                            except Exception as e:
+                                print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
+                                break
                 else:
                     # Test Pattern Mode
                     for bis_idx, bis_handle in enumerate(bis_handles):
@@ -388,7 +448,11 @@ async def run_broadcaster(args):
                             data_total_length=4 + len(dummy_payload),
                             iso_sdu_fragment=dummy_payload
                         )
-                        hci_sink.on_packet(bytes(iso_pkt))
+                        try:
+                            hci_sink.on_packet(bytes(iso_pkt))
+                        except Exception as e:
+                            print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
+                            break
 
                 seq_num += 1
                 if seq_num % 100 == 0:
@@ -401,18 +465,27 @@ async def run_broadcaster(args):
                 elapsed = time.perf_counter() - t0
                 sleep_time = (resolved_dur / 1000.0) - elapsed
                 if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
+                    try:
+                        done, _ = await asyncio.wait([hci_source.terminated], timeout=sleep_time)
+                        if done:
+                            print("\n[ABORT] COM port connection to ESP32 was lost (hardware reset or USB disconnect). Aborting...", flush=True)
+                            break
+                    except Exception:
+                        await asyncio.sleep(sleep_time)
 
         except (asyncio.CancelledError, KeyboardInterrupt):
-            print("\nTerminating BIG broadcast...", flush=True)
-            try:
-                await device.send_command(HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x16))
-            except Exception:
-                pass
-            print("Broadcast stopped cleanly.", flush=True)
+            print("\nBroadcast interrupted by user (Ctrl+C).", flush=True)
+        except Exception as e:
+            print(f"\nBroadcast encountered exception: {e}", flush=True)
         finally:
             if audio_source:
                 audio_source.close()
+            # If the transport connection is still open, shut down BIG, PA, EA and reset controller to idle
+            if not hci_source.terminated.done():
+                try:
+                    await asyncio.wait_for(stop_broadcast(device), timeout=2.5)
+                except Exception as e:
+                    logging.debug(f"Teardown timeout/error: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="Google Bumble BLE 5.3 Auracast Broadcaster with LC3 Audio Streaming")
