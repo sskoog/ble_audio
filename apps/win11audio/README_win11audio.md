@@ -226,7 +226,57 @@ python dsp_app.py --mode stream --loopback --input-mode ms --algo heterodyne --c
 Windows 11 drivers does not natively support BLE Audio Broadcasting with the setup listed above.
 Microsoft has introduced experimental Auracast broadcasting in Windows 11 Insider preview builds for specific Copilot+ PCs (Qualcomm Snapdragon X Elite / select Intel Core Ultra).
 
-Best alternative to broadcast PC audio to multiple Bluetooth speakers is to use a dedicated BLE-audio 5.3/5.4 USB dongle.
+Best alternative to broadcast PC audio to multiple Bluetooth speakers is to use a dedicated BLE-audio 5.3/5.4 USB dongle or an **ESP32-C6 DevKit HCI Controller** with Google Bumble (see [`apps/usb_ble_bumble`](file:///c:/Git_ble_audio/apps/usb_ble_bumble)).
+
+---
+
+## BLE Audio & LC3 Codec Engine Details
+
+When broadcasting audio via Bluetooth Low Energy Audio (Auracast / BAP / PBP), the system implements a **Split Host/Controller Architecture**:
+
+```
++-------------------------------------------------------------------------------+
+| HOST PC (Windows 11)                                                          |
+|                                                                               |
+|  1. Audio Capture (WASAPI Loopback or VB-Audio Virtual Cable)                 |
+|     * Captures 48 kHz, 16-bit PCM audio                                       |
+|                                                                               |
+|  2. Spatial DSP Pipeline (Mid/Side + DQS + Hilbert + DFS Modulation)          |
+|     * Produces stereo or multi-channel spatial PCM audio                      |
+|                                                                               |
+|  3. LC3 Codec Engine (Google liblc3 running on PC CPU via native C DLL)      |
+|     * Compresses 480 PCM samples (960 B/ch) -> 60 B mono / 120 B stereo SDU   |
+|                                                                               |
+|  4. Google Bumble Bluetooth Host Stack                                        |
+|     * Packs compressed LC3 frames into HCI ISO Data Packets (H4 type 0x05)   |
+|     * Manages Extended (EA) and Periodic Advertising (PA + BAP BASE)          |
++---------------------------------------┬---------------------------------------+
+                                        │ USB Serial (H4 Transport @ 115200 baud)
++---------------------------------------▼---------------------------------------+
+| ESP32-C6 DevKit (HCI Link Layer Controller)                                  |
+|                                                                               |
+|  * Does NO audio encoding or DSP processing on-chip.                          |
+|  * Receives pre-compressed LC3 ISO packets from UART0.                        |
+|  * Schedules and transmits packets over 2.4 GHz RF Link Layer (BIS / BIG).    |
+|  * Status LED feedback: 0.5 Hz Green (Idle), 3.0 Hz Blue (Transmitting).      |
++-------------------------------------------------------------------------------+
+```
+
+### LC3 Codec Implementation
+
+* **Library**: [Google `liblc3`](https://github.com/google/liblc3) (Google's official, high-performance C reference implementation of the **Bluetooth SIG Low Complexity Communication Codec** standard).
+* **Location in Repo**: [`apps/usb_ble_bumble/liblc3/`](file:///c:/Git_ble_audio/apps/usb_ble_bumble/liblc3/).
+* **Native Shared Library**: [`apps/usb_ble_bumble/liblc3.dll`](file:///c:/Git_ble_audio/apps/usb_ble_bumble/liblc3.dll) (compiled for 64-bit Windows with MinGW GCC).
+* **Python Binding**: [`apps/usb_ble_bumble/lc3_encoder.py`](file:///c:/Git_ble_audio/apps/usb_ble_bumble/lc3_encoder.py) via Python `ctypes`.
+* **Standard Audio Frame Format**:
+  * Sampling Rate: **48,000 Hz** (or 44.1 kHz, 32 kHz, 24 kHz, 16 kHz)
+  * Frame Duration: **10.0 ms** (480 PCM samples per frame per channel)
+  * Bitrate / Frame Size:
+    * **Mono Stream**: 60 octets per frame (48 kbps)
+    * **Stereo Stream**: 120 octets per frame (96 kbps total, 60 bytes Left + 60 bytes Right)
+    * **High-Quality Stereo**: 200 octets per frame (160 kbps total)
+* **Encoding Latency**: Less than **0.1 ms** per 10 ms audio frame on the host PC CPU.
+
 
 
 

@@ -236,17 +236,10 @@ async def run_broadcaster(args):
                 )
                 print(f"Connected live audio input: '{audio_source.device_name}'", flush=True)
             except Exception as e:
-                print(f"Error opening audio device '{args.audio_device}': {e}", flush=True)
-                print("Falling back to LFO Synth audio generator.\n", flush=True)
-                audio_source = LfoSineAudioSource(
-                    num_channels=num_channels,
-                    sample_rate=resolved_sr,
-                    frame_duration_ms=resolved_dur,
-                    amplitude=args.amplitude,
-                    lfo_rate_hz=args.lfo_rate,
-                    freq_min_hz=args.lfo_min,
-                    freq_max_hz=args.lfo_max
-                )
+                print(f"\n[ERROR] Failed to open audio device '{args.audio_device}': {e}", flush=True)
+                print("Available input devices on this PC:", flush=True)
+                list_audio_devices()
+                return
 
         encoders = []
         octets_per_channel = (frame_octets // 2) if is_stereo else frame_octets
@@ -395,6 +388,10 @@ async def run_broadcaster(args):
                     # Fetch next PCM audio frame: shape (num_channels, frame_samples)
                     pcm_frame = audio_source.get_frame()
 
+                    # Calculate real-time RMS signal levels for monitoring
+                    rms_l = float(np.sqrt(np.mean(pcm_frame[0].astype(np.float32)**2))) / 32768.0
+                    rms_r = float(np.sqrt(np.mean(pcm_frame[1].astype(np.float32)**2))) / 32768.0 if is_stereo else rms_l
+
                     if is_stereo:
                         # Encode Left and Right channels into single Stereo SDU
                         lc3_l = encoders[0].encode(pcm_frame[0], octets_per_channel)
@@ -436,6 +433,7 @@ async def run_broadcaster(args):
                                 print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
                                 break
                 else:
+                    rms_l = rms_r = 0.0
                     # Test Pattern Mode
                     for bis_idx, bis_handle in enumerate(bis_handles):
                         dummy_payload = bytes([(seq_num + bis_idx) & 0xFF] * frame_octets)
@@ -456,7 +454,19 @@ async def run_broadcaster(args):
 
                 seq_num += 1
                 if seq_num % 100 == 0:
-                    print(f"  [Broadcasting] Emitted {seq_num} ISO audio frames ({seq_num * resolved_dur / 1000.0:.1f}s elapsed)...", flush=True)
+                    elapsed_s = seq_num * resolved_dur / 1000.0
+                    if args.source == "device":
+                        db_l = 20.0 * math.log10(max(1e-5, rms_l))
+                        db_r = 20.0 * math.log10(max(1e-5, rms_r))
+                        bar_len = int(min(1.0, max(rms_l, rms_r) * 4.0) * 15)
+                        vu_bar = "#" * bar_len + "-" * (15 - bar_len)
+                        if max(rms_l, rms_r) < 0.001:
+                            status_extra = " [SILENCE - Note: route Windows audio to 'CABLE Input']"
+                        else:
+                            status_extra = f" [LIVE AUDIO: L={db_l:5.1f}dB, R={db_r:5.1f}dB |{vu_bar}|]"
+                        print(f"  [Broadcasting] {seq_num:5d} frames ({elapsed_s:5.1f}s){status_extra}", flush=True)
+                    else:
+                        print(f"  [Broadcasting] Emitted {seq_num} ISO audio frames ({elapsed_s:.1f}s elapsed)...", flush=True)
 
                 if args.test_duration and (seq_num * resolved_dur / 1000.0) >= args.test_duration:
                     print(f"\nCompleted test duration ({args.test_duration}s). Exiting.", flush=True)

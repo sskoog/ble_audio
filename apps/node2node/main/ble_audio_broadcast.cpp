@@ -8,6 +8,11 @@
 static const char* TAG = "BLE_AUDIO";
 static Bluetooth::BleAudioBroadcast* s_broadcast_instance = nullptr;
 
+static uint8_t s_rx_lc3_frame[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
+static size_t  s_rx_lc3_len = 0;
+static bool    s_has_new_lc3_frame = false;
+static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
+
 namespace Bluetooth {
 
 /* Static value handles for GATT server characteristics on SINK */
@@ -954,6 +959,15 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x1856 || uuid == 0x1850) {
                 is_le_audio_broadcast = true;
             }
+            // If service data contains LC3 audio frame payload (> 4 bytes)
+            if (payload_len > 6 && payload_len <= AUDIO_LC3_OCTETS_PER_FRAME + 2) {
+                taskENTER_CRITICAL(&s_lc3_rx_mux);
+                size_t copy_len = (payload_len - 2 < sizeof(s_rx_lc3_frame)) ? (payload_len - 2) : sizeof(s_rx_lc3_frame);
+                memcpy(s_rx_lc3_frame, &ad_payload[2], copy_len);
+                s_rx_lc3_len = copy_len;
+                s_has_new_lc3_frame = true;
+                taskEXIT_CRITICAL(&s_lc3_rx_mux);
+            }
         }
 
         offset += (1 + ad_len);
@@ -1208,55 +1222,60 @@ void BleAudioBroadcast::runSourceLoop() {
 }
 
 void BleAudioBroadcast::runSinkLoop() {
-    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Pure Continuous Playback)...");
+    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Live BLE5.3 LC3 Stream Decoder)...");
 
+    static uint8_t current_lc3_buf[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
     static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for MAX98357A DAC
-    size_t actual_samples = AUDIO_SAMPLES_PER_FRAME;
+    size_t actual_samples = 0;
     size_t bytes_written = 0;
     uint32_t frame_count = 0;
-
-    float synth_phase = 0.0f;
-    float synth_lfo = 0.0f;
 
     while (m_audio_task_running) {
         checkSyncState();
 
         if (m_state == BluetoothState::STREAMING) {
             frame_count++;
+            size_t current_lc3_len = 0;
+            bool has_packet = false;
 
-            /* 1. Generate clean continuous 48 kHz audio frames */
-            float lfo_val = 0.5f * (sinf(synth_lfo) + 1.0f);
-            float cur_freq = 330.0f + (lfo_val * 330.0f); // 330 Hz - 660 Hz sweep
-            float phase_inc = (2.0f * M_PI * cur_freq) / static_cast<float>(AUDIO_SAMPLE_RATE_HZ);
-            synth_lfo += (2.0f * M_PI * 0.5f) * (AUDIO_FRAME_DURATION_MS / 1000.0f);
-            if (synth_lfo >= 2.0f * M_PI) synth_lfo -= 2.0f * M_PI;
+            /* 1. Fetch latest received over-the-air BLE 5.3 LC3 compressed audio frame */
+            taskENTER_CRITICAL(&s_lc3_rx_mux);
+            if (s_has_new_lc3_frame) {
+                memcpy(current_lc3_buf, s_rx_lc3_frame, s_rx_lc3_len);
+                current_lc3_len = s_rx_lc3_len;
+                s_has_new_lc3_frame = false;
+                has_packet = true;
+            }
+            taskEXIT_CRITICAL(&s_lc3_rx_mux);
 
-            for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
-                float s = sinf(synth_phase);
-                synth_phase += phase_inc;
-                if (synth_phase >= 2.0f * M_PI) synth_phase -= 2.0f * M_PI;
-                decoded_pcm[i] = static_cast<int16_t>(s * 22000.0f);
+            /* 2. Decode the incoming BLE5.3 LC3 bitstream (supports PLC when no new packet is available) */
+            if (has_packet && current_lc3_len > 0) {
+                m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+            } else {
+                // Packet loss concealment / zero frame reconstruction
+                m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
             }
 
-            /* 2. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
+            /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
             uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
-            for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+            for (size_t i = 0; i < actual_samples; ++i) {
                 int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
                 int16_t sample = static_cast<int16_t>(scaled);
                 stereo_pcm[i * 2] = sample;     // Left Channel (SD_MODE tied to 3.3V)
                 stereo_pcm[i * 2 + 1] = sample; // Right Channel
             }
 
-            /* 3. Stream to MAX98357A I2S DAC */
+            /* 4. Stream decoded PCM to MAX98357A I2S DAC */
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                esp_err_t err = m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, portMAX_DELAY);
+                esp_err_t err = m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, portMAX_DELAY);
                 if (err != ESP_OK && frame_count % 100 == 0) {
                     ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(err));
                 }
             }
             m_telemetry.packets_count++;
         } else {
+            // Idle / Scanning: Yield CPU
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
