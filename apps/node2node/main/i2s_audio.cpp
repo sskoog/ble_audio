@@ -30,8 +30,8 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_nu
     }
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 6;
-    chan_cfg.dma_frame_num = 240;
+    chan_cfg.dma_desc_num = 8;
+    chan_cfg.dma_frame_num = 441; // Exactly 10 ms of 44.1 kHz stereo audio per DMA descriptor
     chan_cfg.auto_clear = true;
 
     i2s_chan_handle_t tx_handle = nullptr;

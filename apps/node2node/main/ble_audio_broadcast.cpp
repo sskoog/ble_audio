@@ -1208,12 +1208,11 @@ void BleAudioBroadcast::runSourceLoop() {
 }
 
 void BleAudioBroadcast::runSinkLoop() {
-    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (10 ms Frame Interval)...");
+    ESP_LOGI(TAG, "Node20: Audio Sink Processing Loop Started (Continuous DMA Pacing)...");
 
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for standard I2S DAC
     size_t bytes_written = 0;
 
-    const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS);
     float phase = 0.0f;
     float lfo_phase = 0.0f;
     uint32_t frame_count = 0;
@@ -1227,7 +1226,7 @@ void BleAudioBroadcast::runSinkLoop() {
             /* Apply VCS Digital Output Volume Multiplier & Mute to SINK Audio Output */
             uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
             
-            /* LFO modulated synth tone: 440 Hz sweep (220 Hz - 880 Hz) at 0.5 Hz LFO */
+            /* LFO modulated synth tone: 330 Hz to 660 Hz sweep at 0.5 Hz LFO */
             float lfo_val = 0.5f * (sinf(lfo_phase) + 1.0f); // 0.0 to 1.0
             float cur_freq = 330.0f + (lfo_val * 330.0f);   // 330 Hz to 660 Hz
             float phase_inc = (2.0f * M_PI * cur_freq) / static_cast<float>(AUDIO_SAMPLE_RATE_HZ);
@@ -1239,25 +1238,28 @@ void BleAudioBroadcast::runSinkLoop() {
                 phase += phase_inc;
                 if (phase >= 2.0f * M_PI) phase -= 2.0f * M_PI;
 
-                int16_t raw_sample = static_cast<int16_t>(s * 20000.0f); // Audible peak amplitude
+                int16_t raw_sample = static_cast<int16_t>(s * 22000.0f); // Clean 67% peak amplitude
                 int32_t scaled = (static_cast<int32_t>(raw_sample) * vol_scale) / 255;
                 int16_t sample = static_cast<int16_t>(scaled);
 
-                // Duplicate into Left & Right slots for MAX98357A
-                stereo_pcm[i * 2] = sample;     // Left Channel (sampled when SD_MODE > 1.4V)
-                stereo_pcm[i * 2 + 1] = sample; // Right Channel
+                // Duplicate into Left & Right slots for MAX98357A (SD_MODE tied to 3.3V = Left Channel)
+                stereo_pcm[i * 2] = sample;
+                stereo_pcm[i * 2 + 1] = sample;
             }
 
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                esp_err_t err = m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 10);
+                // Blocking DMA write naturally governs the 10 ms audio pacing without micro-silence gaps
+                esp_err_t err = m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 50);
                 if (err != ESP_OK && frame_count % 100 == 0) {
                     ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(err));
                 }
             }
             m_telemetry.packets_count++;
+            // Note: No vTaskDelay here during streaming — I2S DMA write provides perfect continuous clock pacing
+        } else {
+            // Idle or Scanning: Sleep 10 ms to yield CPU to other tasks
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
-
-        vTaskDelay(interval > 0 ? interval : 1);
     }
 }
 
