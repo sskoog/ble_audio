@@ -313,8 +313,8 @@ async def run_broadcaster(args):
         print(f"[2/4] Configuring Periodic Advertising with BAP BASE Descriptor...", flush=True)
         await device.send_command(HCI_LE_Set_Periodic_Advertising_Parameters_Command(
             advertising_handle=0,
-            periodic_advertising_interval_min=160, # 200 ms
-            periodic_advertising_interval_max=160,
+            periodic_advertising_interval_min=10, # 12.5 ms (Fast Real-Time Audio Train)
+            periodic_advertising_interval_max=16, # 20 ms
             periodic_advertising_properties=0x0000
         ))
 
