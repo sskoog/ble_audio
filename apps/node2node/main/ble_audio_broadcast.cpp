@@ -12,6 +12,7 @@ static uint8_t s_rx_lc3_frame[AUDIO_LC3_OCTETS_PER_FRAME] = {0};
 static size_t  s_rx_lc3_len = 0;
 static bool    s_has_new_lc3_frame = false;
 static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_is_periodic_synced = false;
 
 namespace Bluetooth {
 
@@ -646,6 +647,32 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
                     s.last_seen_tick = xTaskGetTickCount();
                 }
             }
+            // If Periodic Advertising is present and SINK is not yet synced, synchronize to it
+            if (get_system_config()->node_role == NODE_ROLE_SINK && disc.periodic_adv_itvl > 0 && !s_is_periodic_synced) {
+                struct ble_gap_periodic_sync_params sync_params = {};
+                sync_params.skip = 0;
+                sync_params.sync_timeout = 1000;
+                int src = ble_gap_periodic_adv_sync_create(&disc.addr, disc.sid, &sync_params, ble_gap_event_cb, nullptr);
+                if (src == 0) {
+                    s_is_periodic_synced = true;
+                    ESP_LOGI(TAG, "SINK: Initiated Periodic Sync to Auracast Broadcaster!");
+                }
+            }
+            break;
+        }
+        case BLE_GAP_EVENT_PERIODIC_SYNC: {
+            ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", event->periodic_sync.sync_handle);
+            s_is_periodic_synced = true;
+            break;
+        }
+        case BLE_GAP_EVENT_PERIODIC_REPORT: {
+            const auto &rep = event->periodic_report;
+            s_broadcast_instance->parseAdvReport(rep.data, rep.data_length, rep.rssi, nullptr);
+            break;
+        }
+        case BLE_GAP_EVENT_PERIODIC_SYNC_LOST: {
+            ESP_LOGW(TAG, "SINK: BLE Periodic Sync LOST (Handle: %u). Re-scanning...", event->periodic_sync_lost.sync_handle);
+            s_is_periodic_synced = false;
             break;
         }
         case BLE_GAP_EVENT_DISC: {
@@ -959,15 +986,25 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x1856 || uuid == 0x1850) {
                 is_le_audio_broadcast = true;
             }
-            // If service data contains LC3 audio frame payload (> 4 bytes)
-            if (payload_len > 6 && payload_len <= AUDIO_LC3_OCTETS_PER_FRAME + 2) {
+            // Extract live LC3 audio frame payload (if >= 40 bytes)
+            if (payload_len >= 42) {
                 taskENTER_CRITICAL(&s_lc3_rx_mux);
-                size_t copy_len = (payload_len - 2 < sizeof(s_rx_lc3_frame)) ? (payload_len - 2) : sizeof(s_rx_lc3_frame);
+                size_t copy_len = (payload_len - 2 <= sizeof(s_rx_lc3_frame)) ? (payload_len - 2) : sizeof(s_rx_lc3_frame);
                 memcpy(s_rx_lc3_frame, &ad_payload[2], copy_len);
                 s_rx_lc3_len = copy_len;
                 s_has_new_lc3_frame = true;
                 taskEXIT_CRITICAL(&s_lc3_rx_mux);
             }
+        }
+        /* Filter for Manufacturer Specific Data (AD Type 0xFF) for raw audio stream */
+        if (ad_type == 0xFF && payload_len >= 40) {
+            is_le_audio_broadcast = true;
+            taskENTER_CRITICAL(&s_lc3_rx_mux);
+            size_t copy_len = (payload_len <= sizeof(s_rx_lc3_frame)) ? payload_len : sizeof(s_rx_lc3_frame);
+            memcpy(s_rx_lc3_frame, ad_payload, copy_len);
+            s_rx_lc3_len = copy_len;
+            s_has_new_lc3_frame = true;
+            taskEXIT_CRITICAL(&s_lc3_rx_mux);
         }
 
         offset += (1 + ad_len);
