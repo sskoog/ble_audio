@@ -13,6 +13,7 @@ Audio Sources:
 """
 
 import sys
+import ctypes
 import os
 import time
 import struct
@@ -155,6 +156,12 @@ async def run_broadcaster(args):
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO)
+
+    try:
+        if sys.platform == "win32":
+            ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
 
     disc_filter = SerialDisconnectFilter()
     logging.getLogger().addFilter(disc_filter)
@@ -405,9 +412,10 @@ async def run_broadcaster(args):
         print(f"  Press Ctrl+C to terminate broadcast.")
         print(f"===========================================================\n", flush=True)
 
+        start_time = time.perf_counter()
         seq_num = 0
         last_stat_seq = 0
-        last_stat_time = time.perf_counter()
+        last_stat_time = start_time
         is_hardware_disconnected = False
 
         try:
@@ -418,7 +426,7 @@ async def run_broadcaster(args):
                     print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
                     break
 
-                t0 = time.perf_counter()
+                target_time = start_time + ((seq_num + 1) * (resolved_dur / 1000.0))
 
                 if audio_source:
                     # Fetch next PCM audio frame: shape (num_channels, frame_samples)
@@ -525,8 +533,8 @@ async def run_broadcaster(args):
                     print(f"\nCompleted test duration ({args.test_duration}s). Exiting.", flush=True)
                     break
 
-                elapsed = time.perf_counter() - t0
-                sleep_time = (resolved_dur / 1000.0) - elapsed
+                now = time.perf_counter()
+                sleep_time = target_time - now
                 if sleep_time > 0:
                     try:
                         done, _ = await asyncio.wait([hci_source.terminated], timeout=sleep_time)
@@ -545,6 +553,11 @@ async def run_broadcaster(args):
         except Exception as e:
             print(f"\nBroadcast encountered exception: {e}", flush=True)
         finally:
+            try:
+                if sys.platform == "win32":
+                    ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
             if audio_source:
                 try:
                     audio_source.close()
