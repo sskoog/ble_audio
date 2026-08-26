@@ -17,17 +17,23 @@ Repository containing firmware applications, hardware documentation, and archite
 ## Applications
 
 ### 1. [Android-to-Node Receiver (`apps/android2node`)](apps/android2node/README.md)
-- **Target**: ESP32-C6 (ESP-IDF v5.5+)
+- **Target**: ESP32-C6 (ESP-IDF v6.0.2)
 - **Function**: Auracast Broadcast Sink receiving LC3 audio streams from Android/transmitters.
 - **Audio Output**: I2S DAC (e.g. PCM5102A / MAX98357A) with optional DSP biquad filtering.
 - **Display**: ST7789 SPI LCD console displaying connection state, RSSI, and diagnostics.
 - **Maintenance**: Background Wi-Fi station and HTTP Over-The-Air (OTA) firmware upgrade manager.
 
 ### 2. [Node-to-Node Broadcaster (`apps/node2node`)](apps/node2node/README.md)
-- **Target**: ESP32-C6 (ESP-IDF v5.5+)
+- **Target**: ESP32-C6 (ESP-IDF v6.0.2)
 - **Function**: Auracast Broadcast Source (BIG/BIS) streaming unencrypted LC3 audio packets.
 - **Audio Source**: I2S digital audio input / built-in multi-frequency sine wave tone generator.
 - **Display & Telemetry**: ST7789 SPI color display and addressable RGB WS2812 status LED.
+
+### 3. [USB BLE Bumble Broadcaster (`apps/usb_ble_bumble`)](apps/usb_ble_bumble/README.md)
+- **Target**: ESP32-C6 (ESP-IDF v6.0.2) + Win11 PC with Python 3.13.
+- **Function**: Auracast Broadcast Source (BIG/BIS) streaming unencrypted LC3 audio packets from host via USB COM port.
+- **Audio Source**: Any PC sound via virtual CABLE input + built-in multi-frequency sine wave tone generator.
+- **Telemetry**: Console output on USB COM port.
 
 ## Hardware used
 

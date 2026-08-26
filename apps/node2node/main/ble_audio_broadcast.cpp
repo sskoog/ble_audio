@@ -16,7 +16,72 @@ extern "C" int ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_l
 #define BLE_HCI_OCF_LE_BIG_CREATE_SYNC 0x006b
 #endif
 
+#include <atomic>
+#include <cmath>
+
 namespace Bluetooth {
+
+/* Fast integer square root for single-core RISC-V without floating-point overhead */
+static inline uint32_t isqrt32(uint32_t val) {
+    uint32_t res = 0;
+    uint32_t bit = 1u << 30;
+    while (bit > val) bit >>= 2;
+    while (bit != 0) {
+        if (val >= res + bit) {
+            val -= res + bit;
+            res = (res >> 1) + bit;
+        } else {
+            res >>= 1;
+        }
+        bit >>= 2;
+    }
+    return res;
+}
+
+/**
+ * @brief Thread-safe Single-Producer, Single-Consumer (SPSC) lock-free ring buffer
+ * Exactly 100 elements (1.0 second window at 100 frames/sec).
+ */
+template <typename T, size_t Capacity>
+class SpscAudioRingBuffer {
+public:
+    static_assert(Capacity > 0, "Capacity must be greater than zero");
+
+    void push(T item) {
+        size_t head = m_head.load(std::memory_order_relaxed);
+        m_buffer[head] = item;
+        m_head.store((head + 1) % Capacity, std::memory_order_release);
+        size_t c = m_count.load(std::memory_order_relaxed);
+        if (c < Capacity) {
+            m_count.store(c + 1, std::memory_order_relaxed);
+        }
+    }
+
+    size_t getRecent(T* out_array, size_t max_items) const {
+        size_t count = m_count.load(std::memory_order_relaxed);
+        size_t head = m_head.load(std::memory_order_acquire);
+        size_t n = (max_items < count) ? max_items : count;
+        for (size_t i = 0; i < n; ++i) {
+            size_t idx = (head + Capacity - 1 - i) % Capacity;
+            out_array[i] = m_buffer[idx];
+        }
+        return n;
+    }
+
+    void clear() {
+        m_head.store(0, std::memory_order_relaxed);
+        m_count.store(0, std::memory_order_relaxed);
+    }
+
+private:
+    T m_buffer[Capacity] = {0};
+    std::atomic<size_t> m_head{0};
+    std::atomic<size_t> m_count{0};
+};
+
+static SpscAudioRingBuffer<int16_t, 100> s_rms_ring_buf;
+static SpscAudioRingBuffer<int16_t, 100> s_peak_ring_buf;
+
 
 const char* bluetoothStateToString(BluetoothState state) {
     switch (state) {
@@ -1370,6 +1435,67 @@ void BleAudioBroadcast::vcsOscillatorTaskRoutine(void* param) {
     self->runVcsOscillatorLoop();
 }
 
+int16_t BleAudioBroadcast::getAudioFramePeak_int16(unsigned int numberOfFrames) const {
+    if (numberOfFrames == 0) numberOfFrames = 1;
+    if (numberOfFrames > 100) numberOfFrames = 100;
+    int16_t items[100];
+    size_t count = s_peak_ring_buf.getRecent(items, numberOfFrames);
+    if (count == 0) return 0;
+    int16_t max_peak = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (items[i] > max_peak) {
+            max_peak = items[i];
+        }
+    }
+    return max_peak;
+}
+
+float BleAudioBroadcast::getAudioFramePeak_dBFS(unsigned int numberOfFrames) const {
+    int16_t peak = getAudioFramePeak_int16(numberOfFrames);
+    if (peak <= 0) return -INFINITY;
+    float dbfs = 20.0f * log10f(static_cast<float>(peak) / 32767.0f);
+    if (dbfs < -95.0f) return -INFINITY;
+    if (dbfs > 0.0f) dbfs = 0.0f;
+    return dbfs;
+}
+
+float BleAudioBroadcast::getAudioFramePeak_pct(unsigned int numberOfFrames) const {
+    float dbfs = getAudioFramePeak_dBFS(numberOfFrames);
+    if (std::isinf(dbfs) || dbfs <= -95.0f) return 0.0f;
+    if (dbfs >= 0.0f) return 100.0f;
+    return (dbfs + 95.0f) / 95.0f * 100.0f;
+}
+
+int16_t BleAudioBroadcast::getAudioFrameRMS_int16(unsigned int numberOfFrames) const {
+    if (numberOfFrames == 0) numberOfFrames = 1;
+    if (numberOfFrames > 100) numberOfFrames = 100;
+    int16_t items[100];
+    size_t count = s_rms_ring_buf.getRecent(items, numberOfFrames);
+    if (count == 0) return 0;
+    int64_t sum_sq = 0;
+    for (size_t i = 0; i < count; ++i) {
+        sum_sq += static_cast<int32_t>(items[i]) * static_cast<int32_t>(items[i]);
+    }
+    uint32_t mean_sq = static_cast<uint32_t>(sum_sq / count);
+    return static_cast<int16_t>(isqrt32(mean_sq));
+}
+
+float BleAudioBroadcast::getAudioFrameRMS_dBFS(unsigned int numberOfFrames) const {
+    int16_t rms = getAudioFrameRMS_int16(numberOfFrames);
+    if (rms <= 0) return -INFINITY;
+    float dbfs = 20.0f * log10f(static_cast<float>(rms) / 32767.0f);
+    if (dbfs < -95.0f) return -INFINITY;
+    if (dbfs > 0.0f) dbfs = 0.0f;
+    return dbfs;
+}
+
+float BleAudioBroadcast::getAudioFrameRMS_pct(unsigned int numberOfFrames) const {
+    float dbfs = getAudioFrameRMS_dBFS(numberOfFrames);
+    if (std::isinf(dbfs) || dbfs <= -95.0f) return 0.0f;
+    if (dbfs >= 0.0f) return 100.0f;
+    return (dbfs + 95.0f) / 95.0f * 100.0f;
+}
+
 void BleAudioBroadcast::runSourceLoop() {
     ESP_LOGI(TAG, "Node21: Audio Source Processing Loop Started (10 ms Frame Interval)...");
 
@@ -1386,6 +1512,24 @@ void BleAudioBroadcast::runSourceLoop() {
             }
             m_lc3_codec.encodeFrame(pcm_buffer, AUDIO_SAMPLES_PER_FRAME, lc3_buffer, sizeof(lc3_buffer), &actual_encoded_bytes);
             m_telemetry.packets_count++;
+
+            /* Calculate statistics for SOURCE monitor */
+            int16_t min_s = pcm_buffer[0];
+            int16_t max_s = pcm_buffer[0];
+            int64_t sum_sq = 0;
+            for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+                int16_t s = pcm_buffer[i];
+                if (s < min_s) min_s = s;
+                if (s > max_s) max_s = s;
+                sum_sq += static_cast<int32_t>(s) * static_cast<int32_t>(s);
+            }
+            int32_t diff = static_cast<int32_t>(max_s) - static_cast<int32_t>(min_s);
+            int16_t frame_peak = static_cast<int16_t>(diff / 2);
+            if (frame_peak < 0) frame_peak = 32767;
+            uint32_t mean_sq = static_cast<uint32_t>(sum_sq / AUDIO_SAMPLES_PER_FRAME);
+            int16_t frame_rms = static_cast<int16_t>(isqrt32(mean_sq));
+            s_peak_ring_buf.push(frame_peak);
+            s_rms_ring_buf.push(frame_rms);
         }
         vTaskDelay(interval > 0 ? interval : 1);
     }
@@ -1396,16 +1540,16 @@ void BleAudioBroadcast::runSinkLoop() {
 
     static uint8_t current_lc3_buf[256] = {0};
     static int16_t decoded_pcm[AUDIO_SAMPLES_PER_FRAME] = {0};
-    static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0}; // L + R interleaved for MAX98357A DAC
+    static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0};
     size_t actual_samples = 0;
     size_t bytes_written = 0;
-    uint32_t frame_count = 0;
+
+    const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS); // 10 ms (100 Hz)
+    TickType_t last_wake_time = xTaskGetTickCount();
+    uint32_t missed_gap_count = 0;
 
     while (m_audio_task_running) {
-        checkSyncState();
-
         if (m_state == BluetoothState::STREAMING) {
-            frame_count++;
             size_t current_lc3_len = 0;
             bool has_packet = false;
 
@@ -1419,38 +1563,45 @@ void BleAudioBroadcast::runSinkLoop() {
             }
             taskEXIT_CRITICAL(&s_lc3_rx_mux);
 
-            /* 2. Decode the incoming BLE5.3 LC3 bitstream (supports PLC when no new packet is available) */
-            static uint32_t s_rx_decoded_count = 0;
-            static uint32_t s_missed_count = 0;
-
+            /* 2. Decode incoming LC3 bitstream (zero logging in time-critical audio loop) */
             if (has_packet && current_lc3_len >= 20) {
-                s_rx_decoded_count++;
-                s_missed_count = 0;
-                m_telemetry.packets_count = s_rx_decoded_count;
+                missed_gap_count = 0;
+                m_telemetry.packets_count++;
+                m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
 
-                esp_err_t derr = m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
-                
-                // Calculate RMS energy for automated audio playback verification
+                /* Fixed-point Peak Calculation: (max - min) / 2 */
+                int16_t min_s = decoded_pcm[0];
+                int16_t max_s = decoded_pcm[0];
                 int64_t sum_sq = 0;
-                for (size_t i = 0; i < actual_samples; ++i) {
-                    sum_sq += (int32_t)decoded_pcm[i] * (int32_t)decoded_pcm[i];
-                }
-                uint32_t rms = (actual_samples > 0) ? (uint32_t)sqrt(sum_sq / actual_samples) : 0;
 
-                if (s_rx_decoded_count % 100 == 1) {
-                    ESP_LOGI(TAG, "*** [CONFIRMED AUDIO RX] *** Decoded #%lu | RMS: %lu | Size: %u B | DecErr: %s | Vol: %u%%",
-                             (unsigned long)s_rx_decoded_count, (unsigned long)rms, (unsigned int)current_lc3_len,
-                             esp_err_to_name(derr), (unsigned int)((m_vcs_state.volume_setting * 100) / 255));
+                for (size_t i = 0; i < actual_samples; ++i) {
+                    int16_t s = decoded_pcm[i];
+                    if (s < min_s) min_s = s;
+                    if (s > max_s) max_s = s;
+                    sum_sq += static_cast<int32_t>(s) * static_cast<int32_t>(s);
                 }
+
+                int32_t diff = static_cast<int32_t>(max_s) - static_cast<int32_t>(min_s);
+                int16_t frame_peak = static_cast<int16_t>(diff / 2);
+                if (frame_peak < 0) frame_peak = 32767;
+
+                /* Fixed-point RMS Calculation using isqrt */
+                uint32_t mean_sq = (actual_samples > 0) ? static_cast<uint32_t>(sum_sq / actual_samples) : 0;
+                int16_t frame_rms = static_cast<int16_t>(isqrt32(mean_sq));
+
+                s_peak_ring_buf.push(frame_peak);
+                s_rms_ring_buf.push(frame_rms);
             } else {
-                s_missed_count++;
+                missed_gap_count++;
                 // Smoothly decay previous audio frames or zero fill
                 for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
                     decoded_pcm[i] = (decoded_pcm[i] * 7) / 8; // Gentle 12% decay per 10ms gap
                 }
                 actual_samples = AUDIO_SAMPLES_PER_FRAME;
-                if (s_missed_count % 200 == 1 && s_rx_decoded_count == 0) {
-                    ESP_LOGW(TAG, "SINK Waiting for LC3 packet... (Tick #%lu, Synced: %d)", (unsigned long)frame_count, s_is_periodic_synced);
+
+                if (missed_gap_count >= 50) { // After 500 ms of true silence, push 0s
+                    s_peak_ring_buf.push(0);
+                    s_rms_ring_buf.push(0);
                 }
             }
 
@@ -1465,15 +1616,14 @@ void BleAudioBroadcast::runSinkLoop() {
 
             /* 4. Stream decoded PCM to MAX98357A I2S DAC */
             if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                esp_err_t err = m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, portMAX_DELAY);
-                if (err != ESP_OK && frame_count % 100 == 0) {
-                    ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(err));
-                }
+                m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, portMAX_DELAY);
             }
-            m_telemetry.packets_count++;
+
+            vTaskDelayUntil(&last_wake_time, interval > 0 ? interval : 1);
         } else {
             // Idle / Scanning: Yield CPU
             vTaskDelay(pdMS_TO_TICKS(10));
+            last_wake_time = xTaskGetTickCount();
         }
     }
 }

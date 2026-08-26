@@ -1,3 +1,4 @@
+#include <cmath>
 #include "wifi_manager.hpp"
 #include "web_dashboard.hpp"
 #include "diagnostics.hpp"
@@ -163,8 +164,7 @@ void DiagnosticMonitor::printDiagnostics() {
 
     uint32_t uptime_sec = (m_loop_count * DIAGNOSTICS_TASK_INTERVAL_MS) / 1000;
     uint32_t free_heap = esp_get_free_heap_size();
-    uint32_t min_free_heap = esp_get_minimum_free_heap_size();
-        /* Calculate CPU usage every 500 ms and update 10-element (5-sec) history ringbuffer */
+            /* Calculate CPU usage every 500 ms and update 10-element (5-sec) history ringbuffer */
     TickType_t now_ticks = xTaskGetTickCount();
     if (m_last_cpu_calc_tick == 0 || (now_ticks - m_last_cpu_calc_tick) >= pdMS_TO_TICKS(500)) {
         m_last_cpu_calc_tick = now_ticks;
@@ -192,13 +192,35 @@ void DiagnosticMonitor::printDiagnostics() {
                  (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
                  bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
 
+        float rms_db = m_ble_broadcast.getAudioFrameRMS_dBFS(100);
+        float rms_pct = m_ble_broadcast.getAudioFrameRMS_pct(100);
+        float peak_db = m_ble_broadcast.getAudioFramePeak_dBFS(100);
+        float peak_pct = m_ble_broadcast.getAudioFramePeak_pct(100);
+
+        char rms_str[32];
+        if (std::isinf(rms_db) || rms_db <= -95.0f) {
+            snprintf(rms_str, sizeof(rms_str), "-inf (0.0%%)");
+        } else {
+            snprintf(rms_str, sizeof(rms_str), "%.1f dBFS (%.1f%%)", rms_db, rms_pct);
+        }
+
+        char peak_str[32];
+        if (std::isinf(peak_db) || peak_db <= -95.0f) {
+            snprintf(peak_str, sizeof(peak_str), "-inf (0.0%%)");
+        } else {
+            snprintf(peak_str, sizeof(peak_str), "%.1f dBFS (%.1f%%)", peak_db, peak_pct);
+        }
+
         if (cfg->node_role == NODE_ROLE_SINK) {
-            ESP_LOGI("AUDIO", "Codec: %s | %s | VCS Vol: %u%% (%u/255 %s)",
+            ESP_LOGI("AUDIO", "Codec: %s | %s | RMS: %s | Peak: %s | VCS Vol: %u%% (%u/255 %s)",
                      stream.getCodecString().c_str(), stream.getStatusString().c_str(),
+                     rms_str, peak_str,
                      m_ble_broadcast.getVolumePercent(), m_ble_broadcast.getVolumeSetting(),
                      m_ble_broadcast.isMuted() ? "MUTED" : "UNMUTED");
         } else {
-            ESP_LOGI("AUDIO", "Codec: %s | %s", stream.getCodecString().c_str(), stream.getStatusString().c_str());
+            ESP_LOGI("AUDIO", "Codec: %s | %s | RMS: %s | Peak: %s",
+                     stream.getCodecString().c_str(), stream.getStatusString().c_str(),
+                     rms_str, peak_str);
         }
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {

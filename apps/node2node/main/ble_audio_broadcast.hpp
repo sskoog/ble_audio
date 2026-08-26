@@ -157,6 +157,14 @@ public:
     void setLfoEnabled(bool enabled) { m_lfo_enabled = enabled; }
     bool isLfoEnabled() const { return m_lfo_enabled; }
     void sendManualVolumeToAllSinks(uint8_t vol_pct);
+    /* Audio Signal Metering & Statistics (SPSC Ring Buffers) */
+    int16_t getAudioFramePeak_int16(unsigned int numberOfFrames = 100) const;
+    float getAudioFramePeak_pct(unsigned int numberOfFrames = 100) const;
+    float getAudioFramePeak_dBFS(unsigned int numberOfFrames = 100) const;
+    int16_t getAudioFrameRMS_int16(unsigned int numberOfFrames = 100) const;
+    float getAudioFrameRMS_dBFS(unsigned int numberOfFrames = 100) const;
+    float getAudioFrameRMS_pct(unsigned int numberOfFrames = 100) const;
+
     const std::vector<DiscoveredSinkNode>& getTrackedSinks() const { return m_tracked_sinks; }
     std::vector<DiscoveredSinkNode>& getTrackedSinksMutable() { return m_tracked_sinks; }
 
