@@ -697,3 +697,55 @@ In Bluetooth 5.0 and later, the Physical Layer (PHY) determines the digital symb
 | **Periodic Advertising (BigInfo / BASE)** | **`LE 1M PHY`** | Universal synchronization compatibility across all Bluetooth SIG compliant receivers. |
 | **Extended Advertising Discovery Beacons** | **`LE 1M` / `LE Coded`** | Dual-PHY beaconing for both standard room discovery (1M) and long-range announcement (Coded). |
 | **GATT Control Plane (VCS, BASS, PACS)** | **`LE 1M` / `LE Coded`** | Ultra-reliable, low-power parameter exchange and telemetry reporting. |
+
+---
+
+## 4. BLE Audio (LC3) Stereo Configurations & Bandwidth Matrix
+
+In Bluetooth LE Audio (BAP / LC3), the **Sampling Rate**, **Frame Duration**, and **Octets per Frame (Compression Target)** are fully configurable and independent parameters defined in BAP PAC (Published Audio Capabilities) descriptors.
+
+The table below summarizes the bandwidth, packet size, transmission cadence, and PCM buffer metrics across standard stereo configurations:
+
+> **Note**: Metrics assume **16-bit Stereo (Left + Right)** audio channels.
+
+| Sample Rate | Frame Duration | Packet Cadence | PCM Samples / Frame (per ch) | Raw PCM Size / Frame (Stereo) | LC3 Octets / Frame (per ch) | LC3 Compressed Packet Size (Stereo) | LC3 Stereo Bitrate (Bandwidth) | Raw PCM Bitrate (Uncompressed) | Compression Ratio | Standard BAP Quality Target |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **24.0 kHz** | **10.0 ms** | 100 fps | 240 | 960 bytes | **60 octets** | **120 bytes** | **96.0 kbps** | 768.0 kbps | 8.0 : 1 | Voice / Low Bandwidth |
+| **24.0 kHz** | **10.0 ms** | 100 fps | 240 | 960 bytes | **100 octets** | **200 bytes** | **160.0 kbps** | 768.0 kbps | 4.8 : 1 | High Quality Speech |
+| **24.0 kHz** | **10.0 ms** | 100 fps | 240 | 960 bytes | **120 octets** | **240 bytes** | **192.0 kbps** | 768.0 kbps | 4.0 : 1 | High Quality Speech |
+| **24.0 kHz** | **7.5 ms** | 133.3 fps | 180 | 720 bytes | **60 octets** | **120 bytes** | **128.0 kbps** | 768.0 kbps | 6.0 : 1 | Low-latency Voice |
+| **24.0 kHz** | **7.5 ms** | 133.3 fps | 180 | 720 bytes | **100 octets** | **200 bytes** | **213.3 kbps** | 768.0 kbps | 3.6 : 1 | Low-latency Speech |
+| **24.0 kHz** | **7.5 ms** | 133.3 fps | 180 | 720 bytes | **120 octets** | **240 bytes** | **256.0 kbps** | 768.0 kbps | 3.0 : 1 | Ultra-transparent Voice |
+| **32.0 kHz** | **10.0 ms** | 100 fps | 320 | 1,280 bytes | **60 octets** | **120 bytes** | **96.0 kbps** | 1,024.0 kbps | 10.7 : 1 | Standard Media (Low bit) |
+| **32.0 kHz** | **10.0 ms** | 100 fps | 320 | 1,280 bytes | **100 octets** | **200 bytes** | **160.0 kbps** | 1,024.0 kbps | 6.4 : 1 | Balanced Media |
+| **32.0 kHz** | **10.0 ms** | 100 fps | 320 | 1,280 bytes | **120 octets** | **240 bytes** | **192.0 kbps** | 1,024.0 kbps | 5.3 : 1 | High Quality Broadcast |
+| **32.0 kHz** | **7.5 ms** | 133.3 fps | 240 | 960 bytes | **60 octets** | **120 bytes** | **128.0 kbps** | 1,024.0 kbps | 8.0 : 1 | Low-latency Media |
+| **32.0 kHz** | **7.5 ms** | 133.3 fps | 240 | 960 bytes | **100 octets** | **200 bytes** | **213.3 kbps** | 1,024.0 kbps | 4.8 : 1 | Gaming / Interactive |
+| **32.0 kHz** | **7.5 ms** | 133.3 fps | 240 | 960 bytes | **120 octets** | **240 bytes** | **256.0 kbps** | 1,024.0 kbps | 4.0 : 1 | High-Q Low-latency |
+| **44.1 kHz** | **10.0 ms** | 100 fps | 441 | 1,764 bytes | **60 octets** | **120 bytes** | **96.0 kbps** | 1,411.2 kbps | 14.7 : 1 | CD Audio (Compressed) |
+| **44.1 kHz** | **10.0 ms** | 100 fps | 441 | 1,764 bytes | **100 octets** | **200 bytes** | **160.0 kbps** | 1,411.2 kbps | 8.8 : 1 | CD Audio (Standard BAP) |
+| **44.1 kHz** | **10.0 ms** | 100 fps | 441 | 1,764 bytes | **120 octets** | **240 bytes** | **192.0 kbps** | 1,411.2 kbps | 7.4 : 1 | CD Audio (High-Fidelity) |
+| **44.1 kHz** | **7.5 ms** | 133.3 fps | 331 | 1,324 bytes | **60 octets** | **120 bytes** | **128.0 kbps** | 1,411.2 kbps | 11.0 : 1 | Low-latency CD Media |
+| **44.1 kHz** | **7.5 ms** | 133.3 fps | 331 | 1,324 bytes | **100 octets** | **200 bytes** | **213.3 kbps** | 1,411.2 kbps | 6.6 : 1 | Low-latency CD Media |
+| **44.1 kHz** | **7.5 ms** | 133.3 fps | 331 | 1,324 bytes | **120 octets** | **240 bytes** | **256.0 kbps** | 1,411.2 kbps | 5.5 : 1 | Studio Low-latency |
+| **48.0 kHz** | **10.0 ms** | 100 fps | 480 | 1,920 bytes | **60 octets** | **120 bytes** | **96.0 kbps** | 1,536.0 kbps | 16.0 : 1 | Auracast Public Audio |
+| **48.0 kHz** | **10.0 ms** | 100 fps | 480 | 1,920 bytes | **100 octets** | **200 bytes** | **160.0 kbps** | 1,536.0 kbps | 9.6 : 1 | Auracast High-Quality |
+| **48.0 kHz** | **10.0 ms** | 100 fps | 480 | 1,920 bytes | **120 octets** | **240 bytes** | **192.0 kbps** | 1,536.0 kbps | 8.0 : 1 | Auracast Studio Master |
+| **48.0 kHz** | **7.5 ms** | 133.3 fps | 360 | 1,440 bytes | **60 octets** | **120 bytes** | **128.0 kbps** | 1,536.0 kbps | 12.0 : 1 | Pro Gaming / Live Ear |
+| **48.0 kHz** | **7.5 ms** | 133.3 fps | 360 | 1,440 bytes | **100 octets** | **200 bytes** | **213.3 kbps** | 1,536.0 kbps | 7.2 : 1 | Live Stage Monitoring |
+| **48.0 kHz** | **7.5 ms** | 133.3 fps | 360 | 1,440 bytes | **120 octets** | **240 bytes** | **256.0 kbps** | 1,536.0 kbps | 6.0 : 1 | Ultra-Low Latency Studio |
+
+### Key System Design Principles
+
+1. **Bitrate Calculation**:
+   - Stereo Bitrate (bps) = `(Octets_per_channel * 8 * 2) / Frame_Duration_Seconds`.
+   - For **10.0 ms** frames: 60/100/120 octets per channel yield **96 kbps**, **160 kbps**, and **192 kbps** stereo streams.
+   - For **7.5 ms** frames (transmitting at 133.3 packets/s): 60/100/120 octets per channel yield **128 kbps**, **213.3 kbps**, and **256 kbps** stereo streams.
+
+2. **Latency vs. Overhead Tradeoff**:
+   - **7.5 ms Frame Duration**: Delivers minimum algorithmic buffering delay (~22 ms physical pipeline), but increases packet transmission frequency to **133.3 packets/s**, consuming more radio airtime.
+   - **10.0 ms Frame Duration**: The Auracast broadcast standard. Provides optimal RF efficiency at **100 packets/s** and aligns cleanly with 10 ms FreeRTOS ticks and I2S DMA double-buffering.
+
+3. **Single-PDU DLE Compatibility**:
+   - In Auracast Periodic Advertising and ISO BIS, all frames must fit inside the 251-byte Bluetooth 5.0 LE Data Length Extension (DLE) maximum PDU.
+   - Even at the highest quality (120 octets/ch Stereo = 240 bytes), the packet fits within a single non-fragmented 251-byte PDU.
