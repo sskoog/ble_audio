@@ -177,18 +177,18 @@ void DiagnosticMonitor::printDiagnostics() {
 
     if ((m_loop_count % DIAGNOSTICS_REFRESH_RATE_HZ) == 0) {
         uint32_t hb_count = m_loop_count / DIAGNOSTICS_REFRESH_RATE_HZ;
-        ESP_LOGI("", "===== [%s] heartbeat #%lu | Uptime %lu s =====", cfg->device_name, hb_count, uptime_sec);
+        ESP_LOGI("", "========== [%s] ==== beat #%lu ==== up %lu s ==========", cfg->device_name, hb_count, uptime_sec);
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             auto& wifi = Network::WifiManager::getInstance();
-            ESP_LOGI("NET", "Wi-Fi %s (%s) | SSID '%s' | URL http://%s",
+            ESP_LOGI("[NET]", "Wi-Fi %s (%s) | SSID '%s' | URL http://%s",
                      wifi.isConnected() ? "ONLINE" : "OFFLINE",
                      wifi.isSoftAp() ? "SoftAP" : "Station",
                      wifi.getSsid().c_str(),
                      wifi.getIpAddress().c_str());
         }
-        ESP_LOGI("SYS", "CPU %d-%d%% @ %.0f MHz | Temp %d C | Heap %lu KB",
+        ESP_LOGI("[SYS]", "CPU %d-%d%% @ %.0f MHz | Temp %d C | Heap %lu KB",
                  m_cpu_mean_pct, m_cpu_peak_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
-        ESP_LOGI("BT", "Role %s | State %s | Pkts %lu | RSSI %d dBm | BIS %u",
+        ESP_LOGI("[BT]", "Role %s | State %s | Pkts %lu | RSSI %d dBm | BIS %u",
                  (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
                  bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
 
@@ -212,7 +212,7 @@ void DiagnosticMonitor::printDiagnostics() {
         uint32_t dma_udr = m_ble_broadcast.getAndResetDmaUnderrunCount();
 
         if (cfg->node_role == NODE_ROLE_SINK) {
-            ESP_LOGI("AUDIO", "dBFS RMS|Pk %s | %s | VCS Vol %u%% | DMA_UDR %lu | %s | %s",
+            ESP_LOGI("[AUDIO]", "RMS|Pk %s|%s dBFS | VCS %u%% | DMA_UDR %lu | %s | %s",
                      rms_str, peak_str, 
                      m_ble_broadcast.getVolumePercent(),
                      (unsigned long)dma_udr,
@@ -220,7 +220,7 @@ void DiagnosticMonitor::printDiagnostics() {
                      stream.getCodecString().c_str()
                     );
         } else {
-            ESP_LOGI("AUDIO", "dBFS RMS|Pk %s | %s | %s | %s",
+            ESP_LOGI("[AUDIO]", "RMS|Pk %s|%s dBFS | %s | %s",
                      rms_str, peak_str,
                      stream.getStatusString().c_str(),
                      stream.getCodecString().c_str()
@@ -229,7 +229,7 @@ void DiagnosticMonitor::printDiagnostics() {
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             if (m_tone_gen) {
-                ESP_LOGI("SOURCE", "Tone %.1f Hz | VFO %.2f Hz | Gain %.0f%% (%.1f dB)",
+                ESP_LOGI("[SOURCE]", "Tone %.1f Hz | VFO %.2f Hz | Gain %.0f%% (%.1f dB)",
                     m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate(),
                     m_tone_gen->get_gain_pct(), m_tone_gen->get_gain_dB()
                         );
@@ -238,11 +238,11 @@ void DiagnosticMonitor::printDiagnostics() {
             /* Print Tracked SINK Nodes Table on SOURCE */
             const auto& sinks = m_ble_broadcast.getTrackedSinks();
             uint32_t now = xTaskGetTickCount();
-            ESP_LOGI("SINKS", "=== Tracked SINK Nodes (%u / %d max) ===", (unsigned int)sinks.size(), MAX_GATT_SINK_NODES);
+            ESP_LOGI("[SINKS]", "=== Tracked SINK Nodes (%u / %d max) ===", (unsigned int)sinks.size(), MAX_GATT_SINK_NODES);
             for (size_t i = 0; i < sinks.size(); ++i) {
                 const auto& s = sinks[i];
                 uint32_t age_ms = (now - s.last_seen_tick) * portTICK_PERIOD_MS;
-                ESP_LOGI("SINK_NODE", "  [%u] '%s' | ConnHandle %u | Vol %.1f%% | BASS %s | Age %lu ms",
+                ESP_LOGI("[SINK_NODE]", "  [%u] '%s' | ConnHandle %u | Vol %.1f%% | BASS %s | Age %lu ms",
                          (unsigned int)(i + 1), s.device_name.c_str(), s.conn_handle, s.volume_percent,
                          (s.pa_sync_state == 2) ? "PA_SYNCED" : (s.connected ? "CONNECTED" : "DISCONNECTED"), age_ms);
             }

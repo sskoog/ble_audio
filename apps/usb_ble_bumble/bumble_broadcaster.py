@@ -442,35 +442,8 @@ async def run_broadcaster(args):
                             iso_sdu_fragment=payload
                         )
                         try:
+                            # Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                             hci_sink.on_packet(bytes(iso_pkt))
-
-                            # 1. Update Periodic Advertising Data with LC3 Audio Frame (UUID 0x1851)
-                            per_adv = bytearray()
-                            base_service_data = bytes([0x51, 0x18]) + lc3_l
-                            per_adv.extend([len(base_service_data) + 1, 0x16])
-                            per_adv.extend(base_service_data)
-                            await device.send_command(HCI_LE_Set_Periodic_Advertising_Data_Command(
-                                advertising_handle=0,
-                                operation=0x03,
-                                advertising_data=bytes(per_adv)
-                            ))
-
-                            # 2. Update Extended Advertising Data with LC3 Audio Frame (Espressif 0x02E5)
-                            adv_data = bytearray()
-                            adv_data.extend([2 + 1, 0x01, 0x06]) # Flags
-                            adv_data.extend([4, 0x16, 0x52, 0x18, 0x01]) # PBA UUID 0x1852
-                            mfg_payload = bytes([0xE5, 0x02]) + lc3_l
-                            adv_data.extend([len(mfg_payload) + 1, 0xFF])
-                            adv_data.extend(mfg_payload)
-                            name_bytes = args.adv_name.encode('utf-8')
-                            adv_data.extend([len(name_bytes) + 1, 0x09])
-                            adv_data.extend(name_bytes)
-                            await device.send_command(HCI_LE_Set_Extended_Advertising_Data_Command(
-                                advertising_handle=0,
-                                operation=0x03,
-                                fragment_preference=0,
-                                advertising_data=bytes(adv_data)
-                            ))
                         except (TransportLostError, serial.SerialException, PermissionError, OSError):
                             is_hardware_disconnected = True
                             print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
@@ -494,17 +467,12 @@ async def run_broadcaster(args):
                                 iso_sdu_fragment=payload
                             )
                             try:
+                                # Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                                 hci_sink.on_packet(bytes(iso_pkt))
-                                if bis_idx == 0:
-                                    per_adv = bytearray()
-                                    base_service_data = bytes([0x51, 0x18]) + payload
-                                    per_adv.extend([len(base_service_data) + 1, 0x16])
-                                    per_adv.extend(base_service_data)
-                                    await device.send_command(HCI_LE_Set_Periodic_Advertising_Data_Command(
-                                        advertising_handle=0,
-                                        operation=0x03,
-                                        advertising_data=bytes(per_adv)
-                                    ))
+                            except (TransportLostError, serial.SerialException, PermissionError, OSError):
+                                is_hardware_disconnected = True
+                                print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+                                break
                             except Exception as e:
                                 print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
                                 break
