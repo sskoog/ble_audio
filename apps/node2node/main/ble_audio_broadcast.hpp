@@ -158,6 +158,19 @@ public:
     void setLfoEnabled(bool enabled) { m_lfo_enabled = enabled; }
     bool isLfoEnabled() const { return m_lfo_enabled; }
     void sendManualVolumeToAllSinks(uint8_t vol_pct);
+
+    /**
+     * @brief Reconfigures codec and DMA buffer length based on sample rate, frame duration & channels
+     */
+    esp_err_t configureAudioFormat(uint32_t sample_rate_hz, uint32_t frame_duration_us, uint16_t octets_per_frame, uint8_t channels) {
+        m_telemetry.sample_rate = sample_rate_hz;
+        m_telemetry.channels = channels;
+        m_telemetry.bitrate_kbps = (static_cast<uint32_t>(octets_per_frame) * 8 * 1000) / (frame_duration_us / 1000);
+        if (m_i2s_dac) {
+            m_i2s_dac->reconfigurePipeline(sample_rate_hz, frame_duration_us, 2);
+        }
+        return m_lc3_codec.initDecoder(sample_rate_hz, 1, frame_duration_us, octets_per_frame);
+    }
     /* Audio Signal Metering & Statistics Component */
     int16_t getAudioFramePeak_int16(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFramePeak_int16(frameCount); }
     float getAudioFramePeak_pct(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFramePeak_pct(frameCount); }

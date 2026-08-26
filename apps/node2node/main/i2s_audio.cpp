@@ -28,12 +28,14 @@ I2sAudioDriver::~I2sAudioDriver() {
     }
 }
 
-esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, int gain_pin) {
+esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, int gain_pin, uint32_t frame_duration_us, uint8_t channels) {
     if (m_initialized) {
         deinit();
     }
 
     m_sample_rate = sample_rate_hz;
+    m_frame_duration_us = frame_duration_us;
+    m_channels = channels;
     m_bclk = bclk;
     m_ws = ws;
     m_dout = dout;
@@ -47,10 +49,10 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_nu
         m_gain_pin = GPIO_NUM_NC;
     }
 
-    // Dual-Descriptor DMA Configuration (2 x 10ms = 20ms total hardware capacity)
+    // Dual-Descriptor DMA Configuration (2 x 1 Frame Capacity = 20ms @ 10ms, or 15ms @ 7.5ms)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 2; // Exactly 2 descriptors (Dual-descriptor ping-pong)
-    chan_cfg.dma_frame_num = (sample_rate_hz * 10) / 1000; // 10ms frame size per descriptor
+    chan_cfg.dma_frame_num = calculateDmaFrameNum(sample_rate_hz, frame_duration_us);
     chan_cfg.auto_clear = true;
 
     i2s_chan_handle_t tx_handle = nullptr;
@@ -96,11 +98,25 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_nu
     }
 
     m_initialized = true;
-    m_running = false; // Keep clock idle until first 10ms audio descriptor is full!
+    m_running = false; // Keep clock idle until first audio descriptor is full!
 
-    ESP_LOGI(TAG, "I2S Dual-Descriptor DMA Driver Initialized: Fs=%lu Hz, 2x10ms (20ms max), BCLK=%d, WS=%d, DOUT=%d",
-             m_sample_rate, static_cast<int>(bclk), static_cast<int>(ws), static_cast<int>(dout));
+    ESP_LOGI(TAG, "I2S Dual-Descriptor DMA Driver Initialized: Fs=%lu Hz, Duration=%lu us (%u samples/desc, 2x DMA depth), BCLK=%d, WS=%d, DOUT=%d",
+             m_sample_rate, m_frame_duration_us, (unsigned)chan_cfg.dma_frame_num, static_cast<int>(bclk), static_cast<int>(ws), static_cast<int>(dout));
     return ESP_OK;
+}
+
+esp_err_t I2sAudioDriver::reconfigurePipeline(uint32_t sample_rate_hz, uint32_t frame_duration_us, uint8_t channels) {
+    if (!m_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (m_sample_rate == sample_rate_hz && m_frame_duration_us == frame_duration_us && m_channels == channels) {
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Reconfiguring I2S DMA Pipeline: Fs=%lu Hz, Duration=%lu us, Channels=%u",
+             sample_rate_hz, frame_duration_us, channels);
+
+    return init(sample_rate_hz, m_bclk, m_ws, m_dout, static_cast<int>(m_gain_pin), frame_duration_us, channels);
 }
 
 esp_err_t I2sAudioDriver::start() {

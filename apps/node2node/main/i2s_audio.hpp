@@ -21,11 +21,31 @@ public:
     I2sAudioDriver();
     ~I2sAudioDriver();
 
-    // Initializes dual-descriptor DMA (2 x 10ms = 20ms capacity) for any standard sample rate
-    esp_err_t init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, int gain_pin = -1);
+    /**
+     * @brief Calculates exact DMA buffer frame count per descriptor for any sample rate & duration
+     * @param sample_rate_hz e.g. 48000, 44100, 32000, 24000, 22050, 16000, 8000 Hz
+     * @param frame_duration_us e.g. 10000 (10ms) or 7500 (7.5ms)
+     * @return Number of audio sample frames per DMA descriptor
+     */
+    static constexpr size_t calculateDmaFrameNum(uint32_t sample_rate_hz, uint32_t frame_duration_us) {
+        return (static_cast<uint64_t>(sample_rate_hz) * frame_duration_us + 500000ULL) / 1000000ULL;
+    }
+
+    /**
+     * @brief Calculates total raw 16-bit PCM bytes per frame
+     */
+    static constexpr size_t calculatePcmBytesPerFrame(uint32_t sample_rate_hz, uint32_t frame_duration_us, uint8_t channels = 2) {
+        return calculateDmaFrameNum(sample_rate_hz, frame_duration_us) * channels * sizeof(int16_t);
+    }
+
+    // Initializes dual-descriptor DMA (2 x Frame Duration) for any standard sample rate & frame duration
+    esp_err_t init(uint32_t sample_rate_hz, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, int gain_pin = -1, uint32_t frame_duration_us = 10000, uint8_t channels = 2);
     void deinit();
 
-    // Starts I2S hardware clock (called when first 10ms frame is buffered)
+    // Reconfigures hardware sample rate, frame duration, and DMA descriptor size on the fly
+    esp_err_t reconfigurePipeline(uint32_t sample_rate_hz, uint32_t frame_duration_us = 10000, uint8_t channels = 2);
+
+    // Starts I2S hardware clock (called when first frame is buffered)
     esp_err_t start();
 
     // Stops I2S hardware clock (puts peripheral into idle/standby)
@@ -37,7 +57,7 @@ public:
     // Sets hardware gain on MAX98357A via tri-state GPIO
     void setGain(Max98357Gain gain);
 
-    // Writes 16-bit PCM frames to I2S DMA
+    // Writes 16-bit PCM frames to I2S DMA (handles mono duplicated and stereo interleaved)
     esp_err_t write(const int16_t* pcm_data, size_t samples_count, size_t* bytes_written, uint32_t timeout_ms = 100);
 
     // Interrupt-driven synchronization: waits until a DMA descriptor is empty
@@ -49,7 +69,9 @@ public:
     bool isInitialized() const { return m_initialized; }
     bool isRunning() const { return m_running; }
     uint32_t getSampleRate() const { return m_sample_rate; }
-    uint32_t getSamplesPerFrame() const { return (m_sample_rate * 10) / 1000; }
+    uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
+    uint8_t  getChannels() const { return m_channels; }
+    size_t   getSamplesPerFrame() const { return calculateDmaFrameNum(m_sample_rate, m_frame_duration_us); }
 
     void incrementUnderrunCount();
 
@@ -66,6 +88,8 @@ private:
     bool m_initialized = false;
     bool m_running = false;
     uint32_t m_sample_rate = 48000;
+    uint32_t m_frame_duration_us = 10000;
+    uint8_t  m_channels = 2;
     gpio_num_t m_bclk = GPIO_NUM_NC;
     gpio_num_t m_ws = GPIO_NUM_NC;
     gpio_num_t m_dout = GPIO_NUM_NC;
