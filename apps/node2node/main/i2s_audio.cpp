@@ -120,7 +120,11 @@ esp_err_t I2sAudioDriver::write(const int16_t* pcm_data, size_t samples_count, s
     }
     auto tx_handle = static_cast<i2s_chan_handle_t>(m_tx_chan);
     size_t bytes_to_write = samples_count * sizeof(int16_t);
-    return i2s_channel_write(tx_handle, pcm_data, bytes_to_write, bytes_written, pdMS_TO_TICKS(timeout_ms));
+    esp_err_t ret = i2s_channel_write(tx_handle, pcm_data, bytes_to_write, bytes_written, pdMS_TO_TICKS(timeout_ms));
+    if (ret != ESP_OK) {
+        incrementUnderrunCount();
+    }
+    return ret;
 }
 
 } // namespace Hardware

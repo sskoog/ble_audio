@@ -209,21 +209,22 @@ void DiagnosticMonitor::printDiagnostics() {
             snprintf(peak_str, sizeof(peak_str), "%.1f dBFS", peak_db);
         }
 
+        uint32_t dma_udr = m_ble_broadcast.getAndResetDmaUnderrunCount();
+
         if (cfg->node_role == NODE_ROLE_SINK) {
-            ESP_LOGI("AUDIO", "Codec: %s | %s | RMS: %s | Peak: %s | VCS Vol: %u%% (%u/255 %s)",
+            ESP_LOGI("AUDIO", "Codec %s | %s | RMS: %s | Peak: %s | DMA_UDR: %lu | VCS Vol: %u%%",
                      stream.getCodecString().c_str(), stream.getStatusString().c_str(),
-                     rms_str, peak_str,
-                     m_ble_broadcast.getVolumePercent(), m_ble_broadcast.getVolumeSetting(),
-                     m_ble_broadcast.isMuted() ? "MUTED" : "UNMUTED");
+                     rms_str, peak_str, (unsigned long)dma_udr,
+                     m_ble_broadcast.getVolumePercent());
         } else {
-            ESP_LOGI("AUDIO", "Codec: %s | %s | RMS: %s | Peak: %s",
+            ESP_LOGI("AUDIO", "Codec %s | %s | RMS: %s | Peak: %s",
                      stream.getCodecString().c_str(), stream.getStatusString().c_str(),
                      rms_str, peak_str);
         }
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             if (m_tone_gen) {
-                ESP_LOGI("SOURCE", "Tone: %.1f Hz | VFO: %.2f Hz | Gain: %.0f%% (%.1f dB)",
+                ESP_LOGI("SOURCE", "Tone: %.1f Hz | VFO %.2f Hz | Gain: %.0f%% (%.1f dB)",
                     m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate(),
                     m_tone_gen->get_gain_pct(), m_tone_gen->get_gain_dB());
             }
@@ -235,8 +236,8 @@ void DiagnosticMonitor::printDiagnostics() {
             for (size_t i = 0; i < sinks.size(); ++i) {
                 const auto& s = sinks[i];
                 uint32_t age_ms = (now - s.last_seen_tick) * portTICK_PERIOD_MS;
-                ESP_LOGI("SINK_NODE", "  [%u] '%s' | ConnHandle: %u | Vol: %.1f%% (%u/255) | BASS: %s | Age: %lu ms",
-                         (unsigned int)(i + 1), s.device_name.c_str(), s.conn_handle, s.volume_percent, s.volume_setting,
+                ESP_LOGI("SINK_NODE", "  [%u] '%s' | ConnHandle %u | Vol %.1f%% | BASS %s | Age %lu ms",
+                         (unsigned int)(i + 1), s.device_name.c_str(), s.conn_handle, s.volume_percent,
                          (s.pa_sync_state == 2) ? "PA_SYNCED" : (s.connected ? "CONNECTED" : "DISCONNECTED"), age_ms);
             }
         }
@@ -246,40 +247,40 @@ void DiagnosticMonitor::printDiagnostics() {
     if (m_lcd_display && m_lcd_display->isInitialized()) {
         char buf[128];
 
-        snprintf(buf, sizeof(buf), "NODE: %s | UP: %lu s", 
+        snprintf(buf, sizeof(buf), "NODE %s | UP %lu s", 
             (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", uptime_sec);
         m_lcd_display->printLine(0, buf, Hardware::COLOR_WHITE);
 
-        snprintf(buf, sizeof(buf), "CPU: %2d-%2d%% | %2d C | %3lu KB", 
+        snprintf(buf, sizeof(buf), "CPU %2d-%2d%% | %2d C | %3lu KB", 
             m_cpu_mean_pct, m_cpu_peak_pct, cpu_temp_c, free_heap / 1024);
         m_lcd_display->printLine(1, buf, Hardware::COLOR_GREEN);
         
         if (cfg->node_role == NODE_ROLE_SOURCE) {
-            snprintf(buf, sizeof(buf), "BT: %s | BIS: #%u", bt_state, stream.bis_index);
+            snprintf(buf, sizeof(buf), "BT %s | BIS #%u", bt_state, stream.bis_index);
         } else {
             if (stream.is_synced) {
-                snprintf(buf, sizeof(buf), "BT: %s | %+02d dBm | %.1f kpkts", bt_state, stream.rssi_dbm, static_cast<float>(stream.packets_count) / 1000.0f);
+                snprintf(buf, sizeof(buf), "BT %s | %+02d dBm | %.1f kpkts", bt_state, stream.rssi_dbm, static_cast<float>(stream.packets_count) / 1000.0f);
             } else {
-                snprintf(buf, sizeof(buf), "BT: Scanning...");
+                snprintf(buf, sizeof(buf), "BT Scanning...");
             }
         }
         m_lcd_display->printLine(2, buf, stream.is_synced ? Hardware::COLOR_CYAN : Hardware::COLOR_BLUE);
 
-        snprintf(buf, sizeof(buf), "BIS: #%u @ %s", stream.bis_index, stream.source_name.c_str());
+        snprintf(buf, sizeof(buf), "BIS #%u @ %s", stream.bis_index, stream.source_name.c_str());
         m_lcd_display->printLine(3, buf, Hardware::COLOR_CYAN);
 
-        snprintf(buf, sizeof(buf), "AUDIO: %s", stream.getStatusString().c_str());
+        snprintf(buf, sizeof(buf), "AUDIO %s", stream.getStatusString().c_str());
         m_lcd_display->printLine(4, buf, Hardware::COLOR_ORANGE);
 
-        snprintf(buf, sizeof(buf), "CODEC: %s", stream.getCodecString().c_str());
+        snprintf(buf, sizeof(buf), "CODEC %s", stream.getCodecString().c_str());
         m_lcd_display->printLine(5, buf, Hardware::COLOR_ORANGE);
 
         if (cfg->node_role == NODE_ROLE_SOURCE && m_tone_gen) {
-            snprintf(buf, sizeof(buf), "VCO: %.1f Hz (VFO: %.2fHz)", 
+            snprintf(buf, sizeof(buf), "VCO %.1f Hz (VFO %.2fHz)", 
             m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate());
             m_lcd_display->printLine(6, buf, Hardware::COLOR_ORANGE);
         } else {
-            snprintf(buf, sizeof(buf), "VOL: %3u%% | DAC: OK", m_ble_broadcast.getVolumePercent());
+            snprintf(buf, sizeof(buf), "VOL %3u%% | DAC OK", m_ble_broadcast.getVolumePercent());
             m_lcd_display->printLine(6, buf, Hardware::COLOR_YELLOW);
         }
 

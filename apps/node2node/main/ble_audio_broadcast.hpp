@@ -166,6 +166,7 @@ public:
     float getAudioFrameRMS_dBFS(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFrameRMS_dBFS(frameCount); }
     float getAudioFrameRMS_pct(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFrameRMS_pct(frameCount); }
 
+    uint32_t getAndResetDmaUnderrunCount() { return m_i2s_dac ? m_i2s_dac->getAndResetUnderrunCount() : 0; }
     AudioMetering::AudioSignalMeter& getAudioMeter() { return m_audio_meter; }
     const AudioMetering::AudioSignalMeter& getAudioMeter() const { return m_audio_meter; }
 

@@ -41,6 +41,7 @@ static uint8_t s_rx_lc3_frame[256];
 static size_t s_rx_lc3_len = 0;
 static bool s_has_new_lc3_frame = false;
 static bool s_is_periodic_synced = false;
+static bool s_periodic_sync_pending = false;
 static uint32_t s_rx_iso_pkt_count = 0;
 
 static uint16_t s_bass_recv_state_val_handle = 0;
@@ -684,19 +685,22 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
                 }
             }
             // If Periodic Advertising is present and SINK is not yet synced, synchronize to it
-            if (get_system_config()->node_role == NODE_ROLE_SINK && disc.periodic_adv_itvl > 0 && !s_is_periodic_synced) {
+            if (get_system_config()->node_role == NODE_ROLE_SINK && disc.periodic_adv_itvl > 0 && !s_is_periodic_synced && !s_periodic_sync_pending) {
                 struct ble_gap_periodic_sync_params sync_params = {};
                 sync_params.skip = 0;
                 sync_params.sync_timeout = 1000;
+                s_periodic_sync_pending = true;
                 int src = ble_gap_periodic_adv_sync_create(&disc.addr, disc.sid, &sync_params, ble_gap_event_cb, nullptr);
                 if (src == 0) {
-                    s_is_periodic_synced = true;
                     ESP_LOGI(TAG, "SINK: Initiated Periodic Sync to Auracast Broadcaster!");
+                } else {
+                    s_periodic_sync_pending = false;
                 }
             }
             break;
         }
         case BLE_GAP_EVENT_PERIODIC_SYNC: {
+            s_periodic_sync_pending = false;
             if (event->periodic_sync.status == 0) {
                 uint16_t sync_h = event->periodic_sync.sync_handle;
                 ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", sync_h);
@@ -762,6 +766,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_PERIODIC_SYNC_LOST: {
             ESP_LOGW(TAG, "SINK: BLE Periodic Sync LOST (Handle: %u). Re-scanning...", event->periodic_sync_lost.sync_handle);
             s_is_periodic_synced = false;
+            s_periodic_sync_pending = false;
             break;
         }
         case BLE_GAP_EVENT_DISC: {
@@ -1313,6 +1318,9 @@ void BleAudioBroadcast::runSinkLoop() {
                 }
             } else {
                 missed_gap_count++;
+                if (m_i2s_dac) {
+                    m_i2s_dac->incrementUnderrunCount();
+                }
                 
                 // Conceal minor 10-50ms RF jitter with fast decay
                 if (missed_gap_count <= 5) {

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <atomic>
 #include "esp_err.h"
 #include "driver/gpio.h"
 
@@ -29,11 +30,24 @@ public:
 
     bool isInitialized() const { return m_initialized; }
 
+    inline void incrementUnderrunCount() {
+        m_dma_underrun_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    inline uint32_t getAndResetUnderrunCount() {
+        return m_dma_underrun_count.exchange(0, std::memory_order_relaxed);
+    }
+
+    inline uint32_t getUnderrunCount() const {
+        return m_dma_underrun_count.load(std::memory_order_relaxed);
+    }
+
 private:
     void* m_tx_chan = nullptr;
     bool m_initialized = false;
     uint32_t m_sample_rate = 44100;
     gpio_num_t m_gain_pin = GPIO_NUM_NC;
+    std::atomic<uint32_t> m_dma_underrun_count{0};
 };
 
 } // namespace Hardware
