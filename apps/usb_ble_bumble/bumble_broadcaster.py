@@ -369,8 +369,8 @@ async def run_broadcaster(args):
         print(f"[2/4] Configuring Periodic Advertising with BAP BASE Descriptor...", flush=True)
         await device.send_command(HCI_LE_Set_Periodic_Advertising_Parameters_Command(
             advertising_handle=0,
-            periodic_advertising_interval_min=8, # 10.0 ms (Exact 10ms Audio Frame Pacing)
-            periodic_advertising_interval_max=8,
+            periodic_advertising_interval_min=16, # 20.0 ms (50 Hz Stable Audio Pacing with 2x Dual-Frame Redundancy)
+            periodic_advertising_interval_max=16,
             periodic_advertising_properties=0x0000
         ))
 
@@ -438,7 +438,7 @@ async def run_broadcaster(args):
         # Dual 100-frame ring buffers matching Node 23 AudioSignalMeter (1.0s @ 100 fps)
         peak_history = collections.deque(maxlen=100)
         rms_history = collections.deque(maxlen=100)
-        prev_lc3_l = None
+        pending_pa_frame1 = None
 
         try:
             while True:
@@ -482,19 +482,22 @@ async def run_broadcaster(args):
                             # 1. Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                             hci_sink.on_packet(bytes(iso_pkt))
 
-                            # 2. Update Periodic Advertising Train with Dual LC3 Frames (Current + Prev Redundancy)
-                            per_adv = bytearray()
-                            prev_frame = prev_lc3_l if (prev_lc3_l is not None and len(prev_lc3_l) == len(lc3_l)) else lc3_l
-                            base_service_data = bytes([0x51, 0x18, (seq_num & 0xFF), len(lc3_l)]) + lc3_l + prev_frame
-                            per_adv.extend([len(base_service_data) + 1, 0x16])
-                            per_adv.extend(base_service_data)
-                            prev_lc3_l = lc3_l
-                            per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
-                                advertising_handle=0,
-                                operation=0x03,
-                                advertising_data=bytes(per_adv)
-                            )
-                            hci_sink.on_packet(bytes(per_cmd))
+                            # 2. Update Periodic Advertising Train at stable 50 Hz (every 20 ms) with 2x LC3 frames (20ms audio)
+                            if seq_num % 2 == 0:
+                                pending_pa_frame1 = lc3_l
+                            else:
+                                if pending_pa_frame1 is not None:
+                                    per_adv = bytearray()
+                                    base_service_data = bytes([0x51, 0x18, (seq_num & 0xFF), len(lc3_l)]) + pending_pa_frame1 + lc3_l
+                                    per_adv.extend([len(base_service_data) + 1, 0x16])
+                                    per_adv.extend(base_service_data)
+                                    per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
+                                        advertising_handle=0,
+                                        operation=0x03,
+                                        advertising_data=bytes(per_adv)
+                                    )
+                                    hci_sink.on_packet(bytes(per_cmd))
+                                pending_pa_frame1 = None
                         except (TransportLostError, serial.SerialException, PermissionError, OSError):
                             is_hardware_disconnected = True
                             print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)

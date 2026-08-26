@@ -178,7 +178,7 @@ void DiagnosticMonitor::printDiagnostics() {
     if ((m_loop_count % DIAGNOSTICS_REFRESH_RATE_HZ) == 0) {
         uint32_t hb_count = m_loop_count / DIAGNOSTICS_REFRESH_RATE_HZ;
         //ESP_LOGI("", "========== [%s] ==== beat #%lu ==== up %lu s ==========", cfg->device_name, hb_count, uptime_sec);
-        ESP_LOGI("", "========== [%s] ==========");
+        ESP_LOGI("", "========== [%s] ==========", cfg->device_name);
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             auto& wifi = Network::WifiManager::getInstance();
             ESP_LOGI("[NET]", "Wi-Fi %s (%s) | SSID '%s' | URL http://%s",

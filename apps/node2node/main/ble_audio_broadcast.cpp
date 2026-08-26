@@ -785,23 +785,20 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
             if (rep.data != nullptr && rep.data_length >= 6) {
-                // Dual-frame redundant ingestion: [len, 0x16, 0x51, 0x18, seq, f_len, frame_curr(f_len), frame_prev(f_len)]
+                // 50 Hz Dual-frame packet: [len, 0x16, 0x51, 0x18, seq, f_len, frame1(f_len), frame2(f_len)]
                 if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
                     uint8_t seq = rep.data[4];
                     uint8_t f_len = rep.data[5];
-                    if (f_len >= 20 && (6 + f_len) <= rep.data_length) {
-                        if (s_last_seen_seq != -1 && ((seq - s_last_seen_seq) & 0xFF) > 1) {
-                            // Skipped interval detected! Recover previous frame from redundancy payload
-                            if (6 + 2 * f_len <= rep.data_length) {
-                                push_rx_lc3_frame(&rep.data[6 + f_len], f_len, seq - 1);
-                            }
+                    if (f_len >= 20 && (6 + f_len) <= rep.data_length && seq != s_last_seen_seq) {
+                        s_last_seen_seq = seq;
+                        // Push Frame 1 (first 10 ms)
+                        push_rx_lc3_frame(&rep.data[6], f_len, seq - 1);
+                        // Push Frame 2 (second 10 ms) if present
+                        if (6 + 2 * f_len <= rep.data_length) {
+                            push_rx_lc3_frame(&rep.data[6 + f_len], f_len, seq);
                         }
-                        if (seq != s_last_seen_seq) {
-                            s_last_seen_seq = seq;
-                            push_rx_lc3_frame(&rep.data[6], f_len, seq);
-                            if (s_audio_task_handle) {
-                                xTaskNotifyGive(s_audio_task_handle);
-                            }
+                        if (s_audio_task_handle) {
+                            xTaskNotifyGive(s_audio_task_handle);
                         }
                     }
                 }
