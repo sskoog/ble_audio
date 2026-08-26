@@ -1366,70 +1366,179 @@ void BleAudioBroadcast::runSinkLoop() {
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0};
     size_t actual_samples = 0;
     size_t bytes_written = 0;
-    uint32_t missed_gap_count = 0;
+
+    enum class SinkDmaState {
+        IDLE_WAIT_FRAME_0,
+        PRIMING_WAIT_FRAME_1,
+        STREAMING_ACTIVE
+    };
+
+    SinkDmaState dma_state = SinkDmaState::IDLE_WAIT_FRAME_0;
+    uint32_t system_plc_consecutive_count = 0; // SYSTEM watchdog counter (resets on frame ready, triggers IDLE at 5)
 
     while (m_audio_task_running) {
         if (m_state == BluetoothState::STREAMING) {
-            size_t current_lc3_len = 0;
-            bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
 
-            if (!has_packet) {
-                // Wait up to 15 ms for next incoming LC3 audio packet notification
-                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15)) > 0) {
+            // --- STATE 1: IDLE, WAITING FOR FIRST FRAME (DESCRIPTOR 0) ---
+            if (dma_state == SinkDmaState::IDLE_WAIT_FRAME_0) {
+                size_t current_lc3_len = 0;
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+                if (!has_packet) {
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
                     has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
                 }
+
+                if (has_packet && current_lc3_len >= 20) {
+                    system_plc_consecutive_count = 0; // Valid frame: Reset SYSTEM PLC counter
+                    m_telemetry.packets_count++;
+                    m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                    m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+
+                    uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
+                    if (m_telemetry.channels == 1) {
+                        for (size_t i = 0; i < actual_samples; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;     // Left Channel
+                            stereo_pcm[i * 2 + 1] = sample; // Right Channel (Mono duplicated)
+                        }
+                    } else {
+                        for (size_t i = 0; i < actual_samples; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;
+                            stereo_pcm[i * 2 + 1] = sample;
+                        }
+                    }
+
+                    if (m_i2s_dac) {
+                        m_i2s_dac->preload(stereo_pcm, actual_samples * 2, &bytes_written);
+                    }
+                    dma_state = SinkDmaState::PRIMING_WAIT_FRAME_1;
+                }
+                continue;
             }
 
-            /* 2. Decode incoming LC3 bitstream */
-            if (has_packet && current_lc3_len >= 20) {
-                missed_gap_count = 0;
-                m_telemetry.packets_count++;
-                m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
-
-                /* Fast inline single-pass Peak & RMS computation via audio_metering component */
-                m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
-
-                /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
-                uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
-                for (size_t i = 0; i < actual_samples; ++i) {
-                    int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
-                    int16_t sample = static_cast<int16_t>(scaled);
-                    stereo_pcm[i * 2] = sample;     // Left Channel (SD_MODE tied to 3.3V)
-                    stereo_pcm[i * 2 + 1] = sample; // Right Channel
+            // --- STATE 2: PRIMING, WAITING FOR SECOND FRAME (DESCRIPTOR 1) ---
+            if (dma_state == SinkDmaState::PRIMING_WAIT_FRAME_1) {
+                size_t current_lc3_len = 0;
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+                if (!has_packet) {
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+                    has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
                 }
 
-                /* 4. Stream decoded PCM directly to MAX98357A I2S DAC */
-                if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                    m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, 20);
-                }
-            } else {
-                missed_gap_count++;
-                
-                // Standard Bluetooth LC3 Packet Loss Concealment (PLC)
-                if (missed_gap_count <= 5) {
-                    m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                if (has_packet && current_lc3_len >= 20) {
+                    system_plc_consecutive_count = 0; // Valid frame: Reset SYSTEM PLC counter
+                    m_telemetry.packets_count++;
+                    m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                    m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+
                     uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
-                    for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
-                        int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
-                        int16_t sample = static_cast<int16_t>(scaled);
-                        stereo_pcm[i * 2] = sample;
-                        stereo_pcm[i * 2 + 1] = sample;
+                    if (m_telemetry.channels == 1) {
+                        for (size_t i = 0; i < actual_samples; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;
+                            stereo_pcm[i * 2 + 1] = sample;
+                        }
+                    } else {
+                        for (size_t i = 0; i < actual_samples; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;
+                            stereo_pcm[i * 2 + 1] = sample;
+                        }
                     }
+
+                    if (m_i2s_dac) {
+                        m_i2s_dac->preload(stereo_pcm, actual_samples * 2, &bytes_written);
+                        // BOTH DESCRIPTORS (20ms) ARE NOW FULL! FIRST NOW START THE I2S CLOCK!
+                        m_i2s_dac->start();
+                    }
+                    dma_state = SinkDmaState::STREAMING_ACTIVE;
+                }
+                continue;
+            }
+
+            // --- STATE 3: STREAMING ACTIVE (INTERRUPT-DRIVEN CONSUMER PULL) ---
+            if (dma_state == SinkDmaState::STREAMING_ACTIVE) {
+                // Wait until 1 DMA descriptor has completed playing (triggered by DMA on_sent ISR)
+                if (m_i2s_dac && m_i2s_dac->isRunning()) {
+                    m_i2s_dac->waitForDmaSlot(25);
+                }
+
+                // Pull next frame from FIFO
+                size_t current_lc3_len = 0;
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+
+                if (has_packet && current_lc3_len >= 20) {
+                    system_plc_consecutive_count = 0; // [ Frame Ready ]: Reset SYSTEM PLC watchdog counter!
+                    m_telemetry.packets_count++;
+                    m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                    m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+
+                    uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
+                    if (m_telemetry.channels == 1) {
+                        for (size_t i = 0; i < actual_samples; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;     // Left Channel
+                            stereo_pcm[i * 2 + 1] = sample; // Right Channel (Mono duplicated)
+                        }
+                    } else {
+                        for (size_t i = 0; i < actual_samples; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;
+                            stereo_pcm[i * 2 + 1] = sample;
+                        }
+                    }
+
                     if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                        m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 20);
+                        m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, 20);
                     }
-                } else if (missed_gap_count >= (AUDIO_SYNC_TIMEOUT_MS / 10)) { // 500 ms stream timeout
-                    // Broadcast Teardown: Stop audio output and return to scanning
-                    m_audio_meter.pushSilence();
-                    s_is_periodic_synced = false;
-                    missed_gap_count = 0;
-                    ESP_LOGW(TAG, "SINK: Broadcast Stream Ended / Inactive. Transitioning to SCANNING...");
-                    transitionTo(BluetoothState::SCANNING);
-                    startScanning();
+                } else {
+                    // FIFO was empty: increment both SYSTEM consecutive counter and STATISTICAL counter
+                    s_fifo_underrun_count.fetch_add(1, std::memory_order_relaxed);
+                    system_plc_consecutive_count++; // SYSTEM counter: consecutive missing frame count
+
+                    if (system_plc_consecutive_count < 5) {
+                        // Synthesize up to 4 consecutive PLC frames (up to 40 ms)
+                        m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
+                        uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
+                        for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+                            int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                            int16_t sample = static_cast<int16_t>(scaled);
+                            stereo_pcm[i * 2] = sample;
+                            stereo_pcm[i * 2 + 1] = sample;
+                        }
+                        if (m_i2s_dac && m_i2s_dac->isInitialized()) {
+                            m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 20);
+                        }
+                    } else {
+                        // Reached 5 consecutive PLC frames (50 ms of missing audio):
+                        // Put audio pipeline into IDLE immediately, stop I2S clock, and mute sound!
+                        ESP_LOGW(TAG, "SINK: Reached 5 consecutive PLC frames. Setting audio pipeline to IDLE / Muted...");
+                        m_audio_meter.pushSilence();
+                        if (m_i2s_dac) {
+                            m_i2s_dac->stop(); // Gated: Stops I2S clock and enters ultra-low power shutdown
+                        }
+                        s_is_periodic_synced = false;
+                        dma_state = SinkDmaState::IDLE_WAIT_FRAME_0;
+                        system_plc_consecutive_count = 0;
+                        transitionTo(BluetoothState::SCANNING);
+                        startScanning();
+                    }
                 }
             }
         } else {
-            // Idle / Scanning: Sleep to yield 100% CPU to scanner
+            // Standby / Scanning: Keep I2S clock stopped and reset state
+            if (m_i2s_dac && m_i2s_dac->isRunning()) {
+                m_i2s_dac->stop();
+            }
+            dma_state = SinkDmaState::IDLE_WAIT_FRAME_0;
+            system_plc_consecutive_count = 0;
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
