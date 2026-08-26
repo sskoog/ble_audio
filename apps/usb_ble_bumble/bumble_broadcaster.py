@@ -542,16 +542,6 @@ async def run_broadcaster(args):
                 except Exception:
                     pass
             if not is_hardware_disconnected and hci_source and not hci_source.terminated.done():
-                print("\nStopping BLE Advertising and BIG Broadcast on ESP32 Controller...", flush=True)
-                try:
-                    await asyncio.wait_for(device.send_command(HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0)), timeout=0.3)
-                    await asyncio.wait_for(device.send_command(HCI_LE_Set_Extended_Advertising_Enable_Command(enable=0, advertising_handles=[0])), timeout=0.3)
-                    await asyncio.wait_for(device.send_command(HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x13)), timeout=0.3)
-                    print("Broadcaster Hardware Cleanly Disabled.", flush=True)
-                except Exception:
-                    pass
-            # If the transport connection is still open, shut down BIG, PA, EA and reset controller to idle
-            if not hci_source.terminated.done():
                 try:
                     await asyncio.wait_for(stop_broadcast(device), timeout=2.5)
                 except Exception as e:
