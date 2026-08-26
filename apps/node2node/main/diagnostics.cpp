@@ -192,8 +192,9 @@ void DiagnosticMonitor::printDiagnostics() {
                  (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
                  bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
 
-        float rms_db = m_ble_broadcast.getAudioFrameRMS_dBFS();
-        float peak_db = m_ble_broadcast.getAudioFramePeak_dBFS();
+        bool is_streaming = (m_ble_broadcast.getState() == Bluetooth::BluetoothState::STREAMING);
+        float rms_db = is_streaming ? m_ble_broadcast.getAudioFrameRMS_dBFS() : -INFINITY;
+        float peak_db = is_streaming ? m_ble_broadcast.getAudioFramePeak_dBFS() : -INFINITY;
 
         char rms_str[32];
         if (std::isinf(rms_db) || rms_db <= -95.0f) {

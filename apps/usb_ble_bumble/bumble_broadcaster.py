@@ -48,11 +48,11 @@ from bumble.transport.common import TransportLostError
 class SerialDisconnectFilter(logging.Filter):
     def filter(self, record):
         if record.exc_info:
-            exc_type, exc_val, _ = record.exc_info
+            exc_type = record.exc_info[0]
             if exc_type and issubclass(exc_type, (serial.SerialException, serial.serialutil.SerialException, TransportLostError, PermissionError, OSError)):
                 return False
-        msg = record.getMessage()
-        if "ClearCommError failed" in msg or "transport lost" in msg or "Fatal write error" in msg:
+        msg = str(record.getMessage())
+        if any(s in msg for s in ("ClearCommError", "transport lost", "Fatal write error", "no pending response future", "command result mismatch")):
             return False
         return True
 
@@ -452,8 +452,20 @@ async def run_broadcaster(args):
                             iso_sdu_fragment=payload
                         )
                         try:
-                            # Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
+                            # 1. Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                             hci_sink.on_packet(bytes(iso_pkt))
+
+                            # 2. Update Periodic Advertising Train with LC3 Audio Frame (UUID 0x1851)
+                            per_adv = bytearray()
+                            base_service_data = bytes([0x51, 0x18]) + lc3_l
+                            per_adv.extend([len(base_service_data) + 1, 0x16])
+                            per_adv.extend(base_service_data)
+                            per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
+                                advertising_handle=0,
+                                operation=0x03,
+                                advertising_data=bytes(per_adv)
+                            )
+                            hci_sink.on_packet(bytes(per_cmd))
                         except (TransportLostError, serial.SerialException, PermissionError, OSError):
                             is_hardware_disconnected = True
                             print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
@@ -477,8 +489,19 @@ async def run_broadcaster(args):
                                 iso_sdu_fragment=payload
                             )
                             try:
-                                # Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
+                                # 1. Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                                 hci_sink.on_packet(bytes(iso_pkt))
+                                if bis_idx == 0:
+                                    per_adv = bytearray()
+                                    base_service_data = bytes([0x51, 0x18]) + payload
+                                    per_adv.extend([len(base_service_data) + 1, 0x16])
+                                    per_adv.extend(base_service_data)
+                                    per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
+                                        advertising_handle=0,
+                                        operation=0x03,
+                                        advertising_data=bytes(per_adv)
+                                    )
+                                    hci_sink.on_packet(bytes(per_cmd))
                             except (TransportLostError, serial.SerialException, PermissionError, OSError):
                                 is_hardware_disconnected = True
                                 print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
