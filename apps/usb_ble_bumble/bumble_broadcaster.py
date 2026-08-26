@@ -156,6 +156,24 @@ async def run_broadcaster(args):
     else:
         logging.basicConfig(level=logging.INFO)
 
+    disc_filter = SerialDisconnectFilter()
+    logging.getLogger().addFilter(disc_filter)
+    for h in logging.root.handlers:
+        h.addFilter(disc_filter)
+    for name in ("bumble", "bumble.host", "bumble.transport", "bumble.device", "asyncio", "serial_asyncio"):
+        logging.getLogger(name).addFilter(disc_filter)
+
+    loop = asyncio.get_running_loop()
+    def handle_async_exception(loop, context):
+        exc = context.get('exception')
+        if exc and isinstance(exc, (serial.SerialException, serial.serialutil.SerialException, TransportLostError, PermissionError, OSError)):
+            return
+        msg = str(context.get('message', ''))
+        if any(s in msg for s in ('Fatal write error', 'ClearCommError', 'transport lost', 'serial transport')):
+            return
+        loop.default_exception_handler(context)
+    loop.set_exception_handler(handle_async_exception)
+
     num_bis = 1 if args.mode == "stereo" else args.num_bis
     is_stereo = (args.mode == "stereo")
     num_channels = 2 if is_stereo else num_bis
