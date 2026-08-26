@@ -438,7 +438,7 @@ async def run_broadcaster(args):
                                 advertising_data=bytes(adv_data)
                             ))
                         except Exception as e:
-                            if seq % 100 == 1:
+                            if seq_num % 100 == 1:
                                 print(f"[Broadcaster TX Warning] {e}", flush=True)
                     else:
                         # Multi-Channel: Encode 1 Mono LC3 frame per BIS stream
