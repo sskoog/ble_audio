@@ -1,3 +1,4 @@
+#include <atomic>
 #pragma once
 
 #include <cstdint>
@@ -23,6 +24,16 @@ public:
     // Decode Espressif fixed-point LC3 compressed bitstream octets to 16-bit PCM buffer (supports PLC)
     esp_err_t decodeFrame(const uint8_t* in_lc3_buf, size_t in_bytes, int16_t* pcm_out, size_t max_pcm_samples, size_t* actual_pcm_samples);
 
+    inline void incrementPlcCount() {
+        m_plc_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    inline uint32_t getAndResetPlcCount() {
+        return m_plc_count.exchange(0, std::memory_order_relaxed);
+    }
+    inline uint32_t getPlcCount() const {
+        return m_plc_count.load(std::memory_order_relaxed);
+    }
+
     uint32_t getSampleRate() const { return m_sample_rate; }
     uint8_t  getChannels() const { return m_channels; }
     uint16_t getOctetsPerFrame() const { return m_octets_per_frame; }
@@ -39,6 +50,7 @@ private:
 
     void* m_enc_handle = nullptr;
     void* m_dec_handle = nullptr;
+    std::atomic<uint32_t> m_plc_count{0};
 };
 
 } // namespace Codec

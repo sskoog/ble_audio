@@ -130,10 +130,15 @@ esp_err_t Lc3CodecEngine::decodeFrame(const uint8_t* in_lc3_buf, size_t in_bytes
         return ESP_ERR_NO_MEM;
     }
 
+    bool is_plc = (in_lc3_buf == nullptr || in_bytes == 0);
+    if (is_plc) {
+        incrementPlcCount();
+    }
+
     esp_audio_dec_in_raw_t in_raw = {
         .buffer = const_cast<uint8_t*>(in_lc3_buf),
         .len = static_cast<uint32_t>(in_bytes),
-        .frame_recover = (in_lc3_buf == nullptr || in_bytes == 0) ? ESP_AUDIO_DEC_RECOVERY_PLC : ESP_AUDIO_DEC_RECOVERY_NONE,
+        .frame_recover = is_plc ? ESP_AUDIO_DEC_RECOVERY_PLC : ESP_AUDIO_DEC_RECOVERY_NONE,
     };
 
     esp_audio_dec_out_frame_t out_f = {
@@ -147,6 +152,9 @@ esp_err_t Lc3CodecEngine::decodeFrame(const uint8_t* in_lc3_buf, size_t in_bytes
     esp_audio_err_t ret = esp_lc3_dec_decode(m_dec_handle, &in_raw, &out_f, &dec_info);
     if (ret != ESP_AUDIO_ERR_OK) {
         // Fallback PLC
+        if (!is_plc) {
+            incrementPlcCount();
+        }
         in_raw.buffer = nullptr;
         in_raw.len = 0;
         in_raw.frame_recover = ESP_AUDIO_DEC_RECOVERY_PLC;
