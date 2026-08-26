@@ -41,6 +41,20 @@ from bumble.hci import (
     HCI_IsoDataPacket
 )
 
+import serial
+from bumble.transport.common import TransportLostError
+
+class SerialDisconnectFilter(logging.Filter):
+    def filter(self, record):
+        if record.exc_info:
+            exc_type, exc_val, _ = record.exc_info
+            if exc_type and issubclass(exc_type, (serial.SerialException, serial.serialutil.SerialException, TransportLostError, PermissionError, OSError)):
+                return False
+        msg = record.getMessage()
+        if "ClearCommError failed" in msg or "transport lost" in msg or "Fatal write error" in msg:
+            return False
+        return True
+
 from lc3_encoder import LC3Encoder
 from audio_source import LfoSineAudioSource, DeviceAudioSource, list_audio_devices
 from bap_config import (
@@ -374,12 +388,14 @@ async def run_broadcaster(args):
         print(f"===========================================================\n", flush=True)
 
         seq_num = 0
+        is_hardware_disconnected = False
 
         try:
             while True:
                 # Check for COM port disconnect or hardware reset
                 if hci_source.terminated.done():
-                    print("\n[ABORT] COM port connection to ESP32 was lost (hardware reset or USB disconnect). Aborting...", flush=True)
+                    is_hardware_disconnected = True
+                    print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
                     break
 
                 t0 = time.perf_counter()
@@ -437,6 +453,10 @@ async def run_broadcaster(args):
                                 fragment_preference=0,
                                 advertising_data=bytes(adv_data)
                             ))
+                        except (TransportLostError, serial.SerialException, PermissionError, OSError):
+                            is_hardware_disconnected = True
+                            print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+                            break
                         except Exception as e:
                             if seq_num % 100 == 1:
                                 print(f"[Broadcaster TX Warning] {e}", flush=True)
@@ -516,26 +536,34 @@ async def run_broadcaster(args):
                     try:
                         done, _ = await asyncio.wait([hci_source.terminated], timeout=sleep_time)
                         if done:
-                            print("\n[ABORT] COM port connection to ESP32 was lost (hardware reset or USB disconnect). Aborting...", flush=True)
+                            is_hardware_disconnected = True
+                            print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
                             break
                     except Exception:
                         await asyncio.sleep(sleep_time)
 
         except (asyncio.CancelledError, KeyboardInterrupt):
             print("\nBroadcast interrupted by user (Ctrl+C).", flush=True)
+        except (TransportLostError, serial.SerialException, PermissionError, OSError):
+            is_hardware_disconnected = True
+            print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
         except Exception as e:
             print(f"\nBroadcast encountered exception: {e}", flush=True)
         finally:
-            print("\nStopping BLE Advertising and BIG Broadcast on ESP32 Controller...", flush=True)
-            try:
-                await device.send_command(HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0))
-                await device.send_command(HCI_LE_Set_Extended_Advertising_Enable_Command(enable=0, advertising_handles=[0]))
-                await device.send_command(HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x13))
-                print("Broadcaster Hardware Cleanly Disabled.", flush=True)
-            except Exception as e:
-                pass
             if audio_source:
-                audio_source.close()
+                try:
+                    audio_source.close()
+                except Exception:
+                    pass
+            if not is_hardware_disconnected and hci_source and not hci_source.terminated.done():
+                print("\nStopping BLE Advertising and BIG Broadcast on ESP32 Controller...", flush=True)
+                try:
+                    await asyncio.wait_for(device.send_command(HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0)), timeout=0.3)
+                    await asyncio.wait_for(device.send_command(HCI_LE_Set_Extended_Advertising_Enable_Command(enable=0, advertising_handles=[0])), timeout=0.3)
+                    await asyncio.wait_for(device.send_command(HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x13)), timeout=0.3)
+                    print("Broadcaster Hardware Cleanly Disabled.", flush=True)
+                except Exception:
+                    pass
             # If the transport connection is still open, shut down BIG, PA, EA and reset controller to idle
             if not hci_source.terminated.done():
                 try:
