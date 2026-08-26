@@ -177,18 +177,18 @@ void DiagnosticMonitor::printDiagnostics() {
 
     if ((m_loop_count % DIAGNOSTICS_REFRESH_RATE_HZ) == 0) {
         uint32_t hb_count = m_loop_count / DIAGNOSTICS_REFRESH_RATE_HZ;
-        ESP_LOGI("", "===== [%s] heartbeat #%lu | Uptime: %lu s =====", cfg->device_name, hb_count, uptime_sec);
+        ESP_LOGI("", "===== [%s] heartbeat #%lu | Uptime %lu s =====", cfg->device_name, hb_count, uptime_sec);
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             auto& wifi = Network::WifiManager::getInstance();
-            ESP_LOGI("NET", "Wi-Fi: %s (%s) | SSID: '%s' | URL: http://%s",
+            ESP_LOGI("NET", "Wi-Fi %s (%s) | SSID '%s' | URL http://%s",
                      wifi.isConnected() ? "ONLINE" : "OFFLINE",
                      wifi.isSoftAp() ? "SoftAP" : "Station",
                      wifi.getSsid().c_str(),
                      wifi.getIpAddress().c_str());
         }
-        ESP_LOGI("SYS", "CPU: %d/%d%% @ %.0f MHz | Temp: %d C | Heap: %lu KB",
+        ESP_LOGI("SYS", "CPU %d-%d%% @ %.0f MHz | Temp %d C | Heap %lu KB",
                  m_cpu_mean_pct, m_cpu_peak_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
-        ESP_LOGI("BT", "Role: %s | State: %s | Pkts: %lu | RSSI: %d dBm | BIS ID: %u",
+        ESP_LOGI("BT", "Role %s | State %s | Pkts %lu | RSSI %d dBm | BIS %u",
                  (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
                  bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
 
@@ -197,14 +197,14 @@ void DiagnosticMonitor::printDiagnostics() {
 
         char rms_str[32];
         if (std::isinf(rms_db) || rms_db <= -95.0f) {
-            snprintf(rms_str, sizeof(rms_str), "-inf dBFS");
+            snprintf(rms_str, sizeof(rms_str), "-∞ dBFS");
         } else {
             snprintf(rms_str, sizeof(rms_str), "%.1f dBFS", rms_db);
         }
 
         char peak_str[32];
         if (std::isinf(peak_db) || peak_db <= -95.0f) {
-            snprintf(peak_str, sizeof(peak_str), "-inf dBFS");
+            snprintf(peak_str, sizeof(peak_str), "-∞ dBFS");
         } else {
             snprintf(peak_str, sizeof(peak_str), "%.1f dBFS", peak_db);
         }
@@ -212,21 +212,26 @@ void DiagnosticMonitor::printDiagnostics() {
         uint32_t dma_udr = m_ble_broadcast.getAndResetDmaUnderrunCount();
 
         if (cfg->node_role == NODE_ROLE_SINK) {
-            ESP_LOGI("AUDIO", "Codec %s | %s | RMS: %s | Peak: %s | DMA_UDR: %lu | VCS Vol: %u%%",
-                     stream.getCodecString().c_str(), stream.getStatusString().c_str(),
-                     rms_str, peak_str, (unsigned long)dma_udr,
-                     m_ble_broadcast.getVolumePercent());
+            ESP_LOGI("AUDIO", "RMS|Pk %s %s| VCS Vol %u%% | DMA_UDR %lu | Codec %s | %s",
+                     rms_str, peak_str, 
+                     m_ble_broadcast.getVolumePercent(),
+                     (unsigned long)dma_udr,
+                     stream.getCodecString().c_str(), 
+                     stream.getStatusString().c_str()
+                    );
         } else {
-            ESP_LOGI("AUDIO", "Codec %s | %s | RMS: %s | Peak: %s",
-                     stream.getCodecString().c_str(), stream.getStatusString().c_str(),
-                     rms_str, peak_str);
+            ESP_LOGI("AUDIO", "RMS|Pk %s %s| Codec %s | %s",
+                     rms_str, peak_str,
+                     stream.getCodecString().c_str(), stream.getStatusString().c_str()
+                    );
         }
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
             if (m_tone_gen) {
-                ESP_LOGI("SOURCE", "Tone: %.1f Hz | VFO %.2f Hz | Gain: %.0f%% (%.1f dB)",
+                ESP_LOGI("SOURCE", "Tone %.1f Hz | VFO %.2f Hz | Gain %.0f%% (%.1f dB)",
                     m_tone_gen->getCurrentFrequency(), m_tone_gen->getModulationRate(),
-                    m_tone_gen->get_gain_pct(), m_tone_gen->get_gain_dB());
+                    m_tone_gen->get_gain_pct(), m_tone_gen->get_gain_dB()
+                        );
             }
 
             /* Print Tracked SINK Nodes Table on SOURCE */
