@@ -167,6 +167,18 @@ public:
     float getAudioFrameRMS_pct(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFrameRMS_pct(frameCount); }
 
     uint32_t getAndResetDmaUnderrunCount() { return m_i2s_dac ? m_i2s_dac->getAndResetUnderrunCount() : 0; }
+    
+    // Thread-safe SPSC FIFO & os_mbuf Diagnostic Counters
+    uint32_t getAndResetFifoUnderrunCount();
+    uint32_t getAndResetFifoOverflowCount();
+    uint32_t getFifoUnderrunCount() const;
+    uint32_t getFifoOverflowCount() const;
+
+    uint32_t getAndResetMbufUnderrunCount();
+    uint32_t getAndResetMbufOverflowCount();
+    uint32_t getMbufUnderrunCount() const;
+    uint32_t getMbufOverflowCount() const;
+
     AudioMetering::AudioSignalMeter& getAudioMeter() { return m_audio_meter; }
     const AudioMetering::AudioSignalMeter& getAudioMeter() const { return m_audio_meter; }
 

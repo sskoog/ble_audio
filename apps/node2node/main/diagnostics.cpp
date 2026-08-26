@@ -212,12 +212,18 @@ void DiagnosticMonitor::printDiagnostics() {
         }
 
         uint32_t dma_udr = m_ble_broadcast.getAndResetDmaUnderrunCount();
+        uint32_t fifo_udr = m_ble_broadcast.getAndResetFifoUnderrunCount();
+        uint32_t fifo_ovr = m_ble_broadcast.getAndResetFifoOverflowCount();
+        uint32_t mbuf_udr = m_ble_broadcast.getAndResetMbufUnderrunCount();
+        uint32_t mbuf_ovr = m_ble_broadcast.getAndResetMbufOverflowCount();
 
         if (cfg->node_role == NODE_ROLE_SINK) {
-            ESP_LOGI("[AUDIO]", "RMS|Pk %s|%s dBFS | VCS %u%% | DMA_UDR %lu | %s | %s",
+            ESP_LOGI("[AUDIO]", "RMS|Pk %s|%s dBFS | VCS %u%% | DMA_UDR %lu | FIFO_OV/UD %lu/%lu | MBUF_OV/UD %lu/%lu | %s | %s",
                      rms_str, peak_str, 
                      m_ble_broadcast.getVolumePercent(),
                      (unsigned long)dma_udr,
+                     (unsigned long)fifo_ovr, (unsigned long)fifo_udr,
+                     (unsigned long)mbuf_ovr, (unsigned long)mbuf_udr,
                      stream.getStatusString().c_str(),
                      stream.getCodecString().c_str()
                     );

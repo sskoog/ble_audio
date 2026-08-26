@@ -52,12 +52,18 @@ static bool s_is_periodic_synced = false;
 static bool s_periodic_sync_pending = false;
 static uint32_t s_rx_iso_pkt_count = 0;
 
+static std::atomic<uint32_t> s_fifo_overflow_count{0};
+static std::atomic<uint32_t> s_fifo_underrun_count{0};
+static std::atomic<uint32_t> s_mbuf_overflow_count{0};
+static std::atomic<uint32_t> s_mbuf_underrun_count{0};
+
 static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t seq = 0) {
     if (!data || len == 0 || len > sizeof(s_rx_fifo[0].data)) return false;
     taskENTER_CRITICAL(&s_lc3_rx_mux);
     if (s_rx_fifo_count >= LC3_RX_FIFO_SIZE) {
         s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_SIZE;
         s_rx_fifo_count--;
+        s_fifo_overflow_count.fetch_add(1, std::memory_order_relaxed);
     }
     s_rx_fifo[s_rx_fifo_head].len = static_cast<uint16_t>(len);
     s_rx_fifo[s_rx_fifo_head].seq = seq;
@@ -72,6 +78,7 @@ static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t*
     if (!out_data || !out_len) return false;
     taskENTER_CRITICAL(&s_lc3_rx_mux);
     if (s_rx_fifo_count == 0) {
+        s_fifo_underrun_count.fetch_add(1, std::memory_order_relaxed);
         taskEXIT_CRITICAL(&s_lc3_rx_mux);
         return false;
     }
@@ -784,6 +791,17 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
 #endif
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
+            if (rep.data == nullptr || os_msys_num_free() == 0) {
+                s_mbuf_overflow_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (rep.data != nullptr && rep.data_length >= 6) {
+                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
+                    uint8_t seq = rep.data[4];
+                    if (s_last_seen_seq != -1 && ((seq - s_last_seen_seq) & 0xFF) > 2) {
+                        s_mbuf_underrun_count.fetch_add(((seq - s_last_seen_seq) & 0xFF) / 2, std::memory_order_relaxed);
+                    }
+                }
+            }
             if (rep.data != nullptr && rep.data_length >= 6) {
                 // 50 Hz Dual-frame packet: [len, 0x16, 0x51, 0x18, seq, f_len, frame1(f_len), frame2(f_len)]
                 if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
@@ -1443,6 +1461,38 @@ void BleAudioBroadcast::runVcsOscillatorLoop() {
 
         vTaskDelay(interval > 0 ? interval : 1);
     }
+}
+
+uint32_t BleAudioBroadcast::getAndResetFifoUnderrunCount() {
+    return s_fifo_underrun_count.exchange(0, std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getAndResetFifoOverflowCount() {
+    return s_fifo_overflow_count.exchange(0, std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getFifoUnderrunCount() const {
+    return s_fifo_underrun_count.load(std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getFifoOverflowCount() const {
+    return s_fifo_overflow_count.load(std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getAndResetMbufUnderrunCount() {
+    return s_mbuf_underrun_count.exchange(0, std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getAndResetMbufOverflowCount() {
+    return s_mbuf_overflow_count.exchange(0, std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getMbufUnderrunCount() const {
+    return s_mbuf_underrun_count.load(std::memory_order_relaxed);
+}
+
+uint32_t BleAudioBroadcast::getMbufOverflowCount() const {
+    return s_mbuf_overflow_count.load(std::memory_order_relaxed);
 }
 
 } // namespace Bluetooth
