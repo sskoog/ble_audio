@@ -35,6 +35,7 @@ const char* bluetoothStateToString(BluetoothState state) {
 }
 
 static BleAudioBroadcast* s_broadcast_instance = nullptr;
+static TaskHandle_t s_audio_task_handle = nullptr;
 static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t s_rx_lc3_frame[256];
 static size_t s_rx_lc3_len = 0;
@@ -55,6 +56,9 @@ __attribute__((unused)) static int on_iso_packet_rx(const uint8_t *data, uint16_
     s_has_new_lc3_frame = true;
     s_rx_iso_pkt_count++;
     taskEXIT_CRITICAL(&s_lc3_rx_mux);
+    if (s_audio_task_handle) {
+        vTaskNotifyGiveFromISR(s_audio_task_handle, nullptr);
+    }
 
     if (s_rx_iso_pkt_count % 100 == 1) {
         ESP_LOGI(TAG, ">>> [ISO RX AUDIO] Pkt #%lu | Size: %u B | Synced: %d <<<",
@@ -739,38 +743,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
 #endif
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
-            static uint32_t s_prep_cnt = 0;
-            s_prep_cnt++;
-
-            // Robust direct extraction of LC3 audio frame from Periodic Train
-            if (rep.data != nullptr && rep.data_length >= 4) {
-                // Format A: [len, 0x16, 0x51, 0x18, <LC3_FRAME>...]
-                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18 && rep.data_length >= 4 + 20) {
-                    size_t lc3_sz = rep.data_length - 4;
-                    if (lc3_sz <= sizeof(s_rx_lc3_frame)) {
-                        taskENTER_CRITICAL(&s_lc3_rx_mux);
-                        memcpy(s_rx_lc3_frame, &rep.data[4], lc3_sz);
-                        s_rx_lc3_len = lc3_sz;
-                        s_has_new_lc3_frame = true;
-                        taskEXIT_CRITICAL(&s_lc3_rx_mux);
-                        s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
-                    }
-                }
-                // Format B: [0x51, 0x18, <LC3_FRAME>...]
-                else if (rep.data[0] == 0x51 && rep.data[1] == 0x18 && rep.data_length >= 2 + 20) {
-                    size_t lc3_sz = rep.data_length - 2;
-                    if (lc3_sz <= sizeof(s_rx_lc3_frame)) {
-                        taskENTER_CRITICAL(&s_lc3_rx_mux);
-                        memcpy(s_rx_lc3_frame, &rep.data[2], lc3_sz);
-                        s_rx_lc3_len = lc3_sz;
-                        s_has_new_lc3_frame = true;
-                        taskEXIT_CRITICAL(&s_lc3_rx_mux);
-                        s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
-                    }
-                }
-            }
-
-            s_broadcast_instance->parseAdvReport(rep.data, rep.data_length, rep.rssi, nullptr);
+            // Periodic report confirms sync train is active - BIG sync delivers ISO audio packets
             break;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {
@@ -1043,13 +1016,9 @@ esp_err_t BleAudioBroadcast::transitionTo(BluetoothState target_state) {
 }
 
 void BleAudioBroadcast::notifyAdvReceived(const char* name, int8_t rssi) {
-    if (name) m_telemetry.source_name = name;
+    if (name && name[0] != 0) m_telemetry.source_name = name;
     m_telemetry.rssi_dbm = rssi;
     m_last_adv_tick = xTaskGetTickCount();
-
-    if (m_state == BluetoothState::SCANNING) {
-        transitionTo(BluetoothState::STREAMING);
-    }
 }
 
 void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data, int8_t rssi, const ble_addr_t* addr) {
@@ -1058,13 +1027,10 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
     bool is_le_audio_broadcast = false;
     char found_name[48] = {0};
 
-
-
     size_t offset = 0;
     while (offset < length_data) {
         uint8_t ad_len = data[offset];
-        if (ad_len == 0) break;
-        if (offset + 1 >= length_data) break;
+        if (ad_len == 0 || offset + 1 >= length_data) break;
 
         uint8_t ad_type = data[offset + 1];
         const uint8_t *ad_payload = &data[offset + 2];
@@ -1074,17 +1040,15 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             payload_len = available_payload;
         }
 
-
-
         /* Extract Complete or Shortened Local Name (AD Types 0x09, 0x08) */
-        if (ad_type == 0x09 || ad_type == 0x08) {
+        if ((ad_type == 0x09 || ad_type == 0x08) && payload_len > 0) {
             size_t copy_len = (payload_len < sizeof(found_name) - 1) ? payload_len : (sizeof(found_name) - 1);
             memcpy(found_name, ad_payload, copy_len);
-            found_name[copy_len] = '\0';
+            found_name[copy_len] = 0;
         }
 
         /* Filter for 16-bit Service UUIDs (AD Types 0x02, 0x03): BASE (0x1851), BAA/PBA (0x1852), BASS (0x184F), PACS (0x184E), PBA (0x1856) */
-        if (ad_type == 0x02 || ad_type == 0x03) {
+        if ((ad_type == 0x02 || ad_type == 0x03) && payload_len >= 2) {
             for (size_t i = 0; i + 1 < payload_len; i += 2) {
                 uint16_t uuid = ad_payload[i] | (ad_payload[i + 1] << 8);
                 if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x184E || uuid == 0x1856 || uuid == 0x1850) {
@@ -1093,131 +1057,27 @@ void BleAudioBroadcast::parseAdvReport(const uint8_t* data, uint8_t length_data,
             }
         }
 
-        /* Extract LC3 audio frame from Manufacturer Data if present */
-        if (ad_type == 0xFF && payload_len >= 2) {
-            uint16_t company_id = ad_payload[0] | (ad_payload[1] << 8);
-
-            if (company_id == 0x02E5 && payload_len >= 2 + 20) {
-                is_le_audio_broadcast = true;
-                size_t f_sz = payload_len - 2;
-                if (f_sz <= sizeof(s_rx_lc3_frame)) {
-                    taskENTER_CRITICAL(&s_lc3_rx_mux);
-                    memcpy(s_rx_lc3_frame, &ad_payload[2], f_sz);
-                    s_rx_lc3_len = f_sz;
-                    s_has_new_lc3_frame = true;
-                    taskEXIT_CRITICAL(&s_lc3_rx_mux);
-                }
-            }
-        }
-
         /* Filter for Service Data (AD Type 0x16): BASE (0x1851), BAA/PBA (0x1852), BASS (0x184F), PBA (0x1856) */
         if (ad_type == 0x16 && payload_len >= 2) {
-
             uint16_t uuid = ad_payload[0] | (ad_payload[1] << 8);
             if (uuid == 0x1851 || uuid == 0x1852 || uuid == 0x184F || uuid == 0x1856 || uuid == 0x1850) {
                 is_le_audio_broadcast = true;
             }
-            // Extract live LC3 audio frame payload from Periodic BASE data or raw payload
-            if (uuid == 0x1851 && payload_len >= 2 + 20) {
-                size_t f_sz = payload_len - 2;
-                if (f_sz <= sizeof(s_rx_lc3_frame)) {
-                    taskENTER_CRITICAL(&s_lc3_rx_mux);
-                    memcpy(s_rx_lc3_frame, &ad_payload[2], f_sz);
-                    s_rx_lc3_len = f_sz;
-                    s_has_new_lc3_frame = true;
-                    taskEXIT_CRITICAL(&s_lc3_rx_mux);
-                }
-            } else if (payload_len >= 20) {
-                taskENTER_CRITICAL(&s_lc3_rx_mux);
-                memcpy(s_rx_lc3_frame, ad_payload, payload_len);
-                s_rx_lc3_len = payload_len;
-                s_has_new_lc3_frame = true;
-                taskEXIT_CRITICAL(&s_lc3_rx_mux);
-            }
         }
-        /* Filter for Manufacturer Specific Data (AD Type 0xFF) for raw audio stream */
-        if (ad_type == 0xFF && payload_len >= 40) {
-            is_le_audio_broadcast = true;
-            taskENTER_CRITICAL(&s_lc3_rx_mux);
-            size_t copy_len = payload_len;
-            memcpy(s_rx_lc3_frame, ad_payload, copy_len);
-            s_rx_lc3_len = copy_len;
-            s_has_new_lc3_frame = true;
-            taskEXIT_CRITICAL(&s_lc3_rx_mux);
+
+        /* Filter for Manufacturer Specific Data (AD Type 0xFF, Company ID 0x02E5) */
+        if (ad_type == 0xFF && payload_len >= 2) {
+            uint16_t company_id = ad_payload[0] | (ad_payload[1] << 8);
+            if (company_id == 0x02E5) {
+                is_le_audio_broadcast = true;
+            }
         }
 
         offset += (1 + ad_len);
     }
 
-    if (found_name[0] != '\0') {
-        if (strstr(found_name, "ESP32") != nullptr || 
-            strstr(found_name, "Auracast") != nullptr || 
-            strstr(found_name, "ForestChirp") != nullptr ||
-            strstr(found_name, "Bumble") != nullptr ||
-            strstr(found_name, "Pixel") != nullptr ||
-            strstr(found_name, "Broadcast") != nullptr) {
-            is_le_audio_broadcast = true;
-        }
-    }
-
-    /* SINK Node: Listen for ANY BLE Audio / Auracast / Bumble broadcast and lock on */
-    if (m_node_role == NODE_ROLE_SINK) {
-        if (is_le_audio_broadcast || 
-            (found_name[0] != '\0' && (strstr(found_name, "ForestChirp") != nullptr || strstr(found_name, "Auracast") != nullptr || strstr(found_name, "ESP32") != nullptr || strstr(found_name, "Source") != nullptr))) {
-            if (found_name[0] == '\0') {
-                if (addr) {
-                    snprintf(found_name, sizeof(found_name), "SRC-%02X%02X", addr->val[1], addr->val[0]);
-                } else {
-                    strncpy(found_name, "Auracast-SRC", sizeof(found_name) - 1);
-                }
-            }
-            notifyAdvReceived(found_name, rssi);
-        }
-    }
-    /* SOURCE Node: If SINK found (name contains "ESP32"), connect over GATT */
-    else if (m_node_role == NODE_ROLE_SOURCE && addr) {
-        if (strstr(found_name, "ESP32") != nullptr || strstr(found_name, "Node20") != nullptr) {
-            /* Check if already connected or currently connecting */
-            bool already_active = false;
-            for (const auto& sink : m_tracked_sinks) {
-                if (memcmp(sink.addr.val, addr->val, 6) == 0) {
-                    if (sink.connected || sink.connecting) {
-                        already_active = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!already_active && !m_is_connecting && m_tracked_sinks.size() < MAX_GATT_SINK_NODES) {
-                ESP_LOGI(TAG, "SOURCE: Discovered compatible SINK '%s'! Connecting via BLE GAP...", found_name);
-                m_is_connecting = true;
-                addOrUpdateTrackedSink(BLE_HS_CONN_HANDLE_NONE, addr, found_name);
-
-                for (auto& s : m_tracked_sinks) {
-                    if (memcmp(s.addr.val, addr->val, 6) == 0) {
-                        s.connecting = true;
-                        break;
-                    }
-                }
-
-                struct ble_gap_conn_params conn_params = {};
-                conn_params.scan_itvl = 32;
-                conn_params.scan_window = 16;
-                conn_params.itvl_min = 24;  /* 30 ms */
-                conn_params.itvl_max = 40;  /* 50 ms */
-                conn_params.latency = 0;
-                conn_params.supervision_timeout = 200; /* 2.0 s */
-
-                ble_gap_disc_cancel();
-                int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, addr, 10000, &conn_params, ble_gap_event_cb, this);
-                ESP_LOGI(TAG, "ble_gap_connect initiated, return code: %d", rc);
-                if (rc != 0) {
-                    ESP_LOGW(TAG, "ble_gap_connect failed: %d, resuming discovery", rc);
-                    m_is_connecting = false;
-                    startScanning();
-                }
-            }
-        }
+    if (is_le_audio_broadcast) {
+        notifyAdvReceived(found_name[0] != 0 ? found_name : "Auracast Stream", rssi);
     }
 }
 
@@ -1353,7 +1213,7 @@ void BleAudioBroadcast::hostTaskRoutine(void* param) {
 void BleAudioBroadcast::startAudioTask() {
     if (!m_audio_task_running) {
         m_audio_task_running = true;
-        xTaskCreate(audioTaskRoutine, "ble_audio_task", AUDIO_TASK_STACK_SIZE, this, 3, nullptr);
+        xTaskCreate(audioTaskRoutine, "ble_audio_task", AUDIO_TASK_STACK_SIZE, this, 3, &s_audio_task_handle);
     }
 
     if (m_node_role == NODE_ROLE_SOURCE && !m_vcs_task_running) {
@@ -1409,13 +1269,13 @@ void BleAudioBroadcast::runSinkLoop() {
     static int16_t stereo_pcm[AUDIO_SAMPLES_PER_FRAME * 2] = {0};
     size_t actual_samples = 0;
     size_t bytes_written = 0;
-
-    const TickType_t interval = pdMS_TO_TICKS(AUDIO_FRAME_DURATION_MS); // 10 ms (100 Hz)
-    TickType_t last_wake_time = xTaskGetTickCount();
     uint32_t missed_gap_count = 0;
 
     while (m_audio_task_running) {
         if (m_state == BluetoothState::STREAMING) {
+            // Event-driven: Wait up to 15 ms for next incoming LC3 audio packet notification
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15));
+
             size_t current_lc3_len = 0;
             bool has_packet = false;
 
@@ -1429,7 +1289,7 @@ void BleAudioBroadcast::runSinkLoop() {
             }
             taskEXIT_CRITICAL(&s_lc3_rx_mux);
 
-            /* 2. Decode incoming LC3 bitstream (zero logging in time-critical audio loop) */
+            /* 2. Decode incoming LC3 bitstream */
             if (has_packet && current_lc3_len >= 20) {
                 missed_gap_count = 0;
                 m_telemetry.packets_count++;
@@ -1437,38 +1297,51 @@ void BleAudioBroadcast::runSinkLoop() {
 
                 /* Fast inline single-pass Peak & RMS computation via audio_metering component */
                 m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+
+                /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
+                uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
+                for (size_t i = 0; i < actual_samples; ++i) {
+                    int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                    int16_t sample = static_cast<int16_t>(scaled);
+                    stereo_pcm[i * 2] = sample;     // Left Channel (SD_MODE tied to 3.3V)
+                    stereo_pcm[i * 2 + 1] = sample; // Right Channel
+                }
+
+                /* 4. Stream decoded PCM directly to MAX98357A I2S DAC */
+                if (m_i2s_dac && m_i2s_dac->isInitialized()) {
+                    m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, 20);
+                }
             } else {
                 missed_gap_count++;
-                // Smoothly decay previous audio frames or zero fill
-                for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
-                    decoded_pcm[i] = (decoded_pcm[i] * 7) / 8; // Gentle 12% decay per 10ms gap
-                }
-                actual_samples = AUDIO_SAMPLES_PER_FRAME;
-
-                if (missed_gap_count >= 50) { // After 500 ms of true silence, push 0s
+                
+                // Conceal minor 10-50ms RF jitter with fast decay
+                if (missed_gap_count <= 5) {
+                    for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+                        decoded_pcm[i] = (decoded_pcm[i] * 3) / 4; // Fast 25% decay per 10ms gap
+                    }
+                    uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
+                    for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
+                        int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
+                        int16_t sample = static_cast<int16_t>(scaled);
+                        stereo_pcm[i * 2] = sample;
+                        stereo_pcm[i * 2 + 1] = sample;
+                    }
+                    if (m_i2s_dac && m_i2s_dac->isInitialized()) {
+                        m_i2s_dac->write(stereo_pcm, AUDIO_SAMPLES_PER_FRAME * 2, &bytes_written, 20);
+                    }
+                } else if (missed_gap_count >= (AUDIO_SYNC_TIMEOUT_MS / 10)) { // 500 ms stream timeout
+                    // Broadcast Teardown: Stop audio output and return to scanning
                     m_audio_meter.pushSilence();
+                    s_is_periodic_synced = false;
+                    missed_gap_count = 0;
+                    ESP_LOGW(TAG, "SINK: Broadcast Stream Ended / Inactive. Transitioning to SCANNING...");
+                    transitionTo(BluetoothState::SCANNING);
+                    startScanning();
                 }
             }
-
-            /* 3. Apply VCS Volume Control & Interleave to Stereo Slots for MAX98357A */
-            uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
-            for (size_t i = 0; i < actual_samples; ++i) {
-                int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
-                int16_t sample = static_cast<int16_t>(scaled);
-                stereo_pcm[i * 2] = sample;     // Left Channel (SD_MODE tied to 3.3V)
-                stereo_pcm[i * 2 + 1] = sample; // Right Channel
-            }
-
-            /* 4. Stream decoded PCM to MAX98357A I2S DAC */
-            if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                m_i2s_dac->write(stereo_pcm, actual_samples * 2, &bytes_written, portMAX_DELAY);
-            }
-
-            vTaskDelayUntil(&last_wake_time, interval > 0 ? interval : 1);
         } else {
-            // Idle / Scanning: Yield CPU
-            vTaskDelay(pdMS_TO_TICKS(10));
-            last_wake_time = xTaskGetTickCount();
+            // Idle / Scanning: Sleep to yield 100% CPU to scanner
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
 }
