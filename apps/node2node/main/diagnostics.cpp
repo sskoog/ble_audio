@@ -197,32 +197,33 @@ void DiagnosticMonitor::printDiagnostics() {
 
         char rms_str[32];
         if (std::isinf(rms_db) || rms_db <= -95.0f) {
-            snprintf(rms_str, sizeof(rms_str), "-∞ dBFS");
+            snprintf(rms_str, sizeof(rms_str), "-∞");
         } else {
-            snprintf(rms_str, sizeof(rms_str), "%.1f dBFS", rms_db);
+            snprintf(rms_str, sizeof(rms_str), "%.1f", rms_db);
         }
 
         char peak_str[32];
         if (std::isinf(peak_db) || peak_db <= -95.0f) {
-            snprintf(peak_str, sizeof(peak_str), "-∞ dBFS");
+            snprintf(peak_str, sizeof(peak_str), "-∞");
         } else {
-            snprintf(peak_str, sizeof(peak_str), "%.1f dBFS", peak_db);
+            snprintf(peak_str, sizeof(peak_str), "%.1f", peak_db);
         }
 
         uint32_t dma_udr = m_ble_broadcast.getAndResetDmaUnderrunCount();
 
         if (cfg->node_role == NODE_ROLE_SINK) {
-            ESP_LOGI("AUDIO", "RMS|Pk %s %s| VCS Vol %u%% | DMA_UDR %lu | Codec %s | %s",
+            ESP_LOGI("AUDIO", "dBFS RMS|Pk %s | %s | VCS Vol %u%% | DMA_UDR %lu | %s | %s",
                      rms_str, peak_str, 
                      m_ble_broadcast.getVolumePercent(),
                      (unsigned long)dma_udr,
-                     stream.getCodecString().c_str(), 
-                     stream.getStatusString().c_str()
+                     stream.getStatusString().c_str(),
+                     stream.getCodecString().c_str()
                     );
         } else {
-            ESP_LOGI("AUDIO", "RMS|Pk %s %s| Codec %s | %s",
+            ESP_LOGI("AUDIO", "dBFS RMS|Pk %s | %s | %s | %s",
                      rms_str, peak_str,
-                     stream.getCodecString().c_str(), stream.getStatusString().c_str()
+                     stream.getStatusString().c_str(),
+                     stream.getCodecString().c_str()
                     );
         }
 

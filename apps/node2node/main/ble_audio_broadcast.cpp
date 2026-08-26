@@ -747,7 +747,22 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
 #endif
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
-            // Periodic report confirms sync train is active - BIG sync delivers ISO audio packets
+            if (rep.data != nullptr && rep.data_length >= 4) {
+                // Direct high-efficiency ingestion of LC3 audio frame from Periodic Train (0x1851)
+                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18 && rep.data_length > 4) {
+                    size_t lc3_sz = rep.data_length - 4;
+                    if (lc3_sz <= sizeof(s_rx_lc3_frame)) {
+                        taskENTER_CRITICAL(&s_lc3_rx_mux);
+                        memcpy(s_rx_lc3_frame, &rep.data[4], lc3_sz);
+                        s_rx_lc3_len = lc3_sz;
+                        s_has_new_lc3_frame = true;
+                        taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                        if (s_audio_task_handle) {
+                            xTaskNotifyGive(s_audio_task_handle);
+                        }
+                    }
+                }
+            }
             break;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {

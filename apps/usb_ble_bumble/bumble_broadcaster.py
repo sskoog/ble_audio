@@ -526,6 +526,14 @@ async def run_broadcaster(args):
         except Exception as e:
             print(f"\nBroadcast encountered exception: {e}", flush=True)
         finally:
+            print("\nStopping BLE Advertising and BIG Broadcast on ESP32 Controller...", flush=True)
+            try:
+                await device.send_command(HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0))
+                await device.send_command(HCI_LE_Set_Extended_Advertising_Enable_Command(enable=0, advertising_handles=[0]))
+                await device.send_command(HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x13))
+                print("Broadcaster Hardware Cleanly Disabled.", flush=True)
+            except Exception as e:
+                pass
             if audio_source:
                 audio_source.close()
             # If the transport connection is still open, shut down BIG, PA, EA and reset controller to idle
