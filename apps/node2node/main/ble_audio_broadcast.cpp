@@ -784,8 +784,29 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
 #endif
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
-            if (rep.data != nullptr && rep.data_length >= 5) {
-                // Direct high-efficiency ingestion of LC3 audio frame from Periodic Train (0x1851 + seq)
+            if (rep.data != nullptr && rep.data_length >= 6) {
+                // Dual-frame redundant ingestion: [len, 0x16, 0x51, 0x18, seq, f_len, frame_curr(f_len), frame_prev(f_len)]
+                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
+                    uint8_t seq = rep.data[4];
+                    uint8_t f_len = rep.data[5];
+                    if (f_len >= 20 && (6 + f_len) <= rep.data_length) {
+                        if (s_last_seen_seq != -1 && ((seq - s_last_seen_seq) & 0xFF) > 1) {
+                            // Skipped interval detected! Recover previous frame from redundancy payload
+                            if (6 + 2 * f_len <= rep.data_length) {
+                                push_rx_lc3_frame(&rep.data[6 + f_len], f_len, seq - 1);
+                            }
+                        }
+                        if (seq != s_last_seen_seq) {
+                            s_last_seen_seq = seq;
+                            push_rx_lc3_frame(&rep.data[6], f_len, seq);
+                            if (s_audio_task_handle) {
+                                xTaskNotifyGive(s_audio_task_handle);
+                            }
+                        }
+                    }
+                }
+            } else if (rep.data != nullptr && rep.data_length >= 5) {
+                // Legacy single frame fallback
                 if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
                     uint8_t seq = rep.data[4];
                     if (seq != s_last_seen_seq) {
@@ -1335,11 +1356,15 @@ void BleAudioBroadcast::runSinkLoop() {
 
     while (m_audio_task_running) {
         if (m_state == BluetoothState::STREAMING) {
-            // Event-driven: Wait up to 15 ms for next incoming LC3 audio packet notification
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15));
-
             size_t current_lc3_len = 0;
             bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+
+            if (!has_packet) {
+                // Wait up to 15 ms for next incoming LC3 audio packet notification
+                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15)) > 0) {
+                    has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+                }
+            }
 
             /* 2. Decode incoming LC3 bitstream */
             if (has_packet && current_lc3_len >= 20) {
@@ -1365,9 +1390,6 @@ void BleAudioBroadcast::runSinkLoop() {
                 }
             } else {
                 missed_gap_count++;
-                if (m_i2s_dac) {
-                    m_i2s_dac->incrementUnderrunCount();
-                }
                 
                 // Standard Bluetooth LC3 Packet Loss Concealment (PLC)
                 if (missed_gap_count <= 5) {

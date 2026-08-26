@@ -1,3 +1,22 @@
+def hard_reset_controller(port: str, baud: int = 115200):
+    """
+    Performs a hardware RTS (EN) pulse to guarantee the ESP32-C6 starts in a clean,
+    fresh, fully-responsive state without requiring physical button presses.
+    """
+    try:
+        s = serial.Serial(port, baud, timeout=0.5)
+        s.dtr = False
+        s.rts = True
+        time.sleep(0.05)
+        s.rts = False
+        time.sleep(0.35)
+        s.reset_input_buffer()
+        s.reset_output_buffer()
+        s.close()
+        time.sleep(0.1)
+    except Exception as e:
+        logging.debug(f"Hardware reset notice: {e}")
+
 #!/usr/bin/env python3
 """
 BLE 5.3 Auracast Broadcaster (Google Bumble Host + ESP32-C6 HCI Controller)
@@ -221,6 +240,7 @@ async def run_broadcaster(args):
         print(f"    * Target Device Query: '{args.audio_device}'", flush=True)
     print(f"===========================================================\n", flush=True)
 
+    hard_reset_controller(args.port, args.baud)
     transport_spec = f"serial:{args.port},{args.baud}"
     print(f"Connecting to ESP32-C6 HCI Controller on {transport_spec}...", flush=True)
     try:
@@ -418,6 +438,7 @@ async def run_broadcaster(args):
         # Dual 100-frame ring buffers matching Node 23 AudioSignalMeter (1.0s @ 100 fps)
         peak_history = collections.deque(maxlen=100)
         rms_history = collections.deque(maxlen=100)
+        prev_lc3_l = None
 
         try:
             while True:
@@ -461,11 +482,13 @@ async def run_broadcaster(args):
                             # 1. Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                             hci_sink.on_packet(bytes(iso_pkt))
 
-                            # 2. Update Periodic Advertising Train with LC3 Audio Frame (UUID 0x1851 + Sequence Byte)
+                            # 2. Update Periodic Advertising Train with Dual LC3 Frames (Current + Prev Redundancy)
                             per_adv = bytearray()
-                            base_service_data = bytes([0x51, 0x18, (seq_num & 0xFF)]) + lc3_l
+                            prev_frame = prev_lc3_l if (prev_lc3_l is not None and len(prev_lc3_l) == len(lc3_l)) else lc3_l
+                            base_service_data = bytes([0x51, 0x18, (seq_num & 0xFF), len(lc3_l)]) + lc3_l + prev_frame
                             per_adv.extend([len(base_service_data) + 1, 0x16])
                             per_adv.extend(base_service_data)
+                            prev_lc3_l = lc3_l
                             per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
                                 advertising_handle=0,
                                 operation=0x03,
@@ -618,6 +641,16 @@ async def run_broadcaster(args):
                     await asyncio.wait_for(stop_broadcast(device), timeout=2.5)
                 except Exception as e:
                     logging.debug(f"Teardown timeout/error: {e}")
+            if hci_transport:
+                try:
+                    await hci_transport.close()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(hci_source, 'serial') and hci_source.serial:
+                        hci_source.serial.close()
+                except Exception:
+                    pass
 
 def main():
     parser = argparse.ArgumentParser(description="Google Bumble BLE 5.3 Auracast Broadcaster with LC3 Audio Streaming")
