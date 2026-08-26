@@ -18,6 +18,7 @@ import os
 import time
 import struct
 import math
+import collections
 import asyncio
 import argparse
 import logging
@@ -386,6 +387,10 @@ async def run_broadcaster(args):
         last_stat_time = start_time
         is_hardware_disconnected = False
 
+        # Dual 100-frame ring buffers matching Node 23 AudioSignalMeter (1.0s @ 100 fps)
+        peak_history = collections.deque(maxlen=100)
+        rms_history = collections.deque(maxlen=100)
+
         try:
             while True:
                 # Check for COM port disconnect or hardware reset
@@ -400,9 +405,14 @@ async def run_broadcaster(args):
                     # Fetch next PCM audio frame: shape (num_channels, frame_samples)
                     pcm_frame = audio_source.get_frame()
 
-                    # Calculate real-time RMS signal levels for monitoring
-                    rms_l = float(np.sqrt(np.mean(pcm_frame[0].astype(np.float32)**2))) / 32768.0
-                    rms_r = float(np.sqrt(np.mean(pcm_frame[1].astype(np.float32)**2))) / 32768.0 if is_stereo else rms_l
+                    # Compute single-pass frame Peak (pk2pk / 2) and RMS matching Node 23 firmware
+                    p_min = int(np.min(pcm_frame))
+                    p_max = int(np.max(pcm_frame))
+                    frame_peak = (p_max - p_min) // 2
+                    frame_rms = int(np.sqrt(np.mean(pcm_frame.astype(np.float64)**2)))
+
+                    peak_history.append(frame_peak)
+                    rms_history.append(frame_rms)
 
                     if is_stereo:
                         # Encode Left and Right channels into single Stereo SDU
@@ -507,18 +517,39 @@ async def run_broadcaster(args):
                     last_stat_seq = seq_num
 
                     elapsed_s = seq_num * resolved_dur / 1000.0
-                    if args.source == "device":
-                        db_l = 20.0 * math.log10(max(1e-5, rms_l))
-                        db_r = 20.0 * math.log10(max(1e-5, rms_r))
-                        bar_len = int(min(1.0, max(rms_l, rms_r) * 4.0) * 15)
-                        vu_bar = "#" * bar_len + "-" * (15 - bar_len)
-                        if max(rms_l, rms_r) < 0.001:
-                            status_extra = " [SILENCE (No CABLE input?)]"
+
+                    # Compute 1.0s Peak and RMS dBFS metrics matching Node 23 AudioSignalMeter
+                    max_pk = max(peak_history) if peak_history else 0
+                    if max_pk <= 0:
+                        peak_db = -math.inf
+                    else:
+                        peak_db = 20.0 * math.log10(max_pk / 32767.0)
+
+                    if rms_history:
+                        mean_sq = np.mean(np.array(rms_history, dtype=np.float64)**2)
+                        rms_val = np.sqrt(mean_sq)
+                        if rms_val <= 0:
+                            rms_db = -math.inf
                         else:
-                            status_extra = f" [PC AUDIO: L|R {db_l:5.1f}|{db_r:5.1f} dB |{vu_bar}|]"
+                            rms_db = 20.0 * math.log10(rms_val / 32767.0)
+                    else:
+                        rms_db = -math.inf
+
+                    rms_str = "-∞" if (math.isinf(rms_db) or rms_db <= -95.0) else f"{rms_db:.1f}"
+                    peak_str = "-∞" if (math.isinf(peak_db) or peak_db <= -95.0) else f"{peak_db:.1f}"
+
+                    if args.source == "device":
+                        # VU Bar representation
+                        max_norm = max_pk / 32767.0
+                        bar_len = int(min(1.0, max_norm * 4.0) * 15)
+                        vu_bar = "#" * bar_len + "-" * (15 - bar_len)
+                        if max_pk < 32:
+                            status_extra = f" | RMS|Pk {rms_str}|{peak_str} dBFS | [SILENCE (No CABLE input?)]"
+                        else:
+                            status_extra = f" | RMS|Pk {rms_str}|{peak_str} dBFS |{vu_bar}|"
                         print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s){status_extra}", flush=True)
                     else:
-                        print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s)", flush=True)
+                        print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s) | RMS|Pk {rms_str}|{peak_str} dBFS", flush=True)
 
                 if args.test_duration and (seq_num * resolved_dur / 1000.0) >= args.test_duration:
                     print(f"\nCompleted test duration ({args.test_duration}s). Exiting.", flush=True)
