@@ -110,10 +110,38 @@ async def stop_broadcast(device: Device):
     """
     print("\n[Teardown] Stopping Auracast broadcast on ESP32...", flush=True)
     try:
-        await asyncio.wait_for(device.send_command(HCI_Reset_Command(), check_result=False), timeout=1.0)
-        print("  * Reset Controller Link Layer to Standby (LED -> Slow Green Idle)", flush=True)
-    except Exception as e:
-        logging.debug(f"HCI Reset notice: {e}")
+        # 1. Terminate BIG
+        await device.send_command(
+            HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x16),
+            check_result=False
+        )
+    except Exception:
+        pass
+
+    try:
+        # 2. Disable Periodic Advertising
+        await device.send_command(
+            HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0),
+            check_result=False
+        )
+        print("  * Disabled Periodic Advertising (PA)", flush=True)
+    except Exception:
+        pass
+
+    try:
+        # 3. Disable Extended Advertising
+        await device.send_command(
+            HCI_LE_Set_Extended_Advertising_Enable_Command(
+                enable=0,
+                advertising_handles=[0],
+                durations=[0],
+                max_extended_advertising_events=[0]
+            ),
+            check_result=False
+        )
+        print("  * Disabled Extended Advertising (EA)", flush=True)
+    except Exception:
+        pass
 
     print("[Teardown] Broadcast stopped cleanly. ESP32 is now in IDLE mode.\n", flush=True)
 
@@ -166,7 +194,7 @@ async def run_broadcaster(args):
         custom_octets=args.octets_per_frame
     )
 
-    transport_spec = f"serial:{args.port},{args.baud},delay"
+    transport_spec = f"serial:{args.port},{args.baud}"
     print(f"===========================================================", flush=True)
     print(f"  BLE 5.3 Auracast Broadcaster (Google Bumble + ESP32-C6)", flush=True)
     print(f"  Port: {args.port} @ {args.baud} baud", flush=True)
@@ -193,7 +221,7 @@ async def run_broadcaster(args):
         print(f"    * Target Device Query: '{args.audio_device}'", flush=True)
     print(f"===========================================================\n", flush=True)
 
-    transport_spec = f"serial:{args.port},{args.baud},delay"
+    transport_spec = f"serial:{args.port},{args.baud}"
     print(f"Connecting to ESP32-C6 HCI Controller on {transport_spec}...", flush=True)
     try:
         hci_transport = await open_transport(transport_spec)

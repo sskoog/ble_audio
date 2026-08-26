@@ -741,6 +741,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
                 ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", sync_h);
                 s_is_periodic_synced = true;
                 s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
+                /* Dedicate 100% of RF receiver bandwidth to Periodic Sync train */
+                ble_gap_disc_cancel();
 
 #if defined(CONFIG_BT_NIMBLE_ISO)
                 uint8_t bis_indices[1] = {1};
@@ -818,6 +820,10 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             ESP_LOGW(TAG, "SINK: BLE Periodic Sync LOST (Handle: %u). Re-scanning...", event->periodic_sync_lost.sync_handle);
             s_is_periodic_synced = false;
             s_periodic_sync_pending = false;
+            if (s_broadcast_instance) {
+                s_broadcast_instance->transitionTo(BluetoothState::SCANNING);
+                s_broadcast_instance->startScanning();
+            }
             break;
         }
         case BLE_GAP_EVENT_DISC: {
