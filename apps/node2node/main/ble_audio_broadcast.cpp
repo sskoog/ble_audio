@@ -42,7 +42,7 @@ struct Lc3RxPacket {
     uint16_t len;
     uint8_t seq;
 };
-static constexpr size_t LC3_RX_FIFO_SIZE = 8;
+static constexpr size_t LC3_RX_FIFO_SIZE = 16;
 static Lc3RxPacket s_rx_fifo[LC3_RX_FIFO_SIZE];
 static size_t s_rx_fifo_head = 0;
 static size_t s_rx_fifo_tail = 0;
@@ -78,7 +78,6 @@ static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t*
     if (!out_data || !out_len) return false;
     taskENTER_CRITICAL(&s_lc3_rx_mux);
     if (s_rx_fifo_count == 0) {
-        s_fifo_underrun_count.fetch_add(1, std::memory_order_relaxed);
         taskEXIT_CRITICAL(&s_lc3_rx_mux);
         return false;
     }
