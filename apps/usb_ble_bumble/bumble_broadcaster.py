@@ -406,6 +406,8 @@ async def run_broadcaster(args):
         print(f"===========================================================\n", flush=True)
 
         seq_num = 0
+        last_stat_seq = 0
+        last_stat_time = time.perf_counter()
         is_hardware_disconnected = False
 
         try:
@@ -498,6 +500,13 @@ async def run_broadcaster(args):
 
                 seq_num += 1
                 if seq_num % 100 == 0:
+                    now_perf = time.perf_counter()
+                    time_delta = now_perf - last_stat_time
+                    pkts_delta = seq_num - last_stat_seq
+                    pkt_rate = pkts_delta / (time_delta if time_delta > 0 else 1.0)
+                    last_stat_time = now_perf
+                    last_stat_seq = seq_num
+
                     elapsed_s = seq_num * resolved_dur / 1000.0
                     if args.source == "device":
                         db_l = 20.0 * math.log10(max(1e-5, rms_l))
@@ -505,12 +514,12 @@ async def run_broadcaster(args):
                         bar_len = int(min(1.0, max(rms_l, rms_r) * 4.0) * 15)
                         vu_bar = "#" * bar_len + "-" * (15 - bar_len)
                         if max(rms_l, rms_r) < 0.001:
-                            status_extra = " [SILENCE - Note: route Windows audio to 'CABLE Input']"
+                            status_extra = " [SILENCE (No CABLE input?)]"
                         else:
-                            status_extra = f" [LIVE AUDIO: L={db_l:5.1f}dB, R={db_r:5.1f}dB |{vu_bar}|]"
-                        print(f"  [Broadcasting] {seq_num:5d} frames ({elapsed_s:5.1f}s){status_extra}", flush=True)
+                            status_extra = f" [PC AUDIO: L|R {db_l:5.1f}|{db_r:5.1f} dB |{vu_bar}|]"
+                        print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s){status_extra}", flush=True)
                     else:
-                        print(f"  [Broadcasting] Emitted {seq_num} ISO audio frames ({elapsed_s:.1f}s elapsed)...", flush=True)
+                        print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s) | {pkts_delta} pkts sent", flush=True)
 
                 if args.test_duration and (seq_num * resolved_dur / 1000.0) >= args.test_duration:
                     print(f"\nCompleted test duration ({args.test_duration}s). Exiting.", flush=True)
