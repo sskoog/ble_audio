@@ -159,12 +159,12 @@ public:
     bool isLfoEnabled() const { return m_lfo_enabled; }
     void sendManualVolumeToAllSinks(uint8_t vol_pct);
     /* Audio Signal Metering & Statistics Component */
-    int16_t getAudioFramePeak_int16(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFramePeak_int16(numberOfFrames); }
-    float getAudioFramePeak_pct(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFramePeak_pct(numberOfFrames); }
-    float getAudioFramePeak_dBFS(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFramePeak_dBFS(numberOfFrames); }
-    int16_t getAudioFrameRMS_int16(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFrameRMS_int16(numberOfFrames); }
-    float getAudioFrameRMS_dBFS(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFrameRMS_dBFS(numberOfFrames); }
-    float getAudioFrameRMS_pct(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFrameRMS_pct(numberOfFrames); }
+    int16_t getAudioFramePeak_int16(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFramePeak_int16(frameCount); }
+    float getAudioFramePeak_pct(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFramePeak_pct(frameCount); }
+    float getAudioFramePeak_dBFS(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFramePeak_dBFS(frameCount); }
+    int16_t getAudioFrameRMS_int16(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFrameRMS_int16(frameCount); }
+    float getAudioFrameRMS_dBFS(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFrameRMS_dBFS(frameCount); }
+    float getAudioFrameRMS_pct(unsigned int frameCount = AudioMetering::AudioSignalMeter::DEFAULT_HISTORY_FRAMES) const { return m_audio_meter.getAudioFrameRMS_pct(frameCount); }
 
     AudioMetering::AudioSignalMeter& getAudioMeter() { return m_audio_meter; }
     const AudioMetering::AudioSignalMeter& getAudioMeter() const { return m_audio_meter; }

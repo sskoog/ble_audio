@@ -149,13 +149,13 @@ public:
      * CONSUMER FUNCTIONS (Called from lower-priority tasks / Heartbeat / Web API)
      * ========================================================================= */
 
-    int16_t getAudioFramePeak_int16(unsigned int numberOfFrames = DEFAULT_HISTORY_FRAMES) const;
-    float getAudioFramePeak_dBFS(unsigned int numberOfFrames = DEFAULT_HISTORY_FRAMES) const;
-    float getAudioFramePeak_pct(unsigned int numberOfFrames = DEFAULT_HISTORY_FRAMES) const;
+    int16_t getAudioFramePeak_int16(unsigned int frameCount = DEFAULT_HISTORY_FRAMES) const;
+    float getAudioFramePeak_dBFS(unsigned int frameCount = DEFAULT_HISTORY_FRAMES) const;
+    float getAudioFramePeak_pct(unsigned int frameCount = DEFAULT_HISTORY_FRAMES) const;
 
-    int16_t getAudioFrameRMS_int16(unsigned int numberOfFrames = DEFAULT_HISTORY_FRAMES) const;
-    float getAudioFrameRMS_dBFS(unsigned int numberOfFrames = DEFAULT_HISTORY_FRAMES) const;
-    float getAudioFrameRMS_pct(unsigned int numberOfFrames = DEFAULT_HISTORY_FRAMES) const;
+    int16_t getAudioFrameRMS_int16(unsigned int frameCount = DEFAULT_HISTORY_FRAMES) const;
+    float getAudioFrameRMS_dBFS(unsigned int frameCount = DEFAULT_HISTORY_FRAMES) const;
+    float getAudioFrameRMS_pct(unsigned int frameCount = DEFAULT_HISTORY_FRAMES) const;
 
     uint32_t getTotalProcessedFrames() const {
         return m_total_frames.load(std::memory_order_relaxed);
