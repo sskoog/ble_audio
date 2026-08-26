@@ -192,6 +192,9 @@ void DiagnosticMonitor::printDiagnostics() {
                  (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
                  bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
 
+        int16_t raw_rms = m_ble_broadcast.getAudioFrameRMS_int16(100);
+        int16_t raw_peak = m_ble_broadcast.getAudioFramePeak_int16(100);
+        uint32_t tot_frames = m_ble_broadcast.getAudioMeter().getTotalProcessedFrames();
         float rms_db = m_ble_broadcast.getAudioFrameRMS_dBFS(100);
         float rms_pct = m_ble_broadcast.getAudioFrameRMS_pct(100);
         float peak_db = m_ble_broadcast.getAudioFramePeak_dBFS(100);

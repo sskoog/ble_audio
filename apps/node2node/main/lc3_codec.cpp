@@ -48,6 +48,11 @@ esp_err_t Lc3CodecEngine::initEncoder(uint32_t sample_rate_hz, uint8_t channels,
 }
 
 esp_err_t Lc3CodecEngine::initDecoder(uint32_t sample_rate_hz, uint8_t channels, uint32_t frame_duration_us, uint16_t octets_per_frame) {
+    if (m_dec_handle) {
+        esp_lc3_dec_close(m_dec_handle);
+        m_dec_handle = nullptr;
+        m_decoder_ready = false;
+    }
     m_sample_rate = sample_rate_hz;
     m_channels = channels;
     m_frame_duration_us = frame_duration_us;
@@ -71,7 +76,7 @@ esp_err_t Lc3CodecEngine::initDecoder(uint32_t sample_rate_hz, uint8_t channels,
     }
 
     m_decoder_ready = true;
-    ESP_LOGI(TAG, "Espressif Fixed-Point LC3 Decoder Initialized: %lu Hz, %u-ch, %lu us duration, %u octets/frame",
+    ESP_LOGD(TAG, "Espressif Fixed-Point LC3 Decoder Initialized: %lu Hz, %u-ch, %lu us duration, %u octets/frame",
              m_sample_rate, m_channels, m_frame_duration_us, m_octets_per_frame);
     return ESP_OK;
 }
@@ -110,8 +115,15 @@ esp_err_t Lc3CodecEngine::encodeFrame(const int16_t* pcm_in, size_t pcm_samples,
 }
 
 esp_err_t Lc3CodecEngine::decodeFrame(const uint8_t* in_lc3_buf, size_t in_bytes, int16_t* pcm_out, size_t max_pcm_samples, size_t* actual_pcm_samples) {
-    if (!m_decoder_ready || !m_dec_handle || !pcm_out || !actual_pcm_samples) {
+    if (!pcm_out || !actual_pcm_samples) {
         return ESP_ERR_INVALID_ARG;
+    }
+    /* Dynamically adapt decoder octets per frame if stream bitrate changes (genuine audio frames are >= 40 bytes) */
+    if (in_bytes >= 40 && in_bytes != m_octets_per_frame) {
+        initDecoder(m_sample_rate, m_channels, m_frame_duration_us, in_bytes);
+    }
+    if (!m_decoder_ready || !m_dec_handle) {
+        return ESP_ERR_INVALID_STATE;
     }
     size_t required_samples = (m_sample_rate * (m_frame_duration_us / 1000)) / 1000;
     if (max_pcm_samples < required_samples) {

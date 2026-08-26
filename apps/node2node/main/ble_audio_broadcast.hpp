@@ -1,3 +1,4 @@
+#include "audio_metering.hpp"
 #pragma once
 
 #include <cstdint>
@@ -157,13 +158,16 @@ public:
     void setLfoEnabled(bool enabled) { m_lfo_enabled = enabled; }
     bool isLfoEnabled() const { return m_lfo_enabled; }
     void sendManualVolumeToAllSinks(uint8_t vol_pct);
-    /* Audio Signal Metering & Statistics (SPSC Ring Buffers) */
-    int16_t getAudioFramePeak_int16(unsigned int numberOfFrames = 100) const;
-    float getAudioFramePeak_pct(unsigned int numberOfFrames = 100) const;
-    float getAudioFramePeak_dBFS(unsigned int numberOfFrames = 100) const;
-    int16_t getAudioFrameRMS_int16(unsigned int numberOfFrames = 100) const;
-    float getAudioFrameRMS_dBFS(unsigned int numberOfFrames = 100) const;
-    float getAudioFrameRMS_pct(unsigned int numberOfFrames = 100) const;
+    /* Audio Signal Metering & Statistics Component */
+    int16_t getAudioFramePeak_int16(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFramePeak_int16(numberOfFrames); }
+    float getAudioFramePeak_pct(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFramePeak_pct(numberOfFrames); }
+    float getAudioFramePeak_dBFS(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFramePeak_dBFS(numberOfFrames); }
+    int16_t getAudioFrameRMS_int16(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFrameRMS_int16(numberOfFrames); }
+    float getAudioFrameRMS_dBFS(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFrameRMS_dBFS(numberOfFrames); }
+    float getAudioFrameRMS_pct(unsigned int numberOfFrames = 100) const { return m_audio_meter.getAudioFrameRMS_pct(numberOfFrames); }
+
+    AudioMetering::AudioSignalMeter& getAudioMeter() { return m_audio_meter; }
+    const AudioMetering::AudioSignalMeter& getAudioMeter() const { return m_audio_meter; }
 
     const std::vector<DiscoveredSinkNode>& getTrackedSinks() const { return m_tracked_sinks; }
     std::vector<DiscoveredSinkNode>& getTrackedSinksMutable() { return m_tracked_sinks; }
@@ -215,6 +219,7 @@ private:
     bool m_vcs_task_running = false;
     uint32_t m_last_adv_tick = 0;
     BluetoothState m_state = BluetoothState::OFF;
+    AudioMetering::AudioSignalMeter m_audio_meter;
     StreamTelemetry m_telemetry;
 
     /* SINK GATT Server States & Value Handles */

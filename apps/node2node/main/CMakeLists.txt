@@ -14,6 +14,7 @@ idf_component_register(
     INCLUDE_DIRS 
         "."
     REQUIRES 
+        audio_metering
         bt
         nvs_flash
         driver
