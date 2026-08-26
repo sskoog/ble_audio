@@ -193,22 +193,20 @@ void DiagnosticMonitor::printDiagnostics() {
                  bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
 
         float rms_db = m_ble_broadcast.getAudioFrameRMS_dBFS();
-        float rms_pct = m_ble_broadcast.getAudioFrameRMS_pct();
         float peak_db = m_ble_broadcast.getAudioFramePeak_dBFS();
-        float peak_pct = m_ble_broadcast.getAudioFramePeak_pct();
 
         char rms_str[32];
         if (std::isinf(rms_db) || rms_db <= -95.0f) {
-            snprintf(rms_str, sizeof(rms_str), "-inf (0.0%%)");
+            snprintf(rms_str, sizeof(rms_str), "-inf dBFS");
         } else {
-            snprintf(rms_str, sizeof(rms_str), "%.1f dBFS (%.1f%%)", rms_db, rms_pct);
+            snprintf(rms_str, sizeof(rms_str), "%.1f dBFS", rms_db);
         }
 
         char peak_str[32];
         if (std::isinf(peak_db) || peak_db <= -95.0f) {
-            snprintf(peak_str, sizeof(peak_str), "-inf (0.0%%)");
+            snprintf(peak_str, sizeof(peak_str), "-inf dBFS");
         } else {
-            snprintf(peak_str, sizeof(peak_str), "%.1f dBFS (%.1f%%)", peak_db, peak_pct);
+            snprintf(peak_str, sizeof(peak_str), "%.1f dBFS", peak_db);
         }
 
         if (cfg->node_role == NODE_ROLE_SINK) {
