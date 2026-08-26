@@ -45,7 +45,10 @@ public:
     // Reconfigures hardware sample rate, frame duration, and DMA descriptor size on the fly
     esp_err_t reconfigurePipeline(uint32_t sample_rate_hz, uint32_t frame_duration_us = 10000, uint8_t channels = 2);
 
-    // Starts I2S hardware clock (called when first frame is buffered)
+    // Preloads 16-bit PCM frames into DMA descriptor while channel is stopped/idle
+    esp_err_t preload(const int16_t* pcm_data, size_t samples_count, size_t* bytes_loaded);
+
+    // Starts I2S hardware clock (called when both DMA descriptors are primed)
     esp_err_t start();
 
     // Stops I2S hardware clock (puts peripheral into idle/standby)

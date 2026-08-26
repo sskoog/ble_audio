@@ -119,6 +119,15 @@ esp_err_t I2sAudioDriver::reconfigurePipeline(uint32_t sample_rate_hz, uint32_t 
     return init(sample_rate_hz, m_bclk, m_ws, m_dout, static_cast<int>(m_gain_pin), frame_duration_us, channels);
 }
 
+esp_err_t I2sAudioDriver::preload(const int16_t* pcm_data, size_t samples_count, size_t* bytes_loaded) {
+    if (!m_initialized || !m_tx_chan || !pcm_data) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    auto tx_handle = static_cast<i2s_chan_handle_t>(m_tx_chan);
+    size_t bytes_to_load = samples_count * sizeof(int16_t);
+    return i2s_channel_preload_data(tx_handle, pcm_data, bytes_to_load, bytes_loaded);
+}
+
 esp_err_t I2sAudioDriver::start() {
     if (!m_initialized || !m_tx_chan) return ESP_ERR_INVALID_STATE;
     if (m_running) return ESP_OK;
