@@ -109,39 +109,7 @@ async def stop_broadcast(device: Device):
     """
     print("\n[Teardown] Stopping Auracast broadcast on ESP32...", flush=True)
     try:
-        await device.send_command(
-            HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0x16),
-            check_result=False
-        )
-        print("  * Terminated Broadcast Isochronous Group (BIG Handle 0)", flush=True)
-    except Exception as e:
-        logging.debug(f"Terminate BIG notice: {e}")
-
-    try:
-        await device.send_command(
-            HCI_LE_Set_Periodic_Advertising_Enable_Command(enable=0, advertising_handle=0),
-            check_result=False
-        )
-        print("  * Disabled Periodic Advertising (PA)", flush=True)
-    except Exception as e:
-        logging.debug(f"Disable PA notice: {e}")
-
-    try:
-        await device.send_command(
-            HCI_LE_Set_Extended_Advertising_Enable_Command(
-                enable=0,
-                advertising_handles=[0],
-                durations=[0],
-                max_extended_advertising_events=[0]
-            ),
-            check_result=False
-        )
-        print("  * Disabled Extended Advertising (EA)", flush=True)
-    except Exception as e:
-        logging.debug(f"Disable EA notice: {e}")
-
-    try:
-        await device.send_command(HCI_Reset_Command(), check_result=False)
+        await asyncio.wait_for(device.send_command(HCI_Reset_Command(), check_result=False), timeout=1.0)
         print("  * Reset Controller Link Layer to Standby (LED -> Slow Green Idle)", flush=True)
     except Exception as e:
         logging.debug(f"HCI Reset notice: {e}")
@@ -455,9 +423,9 @@ async def run_broadcaster(args):
                             # 1. Emit Hardware ISO BIS Packet (Pure BLE 5.3 Auracast Stream)
                             hci_sink.on_packet(bytes(iso_pkt))
 
-                            # 2. Update Periodic Advertising Train with LC3 Audio Frame (UUID 0x1851)
+                            # 2. Update Periodic Advertising Train with LC3 Audio Frame (UUID 0x1851 + Sequence Byte)
                             per_adv = bytearray()
-                            base_service_data = bytes([0x51, 0x18]) + lc3_l
+                            base_service_data = bytes([0x51, 0x18, (seq_num & 0xFF)]) + lc3_l
                             per_adv.extend([len(base_service_data) + 1, 0x16])
                             per_adv.extend(base_service_data)
                             per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
@@ -493,7 +461,7 @@ async def run_broadcaster(args):
                                 hci_sink.on_packet(bytes(iso_pkt))
                                 if bis_idx == 0:
                                     per_adv = bytearray()
-                                    base_service_data = bytes([0x51, 0x18]) + payload
+                                    base_service_data = bytes([0x51, 0x18, (seq_num & 0xFF)]) + payload
                                     per_adv.extend([len(base_service_data) + 1, 0x16])
                                     per_adv.extend(base_service_data)
                                     per_cmd = HCI_LE_Set_Periodic_Advertising_Data_Command(
@@ -550,7 +518,7 @@ async def run_broadcaster(args):
                             status_extra = f" [PC AUDIO: L|R {db_l:5.1f}|{db_r:5.1f} dB |{vu_bar}|]"
                         print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s){status_extra}", flush=True)
                     else:
-                        print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s) | {pkts_delta} pkts sent", flush=True)
+                        print(f"  [Broadcasting] Frame {seq_num:5d} @ {pkt_rate:5.1f} fps ({elapsed_s:5.1f}s)", flush=True)
 
                 if args.test_duration and (seq_num * resolved_dur / 1000.0) >= args.test_duration:
                     print(f"\nCompleted test duration ({args.test_duration}s). Exiting.", flush=True)

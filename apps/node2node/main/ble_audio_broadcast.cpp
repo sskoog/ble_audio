@@ -37,12 +37,52 @@ const char* bluetoothStateToString(BluetoothState state) {
 static BleAudioBroadcast* s_broadcast_instance = nullptr;
 static TaskHandle_t s_audio_task_handle = nullptr;
 static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
-static uint8_t s_rx_lc3_frame[256];
-static size_t s_rx_lc3_len = 0;
-static bool s_has_new_lc3_frame = false;
+struct Lc3RxPacket {
+    uint8_t data[120];
+    uint16_t len;
+    uint8_t seq;
+};
+static constexpr size_t LC3_RX_FIFO_SIZE = 8;
+static Lc3RxPacket s_rx_fifo[LC3_RX_FIFO_SIZE];
+static size_t s_rx_fifo_head = 0;
+static size_t s_rx_fifo_tail = 0;
+static size_t s_rx_fifo_count = 0;
+static int s_last_seen_seq = -1;
 static bool s_is_periodic_synced = false;
 static bool s_periodic_sync_pending = false;
 static uint32_t s_rx_iso_pkt_count = 0;
+
+static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t seq = 0) {
+    if (!data || len == 0 || len > sizeof(s_rx_fifo[0].data)) return false;
+    taskENTER_CRITICAL(&s_lc3_rx_mux);
+    if (s_rx_fifo_count >= LC3_RX_FIFO_SIZE) {
+        s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_SIZE;
+        s_rx_fifo_count--;
+    }
+    s_rx_fifo[s_rx_fifo_head].len = static_cast<uint16_t>(len);
+    s_rx_fifo[s_rx_fifo_head].seq = seq;
+    memcpy(s_rx_fifo[s_rx_fifo_head].data, data, len);
+    s_rx_fifo_head = (s_rx_fifo_head + 1) % LC3_RX_FIFO_SIZE;
+    s_rx_fifo_count++;
+    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+    return true;
+}
+
+static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t* out_seq = nullptr) {
+    if (!out_data || !out_len) return false;
+    taskENTER_CRITICAL(&s_lc3_rx_mux);
+    if (s_rx_fifo_count == 0) {
+        taskEXIT_CRITICAL(&s_lc3_rx_mux);
+        return false;
+    }
+    *out_len = s_rx_fifo[s_rx_fifo_tail].len;
+    if (out_seq) *out_seq = s_rx_fifo[s_rx_fifo_tail].seq;
+    memcpy(out_data, s_rx_fifo[s_rx_fifo_tail].data, *out_len);
+    s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_SIZE;
+    s_rx_fifo_count--;
+    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+    return true;
+}
 
 static uint16_t s_bass_recv_state_val_handle = 0;
 static uint16_t s_vcs_state_val_handle = 0;
@@ -50,17 +90,12 @@ static uint16_t s_vcs_flags_val_handle = 0;
 
 __attribute__((unused)) static int on_iso_packet_rx(const uint8_t *data, uint16_t len, void *arg) {
     if (data == nullptr || len == 0) return 0;
-    taskENTER_CRITICAL(&s_lc3_rx_mux);
-    size_t copy_len = (len <= sizeof(s_rx_lc3_frame)) ? len : sizeof(s_rx_lc3_frame);
-    memcpy(s_rx_lc3_frame, data, copy_len);
-    s_rx_lc3_len = copy_len;
-    s_has_new_lc3_frame = true;
-    s_rx_iso_pkt_count++;
-    taskEXIT_CRITICAL(&s_lc3_rx_mux);
-    if (s_audio_task_handle) {
-        vTaskNotifyGiveFromISR(s_audio_task_handle, nullptr);
+    if (push_rx_lc3_frame(data, len)) {
+        s_rx_iso_pkt_count++;
+        if (s_audio_task_handle) {
+            vTaskNotifyGiveFromISR(s_audio_task_handle, nullptr);
+        }
     }
-
     if (s_rx_iso_pkt_count % 100 == 1) {
         ESP_LOGI(TAG, ">>> [ISO RX AUDIO] Pkt #%lu | Size: %u B | Synced: %d <<<",
                  (unsigned long)s_rx_iso_pkt_count, (unsigned int)len, (int)s_is_periodic_synced);
@@ -747,18 +782,17 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
 #endif
         case BLE_GAP_EVENT_PERIODIC_REPORT: {
             const auto &rep = event->periodic_report;
-            if (rep.data != nullptr && rep.data_length >= 4) {
-                // Direct high-efficiency ingestion of LC3 audio frame from Periodic Train (0x1851)
-                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18 && rep.data_length > 4) {
-                    size_t lc3_sz = rep.data_length - 4;
-                    if (lc3_sz <= sizeof(s_rx_lc3_frame)) {
-                        taskENTER_CRITICAL(&s_lc3_rx_mux);
-                        memcpy(s_rx_lc3_frame, &rep.data[4], lc3_sz);
-                        s_rx_lc3_len = lc3_sz;
-                        s_has_new_lc3_frame = true;
-                        taskEXIT_CRITICAL(&s_lc3_rx_mux);
-                        if (s_audio_task_handle) {
-                            xTaskNotifyGive(s_audio_task_handle);
+            if (rep.data != nullptr && rep.data_length >= 5) {
+                // Direct high-efficiency ingestion of LC3 audio frame from Periodic Train (0x1851 + seq)
+                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
+                    uint8_t seq = rep.data[4];
+                    if (seq != s_last_seen_seq) {
+                        s_last_seen_seq = seq;
+                        size_t lc3_sz = rep.data_length - 5;
+                        if (push_rx_lc3_frame(&rep.data[5], lc3_sz, seq)) {
+                            if (s_audio_task_handle) {
+                                xTaskNotifyGive(s_audio_task_handle);
+                            }
                         }
                     }
                 }
@@ -768,12 +802,14 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_NOTIFY_RX: {
             if (event->notify_rx.om != nullptr) {
                 uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
-                if (len == AUDIO_LC3_OCTETS_PER_FRAME) {
-                    taskENTER_CRITICAL(&s_lc3_rx_mux);
-                    os_mbuf_copydata(event->notify_rx.om, 0, len, s_rx_lc3_frame);
-                    s_rx_lc3_len = len;
-                    s_has_new_lc3_frame = true;
-                    taskEXIT_CRITICAL(&s_lc3_rx_mux);
+                if (len <= 120) {
+                    uint8_t temp[120];
+                    os_mbuf_copydata(event->notify_rx.om, 0, len, temp);
+                    if (push_rx_lc3_frame(temp, len)) {
+                        if (s_audio_task_handle) {
+                            xTaskNotifyGive(s_audio_task_handle);
+                        }
+                    }
                 }
             }
             break;
@@ -1297,17 +1333,7 @@ void BleAudioBroadcast::runSinkLoop() {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15));
 
             size_t current_lc3_len = 0;
-            bool has_packet = false;
-
-            /* 1. Fetch latest received over-the-air BLE 5.3 LC3 compressed audio frame */
-            taskENTER_CRITICAL(&s_lc3_rx_mux);
-            if (s_has_new_lc3_frame) {
-                memcpy(current_lc3_buf, s_rx_lc3_frame, s_rx_lc3_len);
-                current_lc3_len = s_rx_lc3_len;
-                s_has_new_lc3_frame = false;
-                has_packet = true;
-            }
-            taskEXIT_CRITICAL(&s_lc3_rx_mux);
+            bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
 
             /* 2. Decode incoming LC3 bitstream */
             if (has_packet && current_lc3_len >= 20) {
@@ -1337,11 +1363,9 @@ void BleAudioBroadcast::runSinkLoop() {
                     m_i2s_dac->incrementUnderrunCount();
                 }
                 
-                // Conceal minor 10-50ms RF jitter with fast decay
+                // Standard Bluetooth LC3 Packet Loss Concealment (PLC)
                 if (missed_gap_count <= 5) {
-                    for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
-                        decoded_pcm[i] = (decoded_pcm[i] * 3) / 4; // Fast 25% decay per 10ms gap
-                    }
+                    m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
                     uint8_t vol_scale = (m_vcs_state.mute != 0) ? 0 : m_vcs_state.volume_setting;
                     for (size_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; ++i) {
                         int32_t scaled = (static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255;
