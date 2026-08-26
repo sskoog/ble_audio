@@ -132,6 +132,22 @@ void StatusLed::off() {
     setBlink(BLINK_OFF);
 }
 
+void StatusLed::triggerUnderrunFlash(uint32_t duration_ms) {
+    TickType_t now = xTaskGetTickCount();
+    m_flash_red_until_tick.store(now + pdMS_TO_TICKS(duration_ms), std::memory_order_release);
+    if (m_task_handle) {
+        xTaskNotifyGive(m_task_handle);
+    }
+}
+
+void StatusLed::triggerUnderrunFlashFromISR(uint32_t duration_ms) {
+    TickType_t now = xTaskGetTickCountFromISR();
+    m_flash_red_until_tick.store(now + pdMS_TO_TICKS(duration_ms), std::memory_order_release);
+    if (m_task_handle) {
+        vTaskNotifyGiveFromISR(m_task_handle, nullptr);
+    }
+}
+
 void StatusLed::updateHardwareLed(bool is_on) {
     if (!m_strip_handle) return;
 
@@ -151,18 +167,33 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
     auto* instance = static_cast<StatusLed*>(pvParameters);
 
     while (instance->m_running) {
+        TickType_t flash_until = instance->m_flash_red_until_tick.load(std::memory_order_acquire);
+        TickType_t now = xTaskGetTickCount();
+        if (flash_until > now) {
+            // Flash bright RED for DMA underrun
+            if (instance->m_strip_handle) {
+                // WS2812 GRB: G=0, R=48, B=0
+                led_strip_set_pixel(instance->m_strip_handle, 0, 0, 48, 0);
+                led_strip_refresh(instance->m_strip_handle);
+            }
+            TickType_t remaining = flash_until - now;
+            if (remaining > pdMS_TO_TICKS(200)) remaining = pdMS_TO_TICKS(200);
+            vTaskDelay(remaining);
+            continue;
+        }
+
         uint8_t duty = instance->m_duty_cycle;
         float freq = instance->m_blink_freq;
 
         if (duty == 0) {
             instance->updateHardwareLed(false);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
             continue;
         }
 
         if (duty >= 255) {
             instance->updateHardwareLed(true);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -179,11 +210,15 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
 
         // Turn ON
         instance->updateHardwareLed(true);
-        vTaskDelay(pdMS_TO_TICKS(on_ms));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(on_ms)) != 0) {
+            continue; // Wake up immediately if underrun flash triggered
+        }
 
         // Turn OFF
         instance->updateHardwareLed(false);
-        vTaskDelay(pdMS_TO_TICKS(off_ms));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(off_ms)) != 0) {
+            continue; // Wake up immediately if underrun flash triggered
+        }
     }
 
     vTaskDelete(NULL);

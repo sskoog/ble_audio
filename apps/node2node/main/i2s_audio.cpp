@@ -1,3 +1,4 @@
+#include "status_led.hpp"
 #include "i2s_audio.hpp"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -125,6 +126,11 @@ esp_err_t I2sAudioDriver::write(const int16_t* pcm_data, size_t samples_count, s
         incrementUnderrunCount();
     }
     return ret;
+}
+
+void I2sAudioDriver::incrementUnderrunCount() {
+    m_dma_underrun_count.fetch_add(1, std::memory_order_relaxed);
+    getStatusLed().triggerUnderrunFlash(200);
 }
 
 } // namespace Hardware

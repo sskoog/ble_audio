@@ -1,3 +1,4 @@
+#include <atomic>
 #pragma once
 
 #include <cstdint>
@@ -95,6 +96,10 @@ public:
     // Turn LED completely off
     void off();
 
+    // Instantaneous, non-blocking trigger for 0.2s Red LED flash on I2S DMA underrun
+    void triggerUnderrunFlash(uint32_t duration_ms = 200);
+    void triggerUnderrunFlashFromISR(uint32_t duration_ms = 200);
+
 private:
     static void ledTaskRoutine(void* pvParameters);
     void updateHardwareLed(bool is_on);
@@ -112,6 +117,7 @@ private:
     uint8_t m_duty_cycle = 32;
     float   m_blink_freq = 1.0f;
     SystemState m_current_state = SystemState::IDLE;
+    std::atomic<TickType_t> m_flash_red_until_tick{0};
 };
 
 // Global singleton instance for convenient cross-module access

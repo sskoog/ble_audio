@@ -30,7 +30,7 @@ private:
     void printDiagnostics();
     void updateCpuLoadHistory();
 
-    static constexpr size_t CPU_HISTORY_SIZE = 10;
+    static constexpr size_t CPU_HISTORY_SIZE = 4; // 2.0s rolling window (4 samples @ 500 ms)
     int m_cpu_history[CPU_HISTORY_SIZE] = {0};
     size_t m_cpu_hist_idx = 0;
     size_t m_cpu_hist_count = 0;

@@ -188,9 +188,9 @@ void DiagnosticMonitor::printDiagnostics() {
         }
         ESP_LOGI("[SYS]", "CPU %d-%d%% @ %.0f MHz | Temp %d C | Heap %lu KB",
                  m_cpu_mean_pct, m_cpu_peak_pct, getCPUfreq_MHz(), cpu_temp_c, free_heap / 1024);
-        ESP_LOGI("[BT]", "%s | %s | Pkts %lu | RSSI %d dBm | BIS %u",
-                 (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE (Broadcaster)" : "SINK (Receiver)",
-                 bt_state, stream.packets_count, stream.rssi_dbm, stream.bis_index);
+        ESP_LOGI("[BT]", "%s | %s BIS %u | %lu packets | RSSI %d dBm | ",
+                 (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK",
+                 bt_state, stream.bis_index, stream.packets_count, stream.rssi_dbm);
 
         bool is_streaming = (m_ble_broadcast.getState() == Bluetooth::BluetoothState::STREAMING);
         float rms_db = is_streaming ? m_ble_broadcast.getAudioFrameRMS_dBFS() : -INFINITY;

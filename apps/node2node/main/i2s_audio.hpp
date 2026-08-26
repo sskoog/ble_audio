@@ -30,9 +30,7 @@ public:
 
     bool isInitialized() const { return m_initialized; }
 
-    inline void incrementUnderrunCount() {
-        m_dma_underrun_count.fetch_add(1, std::memory_order_relaxed);
-    }
+    void incrementUnderrunCount();
 
     inline uint32_t getAndResetUnderrunCount() {
         return m_dma_underrun_count.exchange(0, std::memory_order_relaxed);
