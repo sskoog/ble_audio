@@ -1,0 +1,32 @@
+idf_component_register(
+    SRCS 
+        "main.cpp"
+        "config.c"
+        "lc3_codec.cpp"
+        "tone_generator.cpp"
+        "i2s_audio.cpp"
+        "status_led.cpp"
+        "espnow_audio_broadcast.cpp"
+        "diagnostics.cpp"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        audio_metering
+        nvs_flash
+        driver
+        esp_driver_tsens
+        esp_driver_gpio
+        esp_driver_i2s
+        esp_driver_ledc
+        esp_driver_gptimer
+        esp_timer
+        esp_hw_support
+        esp-dsp
+        led_strip
+        esp_wifi
+        esp_netif
+        lwip
+        espressif__esp_audio_codec
+)
+
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)

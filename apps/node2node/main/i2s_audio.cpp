@@ -133,12 +133,13 @@ esp_err_t I2sAudioDriver::start() {
     if (m_running) return ESP_OK;
 
     auto tx_handle = static_cast<i2s_chan_handle_t>(m_tx_chan);
+    // Clear any stale tokens before starting
+    if (m_dma_free_sem) {
+        xSemaphoreTake(m_dma_free_sem, 0);
+    }
     esp_err_t ret = i2s_channel_enable(tx_handle);
     if (ret == ESP_OK) {
         m_running = true;
-        if (m_dma_free_sem) {
-            xSemaphoreGive(m_dma_free_sem); // Prime semaphore so first frame writes immediately
-        }
         ESP_LOGI(TAG, "I2S Hardware Clock Started (Playing from DMA descriptor).");
     }
     return ret;

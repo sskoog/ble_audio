@@ -11,6 +11,7 @@
 static const char* TAG = "BLE_AUDIO";
 
 extern "C" int ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len, void *rsp, uint8_t rsp_len);
+extern "C" int ble_hci_trans_hs_iso_tx(uint8_t *frag, uint16_t len, void *arg) { (void)frag; (void)len; (void)arg; return 0; }
 
 #ifndef BLE_HCI_OCF_LE_BIG_CREATE_SYNC
 #define BLE_HCI_OCF_LE_BIG_CREATE_SYNC 0x006b
@@ -38,7 +39,7 @@ static BleAudioBroadcast* s_broadcast_instance = nullptr;
 static TaskHandle_t s_audio_task_handle = nullptr;
 static portMUX_TYPE s_lc3_rx_mux = portMUX_INITIALIZER_UNLOCKED;
 struct Lc3RxPacket {
-    uint8_t data[120];
+    uint8_t data[256];
     uint16_t len;
     uint8_t seq;
 };
@@ -94,17 +95,52 @@ static uint16_t s_bass_recv_state_val_handle = 0;
 static uint16_t s_vcs_state_val_handle = 0;
 static uint16_t s_vcs_flags_val_handle = 0;
 
-__attribute__((unused)) static int on_iso_packet_rx(const uint8_t *data, uint16_t len, void *arg) {
-    if (data == nullptr || len == 0) return 0;
-    if (push_rx_lc3_frame(data, len)) {
-        s_rx_iso_pkt_count++;
-        if (s_audio_task_handle) {
-            vTaskNotifyGiveFromISR(s_audio_task_handle, nullptr);
+static int on_iso_packet_rx(const uint8_t *data, uint16_t len, void *arg) {
+    if (data == nullptr || len < 4) return 0;
+
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+    uint8_t seq = 0;
+
+    // Parse HCI ISO Data Header (Bluetooth 5.3 Core Spec Vol 4 Part E 5.4.5)
+    uint16_t handle_flags = data[0] | (data[1] << 8);
+    uint8_t ts_flag = (handle_flags >> 14) & 0x01;
+    uint16_t iso_load_len = data[2] | ((data[3] & 0x3F) << 8);
+
+    size_t header_sz = 4 + (ts_flag ? 4 : 0) + 4; // 8 or 12 bytes
+    if (len >= header_sz && iso_load_len > 0) {
+        size_t sdu_hdr_offset = 4 + (ts_flag ? 4 : 0);
+        uint16_t seq_num = data[sdu_hdr_offset] | (data[sdu_hdr_offset + 1] << 8);
+        uint16_t sdu_info = data[sdu_hdr_offset + 2] | (data[sdu_hdr_offset + 3] << 8);
+        uint16_t sdu_len = sdu_info & 0x0FFF;
+        uint8_t status_flag = (sdu_info >> 14) & 0x03;
+
+        if (status_flag == 0 && sdu_len > 0 && len >= header_sz + sdu_len) {
+            payload = &data[header_sz];
+            payload_len = sdu_len;
+            seq = static_cast<uint8_t>(seq_num & 0xFF);
         }
     }
+
+    // Direct SDU fallback if transport passes unencapsulated SDU
+    if (!payload && len >= 20 && len <= 256) {
+        payload = data;
+        payload_len = len;
+        seq = static_cast<uint8_t>(s_rx_iso_pkt_count & 0xFF);
+    }
+
+    if (payload && payload_len >= 20) {
+        if (push_rx_lc3_frame(payload, payload_len, seq)) {
+            s_rx_iso_pkt_count++;
+            if (s_audio_task_handle) {
+                vTaskNotifyGiveFromISR(s_audio_task_handle, nullptr);
+            }
+        }
+    }
+
     if (s_rx_iso_pkt_count % 100 == 1) {
-        ESP_LOGI(TAG, ">>> [ISO RX AUDIO] Pkt #%lu | Size: %u B | Synced: %d <<<",
-                 (unsigned long)s_rx_iso_pkt_count, (unsigned int)len, (int)s_is_periodic_synced);
+        ESP_LOGI(TAG, ">>> [NATIVE BLE 5.3 ISO CIS RX] Pkt #%lu | Size: %u B | Synced: %d <<<",
+                 (unsigned long)s_rx_iso_pkt_count, (unsigned int)payload_len, (int)s_is_periodic_synced);
     }
     return 0;
 }
@@ -725,122 +761,46 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
                     s.last_seen_tick = xTaskGetTickCount();
                 }
             }
-            // If Periodic Advertising is present and SINK is not yet synced, synchronize to it
-            if (get_system_config()->node_role == NODE_ROLE_SINK && disc.periodic_adv_itvl > 0 && !s_is_periodic_synced && !s_periodic_sync_pending) {
-                struct ble_gap_periodic_sync_params sync_params = {};
-                sync_params.skip = 0;
-                sync_params.sync_timeout = 1000;
-                s_periodic_sync_pending = true;
-                int src = ble_gap_periodic_adv_sync_create(&disc.addr, disc.sid, &sync_params, ble_gap_event_cb, nullptr);
-                if (src == 0) {
-                    ESP_LOGI(TAG, "SINK: Initiated Periodic Sync to Auracast Broadcaster!");
-                } else {
-                    s_periodic_sync_pending = false;
-                }
-            }
             break;
         }
-        case BLE_GAP_EVENT_PERIODIC_SYNC: {
-            s_periodic_sync_pending = false;
-            if (event->periodic_sync.status == 0) {
-                uint16_t sync_h = event->periodic_sync.sync_handle;
-                ESP_LOGI(TAG, "SINK: BLE Periodic Sync ESTABLISHED! Sync Handle: %u", sync_h);
-                s_is_periodic_synced = true;
-                s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
-                /* Dedicate 100% of RF receiver bandwidth to Periodic Sync train */
-                ble_gap_disc_cancel();
-
 #if defined(CONFIG_BT_NIMBLE_ISO)
-                uint8_t bis_indices[1] = {1};
-                uint8_t bcast_code[16] = {0};
+        case BLE_GAP_EVENT_CIS_REQUEST: {
+            uint16_t cis_h = event->cis_req.cis_handle;
+            uint16_t conn_h = event->cis_req.conn_handle;
+            uint8_t cig_id = event->cis_req.cig_id;
+            uint8_t cis_id = event->cis_req.cis_id;
+            ESP_LOGI(TAG, "SINK: *** Received BLE_GAP_EVENT_CIS_REQUEST *** CIS Handle: %u, ACL Handle: %u, CIG: %u, CIS ID: %u",
+                     cis_h, conn_h, cig_id, cis_id);
 
-                int rc = ble_gap_big_create_sync(
-                    0,              // big_handle
-                    sync_h,         // sync_handle
-                    0,              // encryption (0 = unencrypted)
-                    bcast_code,     // broadcast_code
-                    0,              // mse
-                    1000,           // sync_timeout (10s)
-                    1,              // num_bis
-                    bis_indices,    // bis_index array
-                    ble_gap_event_cb, // callback
-                    nullptr
-                );
-                ESP_LOGI(TAG, "SINK: Called ble_gap_big_create_sync() for BIS #1 (rc = %d)", rc);
-#endif
+            int rc = ble_gap_accept_cis_request(cis_h, ble_gap_event_cb, nullptr);
+            if (rc == 0) {
+                ESP_LOGI(TAG, "SINK: Successfully accepted CIS Request (CIS Handle: %u)", cis_h);
             } else {
-                ESP_LOGW(TAG, "SINK: BLE Periodic Sync FAILED (Status: %d). Re-scanning...", event->periodic_sync.status);
-                s_is_periodic_synced = false;
-                s_broadcast_instance->transitionTo(BluetoothState::SCANNING);
+                ESP_LOGE(TAG, "SINK: Failed to accept CIS Request (rc = %d)", rc);
             }
             break;
         }
-#if defined(CONFIG_BT_NIMBLE_ISO)
-        case BLE_GAP_EVENT_BIG_SYNC_ESTAB: {
-            ESP_LOGI(TAG, "SINK: *** BLE 5.3 BIG SYNC ESTABLISHED! *** Big Handle: %u, BIS Handle: 0x%04X",
-                     event->big_sync_estab.big_handle, event->big_sync_estab.bis_handle[0]);
-            s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
-            break;
-        }
-        case BLE_GAP_EVENT_BIG_SYNC_LOST: {
-            ESP_LOGW(TAG, "SINK: BLE 5.3 BIG SYNC LOST (Reason: 0x%02X). Resuming scan...", event->big_sync_lost.reason);
-            s_broadcast_instance->transitionTo(BluetoothState::SCANNING);
+        case BLE_GAP_EVENT_CIS_ESTAB: {
+            uint16_t cis_h = event->cis_estab.cis_handle;
+            int status = event->cis_estab.status;
+            if (status == 0) {
+                ESP_LOGI(TAG, "=========================================================");
+                ESP_LOGI(TAG, "*** BLE 5.3 CONNECTED ISO STREAM (CIS) ESTABLISHED! ***");
+                ESP_LOGI(TAG, "CIS Handle: %u | Sync Delay: %lu us | Latency: %lu us",
+                         cis_h, (unsigned long)event->cis_estab.cis_sync_delay, (unsigned long)event->cis_estab.transport_latency_c_to_p);
+                ESP_LOGI(TAG, "=========================================================");
+                s_broadcast_instance->transitionTo(BluetoothState::STREAMING);
+            } else {
+                ESP_LOGE(TAG, "BLE 5.3 CIS Establishment Failed! Status: %d", status);
+            }
             break;
         }
 #endif
-        case BLE_GAP_EVENT_PERIODIC_REPORT: {
-            const auto &rep = event->periodic_report;
-            if (rep.data == nullptr || os_msys_num_free() == 0) {
-                s_mbuf_overflow_count.fetch_add(1, std::memory_order_relaxed);
-            }
-            if (rep.data != nullptr && rep.data_length >= 6) {
-                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
-                    uint8_t seq = rep.data[4];
-                    if (s_last_seen_seq != -1 && ((seq - s_last_seen_seq) & 0xFF) > 2) {
-                        s_mbuf_underrun_count.fetch_add(((seq - s_last_seen_seq) & 0xFF) / 2, std::memory_order_relaxed);
-                    }
-                }
-            }
-            if (rep.data != nullptr && rep.data_length >= 6) {
-                // 50 Hz Dual-frame packet: [len, 0x16, 0x51, 0x18, seq, f_len, frame1(f_len), frame2(f_len)]
-                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
-                    uint8_t seq = rep.data[4];
-                    uint8_t f_len = rep.data[5];
-                    if (f_len >= 20 && (6 + f_len) <= rep.data_length && seq != s_last_seen_seq) {
-                        s_last_seen_seq = seq;
-                        // Push Frame 1 (first 10 ms)
-                        push_rx_lc3_frame(&rep.data[6], f_len, seq - 1);
-                        // Push Frame 2 (second 10 ms) if present
-                        if (6 + 2 * f_len <= rep.data_length) {
-                            push_rx_lc3_frame(&rep.data[6 + f_len], f_len, seq);
-                        }
-                        if (s_audio_task_handle) {
-                            xTaskNotifyGive(s_audio_task_handle);
-                        }
-                    }
-                }
-            } else if (rep.data != nullptr && rep.data_length >= 5) {
-                // Legacy single frame fallback
-                if (rep.data[1] == 0x16 && rep.data[2] == 0x51 && rep.data[3] == 0x18) {
-                    uint8_t seq = rep.data[4];
-                    if (seq != s_last_seen_seq) {
-                        s_last_seen_seq = seq;
-                        size_t lc3_sz = rep.data_length - 5;
-                        if (push_rx_lc3_frame(&rep.data[5], lc3_sz, seq)) {
-                            if (s_audio_task_handle) {
-                                xTaskNotifyGive(s_audio_task_handle);
-                            }
-                        }
-                    }
-                }
-            }
-            break;
-        }
         case BLE_GAP_EVENT_NOTIFY_RX: {
             if (event->notify_rx.om != nullptr) {
                 uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
-                if (len <= 120) {
-                    uint8_t temp[120];
+                if (len <= 256) {
+                    uint8_t temp[256];
                     os_mbuf_copydata(event->notify_rx.om, 0, len, temp);
                     if (push_rx_lc3_frame(temp, len)) {
                         if (s_audio_task_handle) {
@@ -848,16 +808,6 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
                         }
                     }
                 }
-            }
-            break;
-        }
-        case BLE_GAP_EVENT_PERIODIC_SYNC_LOST: {
-            ESP_LOGW(TAG, "SINK: BLE Periodic Sync LOST (Handle: %u). Re-scanning...", event->periodic_sync_lost.sync_handle);
-            s_is_periodic_synced = false;
-            s_periodic_sync_pending = false;
-            if (s_broadcast_instance) {
-                s_broadcast_instance->transitionTo(BluetoothState::SCANNING);
-                s_broadcast_instance->startScanning();
             }
             break;
         }
@@ -1047,6 +997,11 @@ esp_err_t BleAudioBroadcast::enableBluetoothHardware() {
     }
 
     nimble_port_freertos_init(hostTaskRoutine);
+
+#if defined(CONFIG_BT_NIMBLE_ISO)
+    int iso_rc = ble_hs_iso_pkt_rx_cb_set(on_iso_packet_rx);
+    ESP_LOGI(TAG, "SINK: Registered NimBLE Native ISO RX Packet Callback (rc = %d)", iso_rc);
+#endif
 
     m_ble_hw_enabled = true;
     ESP_LOGI(TAG, "Bluetooth Hardware & NimBLE Host Stack successfully enabled.");
@@ -1275,7 +1230,7 @@ void BleAudioBroadcast::onSyncCb(void) {
             /* Appearance: 0x0841 (Stereo Headphones) */
             adv_data[a_idx++] = 0x03; adv_data[a_idx++] = 0x19; adv_data[a_idx++] = 0x41; adv_data[a_idx++] = 0x08;
 
-            const char* sink_name = "ESP32-C6-20";
+            const char* sink_name = get_system_config()->device_name;
             uint8_t slen = static_cast<uint8_t>(strlen(sink_name));
             adv_data[a_idx++] = slen + 1; adv_data[a_idx++] = 0x09;
             memcpy(&adv_data[a_idx], sink_name, slen);
@@ -1379,17 +1334,23 @@ void BleAudioBroadcast::runSinkLoop() {
     while (m_audio_task_running) {
         if (m_state == BluetoothState::STREAMING) {
 
-            // --- STATE 1: IDLE, WAITING FOR FIRST FRAME (DESCRIPTOR 0) ---
+            // --- STATE 1: IDLE, WAITING FOR WATERMARK CUSHION (6 frames = 60ms) ---
             if (dma_state == SinkDmaState::IDLE_WAIT_FRAME_0) {
-                size_t current_lc3_len = 0;
-                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
-                if (!has_packet) {
-                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
-                    has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+                // Ensure at least 6 frames in queue before starting (absorbs Python HCI UART & RF beat jitter)
+                taskENTER_CRITICAL(&s_lc3_rx_mux);
+                size_t ready_count = s_rx_fifo_count;
+                taskEXIT_CRITICAL(&s_lc3_rx_mux);
+
+                if (ready_count < 6) {
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(40));
+                    continue;
                 }
 
+                size_t current_lc3_len = 0;
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &current_lc3_len);
+
                 if (has_packet && current_lc3_len >= 20) {
-                    system_plc_consecutive_count = 0; // Valid frame: Reset SYSTEM PLC counter
+                    system_plc_consecutive_count = 0;
                     m_telemetry.packets_count++;
                     m_lc3_codec.decodeFrame(current_lc3_buf, current_lc3_len, decoded_pcm, AUDIO_SAMPLES_PER_FRAME, &actual_samples);
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);

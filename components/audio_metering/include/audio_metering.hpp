@@ -114,8 +114,8 @@ public:
             sum_sq += static_cast<int32_t>(s) * static_cast<int32_t>(s);
         }
 
-        int32_t diff = static_cast<int32_t>(max_s) - static_cast<int32_t>(min_s);
-        int16_t frame_peak = static_cast<int16_t>(diff / 2);
+        int32_t pk2pk = static_cast<int32_t>(max_s) - static_cast<int32_t>(min_s);
+        int16_t frame_peak = static_cast<int16_t>(pk2pk / 2);
         if (frame_peak < 0) frame_peak = 32767;
 
         uint32_t mean_sq = static_cast<uint32_t>(sum_sq / num_samples);
