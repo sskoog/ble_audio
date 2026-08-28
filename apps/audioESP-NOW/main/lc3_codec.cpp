@@ -81,6 +81,30 @@ esp_err_t Lc3CodecEngine::initDecoder(uint32_t sample_rate_hz, uint8_t channels,
     return ESP_OK;
 }
 
+esp_err_t Lc3CodecEngine::reconfigureEncoder(uint32_t sample_rate_hz, uint16_t octets_per_frame) {
+    if (m_sample_rate == sample_rate_hz && m_octets_per_frame == octets_per_frame && m_encoder_ready) {
+        return ESP_OK;
+    }
+    if (m_enc_handle) {
+        esp_lc3_enc_close(m_enc_handle);
+        m_enc_handle = nullptr;
+        m_encoder_ready = false;
+    }
+    return initEncoder(sample_rate_hz, m_channels, m_frame_duration_us, octets_per_frame);
+}
+
+esp_err_t Lc3CodecEngine::reconfigureDecoder(uint32_t sample_rate_hz, uint16_t octets_per_frame) {
+    if (m_sample_rate == sample_rate_hz && m_octets_per_frame == octets_per_frame && m_decoder_ready) {
+        return ESP_OK;
+    }
+    if (m_dec_handle) {
+        esp_lc3_dec_close(m_dec_handle);
+        m_dec_handle = nullptr;
+        m_decoder_ready = false;
+    }
+    return initDecoder(sample_rate_hz, m_channels, m_frame_duration_us, octets_per_frame);
+}
+
 uint32_t Lc3CodecEngine::getBitrateKbps() const {
     if (m_frame_duration_us == 0) return 0;
     return (static_cast<uint32_t>(m_octets_per_frame) * 8 * 1000000ULL) / (m_frame_duration_us * 1000ULL);
@@ -114,18 +138,25 @@ esp_err_t Lc3CodecEngine::encodeFrame(const int16_t* pcm_in, size_t pcm_samples,
     return ESP_OK;
 }
 
-esp_err_t Lc3CodecEngine::decodeFrame(const uint8_t* in_lc3_buf, size_t in_bytes, int16_t* pcm_out, size_t max_pcm_samples, size_t* actual_pcm_samples) {
+esp_err_t Lc3CodecEngine::decodeFrame(const uint8_t* in_lc3_buf, size_t in_bytes, int16_t* pcm_out, size_t max_pcm_samples, size_t* actual_pcm_samples, uint32_t stream_sample_rate) {
     if (!pcm_out || !actual_pcm_samples) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* Dynamically adapt decoder octets per frame if stream bitrate changes (genuine audio frames are >= 40 bytes) */
-    if (in_bytes >= 40 && in_bytes != m_octets_per_frame) {
-        initDecoder(m_sample_rate, m_channels, m_frame_duration_us, in_bytes);
+
+    uint32_t target_rate = (stream_sample_rate > 0) ? stream_sample_rate : m_sample_rate;
+    uint16_t target_octets = (in_bytes >= 20 && in_bytes <= 120) ? static_cast<uint16_t>(in_bytes) : m_octets_per_frame;
+
+    /* Dynamically adapt decoder if stream sample rate or octets per frame change on-the-fly */
+    if (target_rate != m_sample_rate || target_octets != m_octets_per_frame || !m_decoder_ready) {
+        ESP_LOGI(TAG, "Dynamic decoder adaptation: %lu Hz -> %lu Hz, %u octets -> %u octets",
+                 (unsigned long)m_sample_rate, (unsigned long)target_rate, m_octets_per_frame, target_octets);
+        initDecoder(target_rate, m_channels, m_frame_duration_us, target_octets);
     }
     if (!m_decoder_ready || !m_dec_handle) {
         return ESP_ERR_INVALID_STATE;
     }
-    size_t required_samples = (m_sample_rate * (m_frame_duration_us / 1000)) / 1000;
+
+    size_t required_samples = (m_sample_rate == 44100) ? 441 : ((m_sample_rate * 10) / 1000);
     if (max_pcm_samples < required_samples) {
         return ESP_ERR_NO_MEM;
     }

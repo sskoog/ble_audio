@@ -90,10 +90,10 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate, i2s_data_bit_width_t bits_p
     // Configure MAX98357A GAIN pin (GP0 on Waveshare Zero): Default to 3 dB (Lowest Volume)
     setHardwareGain(Max98357Gain::GAIN_3DB);
 
-    // Dual-Descriptor DMA Configuration (2 x 1 Frame Capacity = 20ms @ 32 kHz)
+    // Dual-Descriptor DMA Configuration (2 x Max Frame Capacity = 20ms @ 48 kHz, supports 16-48 kHz)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 2; // Exactly 2 descriptors (Dual-descriptor ping-pong)
-    chan_cfg.dma_frame_num = 320; // 1 frame per descriptor = 10 ms @ 32 kHz
+    chan_cfg.dma_frame_num = 480; // 480 frames per descriptor = 10 ms @ 48 kHz (supports 160, 240, 320, 441, 480)
     chan_cfg.auto_clear = true;
 
     esp_err_t ret = i2s_new_channel(&chan_cfg, &m_tx_handle, nullptr);
@@ -145,11 +145,36 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate, i2s_data_bit_width_t bits_p
         return ret;
     }
 
+    m_sample_rate = sample_rate;
     m_is_running = false; // Gated / off until dual descriptors are pre-filled
 
     ESP_LOGI(TAG, "I2S Philips Master Initialized: Fs=%lu Hz, Slot=16-bit MSB-First Stereo, GAIN=3dB (Default Lowest)",
              (unsigned long)sample_rate);
     return ESP_OK;
+}
+
+esp_err_t I2sAudioDriver::reconfigureSampleRate(uint32_t sample_rate) {
+    if (!m_tx_handle) return ESP_ERR_INVALID_STATE;
+    if (m_sample_rate == sample_rate) return ESP_OK;
+
+    bool was_running = m_is_running;
+    if (was_running) {
+        stop();
+    }
+
+    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
+    esp_err_t ret = i2s_channel_reconfig_std_clock(m_tx_handle, &clk_cfg);
+    if (ret == ESP_OK) {
+        m_sample_rate = sample_rate;
+        ESP_LOGI(TAG, "I2S Sample Rate reconfigured to %lu Hz", (unsigned long)sample_rate);
+    } else {
+        ESP_LOGE(TAG, "Failed to reconfigure I2S sample rate to %lu Hz: %s", (unsigned long)sample_rate, esp_err_to_name(ret));
+    }
+
+    if (was_running) {
+        start();
+    }
+    return ret;
 }
 
 esp_err_t I2sAudioDriver::start() {

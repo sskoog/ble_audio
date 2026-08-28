@@ -16,7 +16,7 @@ static bool s_sin_lut_initialized = false;
 
 ToneGenerator::ToneGenerator(uint32_t sample_rate_hz)
     : m_sample_rate(sample_rate_hz) {
-    init(sample_rate_hz, 275.0f, 110.0f, 440.0f, 30.0f);
+    init(sample_rate_hz, 275.0f, 110.0f, 440.0f, 60.0f);
 }
 
 ToneGenerator::~ToneGenerator() {}
@@ -43,6 +43,14 @@ void ToneGenerator::set_gain_dB(float gain_db) {
 void ToneGenerator::setNominalFrequency(float nominal_freq_hz) {
     m_current_freq_hz = nominal_freq_hz;
     m_base_phase_inc = static_cast<uint32_t>((m_current_freq_hz * 4294967296.0) / static_cast<double>(m_sample_rate));
+}
+
+void ToneGenerator::setSampleRate(uint32_t sample_rate_hz) {
+    if (sample_rate_hz == 0 || sample_rate_hz == m_sample_rate) return;
+    m_sample_rate = sample_rate_hz;
+    m_lfo_phase_inc = static_cast<uint32_t>((0.17 * 4294967296.0) / static_cast<double>(m_sample_rate));
+    m_base_phase_inc = static_cast<uint32_t>((m_current_freq_hz * 4294967296.0) / static_cast<double>(m_sample_rate));
+    ESP_LOGI(TAG, "Synth Sample Rate updated to %lu Hz", (unsigned long)m_sample_rate);
 }
 
 void ToneGenerator::set_gain_pct(float pct) {

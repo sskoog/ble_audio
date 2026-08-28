@@ -43,6 +43,27 @@ void SystemDiagnostics::tick() {
         } else {
             m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_SLOW);
         }
+    } else { // SINK
+        AudioNet::NetworkState state = m_espnow_broadcast.getState();
+        switch (state) {
+            case AudioNet::NetworkState::OFF:
+                m_status_led.off();
+                break;
+            case AudioNet::NetworkState::IDLE:
+                m_status_led.setPattern(Hardware::LED_COLOR_TEAL, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_SLOW);
+                break;
+            case AudioNet::NetworkState::SCANNING:
+                m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_SLOW);
+                break;
+            case AudioNet::NetworkState::PREFILL:
+                m_status_led.setPattern(Hardware::LED_COLOR_TEAL, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
+                break;
+            case AudioNet::NetworkState::STREAMING:
+                m_status_led.setPattern(Hardware::LED_COLOR_GREEN, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
+                break;
+            default:
+                break;
+        }
     }
 
     if ((m_loop_count % 10) == 0) { // 1 Hz periodic telemetry printout

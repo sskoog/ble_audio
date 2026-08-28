@@ -33,7 +33,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "   Target: ESP32-C6 | Wi-Fi ESP-NOW | Bluetooth DISABLED ");
     ESP_LOGI(TAG, "=========================================================");
 
-    // Initialize NVS (Required for Wi-Fi and ESP-NOW)
+    // Step 1: Basic ESP32 Inits (NVS, Config, Pins, LED, DAC structures)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -50,13 +50,13 @@ extern "C" void app_main(void) {
     s_status_led->init(cfg->status_led_gpio);
     s_status_led->setSystemState(Hardware::SystemState::IDLE);
 
-    // Initialize I2S DAC (for SINK node)
+    // Initialize I2S DAC (for SINK node - pin configurations, etc.)
     if (cfg->node_role == NODE_ROLE_SINK) {
         s_i2s_dac = new Hardware::I2sAudioDriver(cfg->i2s_bclk_gpio, cfg->i2s_ws_gpio, cfg->i2s_dout_gpio, -1, 0);
         s_i2s_dac->init(32000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
     }
 
-    // Initialize ESP-NOW Audio Broadcast Subsystem
+    // Step 2: Initialize ESP-NOW Audio Broadcast Subsystem (node automatically enters state OFF)
     s_espnow_broadcast = new AudioNet::EspNowAudioBroadcast(s_lc3_codec, &s_tone_gen, s_i2s_dac);
     s_espnow_broadcast->init(cfg->node_role);
 
@@ -64,16 +64,17 @@ extern "C" void app_main(void) {
     s_diagnostics = new Diagnostics::SystemDiagnostics(*s_espnow_broadcast, *s_status_led);
     s_diagnostics->init();
 
-    // Start Network State Machine (Initializes Wi-Fi & ESP-NOW first)
+    // Step 3: Transition from OFF to IDLE (initializes Wi-Fi, ESP-NOW, gates I2S clock, prepares audio buffers)
+    s_espnow_broadcast->transitionTo(AudioNet::NetworkState::IDLE);
+
+    // Step 4: Transition to SCANNING (for SINK) or BROADCASTING (for SOURCE)
     if (cfg->node_role == NODE_ROLE_SOURCE) {
-        s_status_led->setSystemState(Hardware::SystemState::BROADCASTING);
         s_espnow_broadcast->transitionTo(AudioNet::NetworkState::BROADCASTING);
     } else {
-        s_status_led->setSystemState(Hardware::SystemState::STREAMING);
         s_espnow_broadcast->transitionTo(AudioNet::NetworkState::SCANNING);
     }
 
-    // Start Audio Processing Task (after Wi-Fi & ESP-NOW are fully initialized)
+    // Step 5: Start Audio Processing Task
     s_espnow_broadcast->startAudioTask();
 
     // Start Diagnostics Task (1 Hz telemetry logger)

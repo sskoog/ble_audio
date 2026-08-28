@@ -25,6 +25,10 @@ public:
 
     esp_err_t init(uint32_t sample_rate = 32000, i2s_data_bit_width_t bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT, i2s_slot_mode_t slot_mode = I2S_SLOT_MODE_STEREO);
     
+    // Dynamic sample rate reconfiguration
+    esp_err_t reconfigureSampleRate(uint32_t sample_rate);
+    uint32_t getSampleRate() const { return m_sample_rate; }
+
     // Hardware gain control (3, 6, 9, 12 dB)
     void setHardwareGain(Max98357Gain gain);
     Max98357Gain getHardwareGain() const { return m_current_gain; }
@@ -65,6 +69,7 @@ private:
     i2s_chan_handle_t m_tx_handle = nullptr;
     SemaphoreHandle_t m_dma_free_sem = nullptr;
     bool m_is_running = false;
+    uint32_t m_sample_rate = 32000;
     std::atomic<uint32_t> m_underrun_count{0};
 };
 

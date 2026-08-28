@@ -23,13 +23,15 @@ public:
                    float nominal_freq_hz = 275.0f, 
                    float min_freq_hz = 110.0f, 
                    float max_freq_hz = 440.0f,
-                   float amplitude_pct = 30.0f);
+                   float amplitude_pct = 80.0f);
 
     size_t generateFrame(int16_t* out_pcm, size_t num_samples);
 
     void set_gain_dB(float gain_db);
     void set_gain_pct(float pct);
     void setNominalFrequency(float nominal_freq_hz);
+    void setSampleRate(uint32_t sample_rate_hz);
+    uint32_t getSampleRate() const { return m_sample_rate; }
     float get_gain_dB() const { return m_gain_db; }
     float get_gain_pct() const { return m_gain_pct; }
     float getCurrentFrequency() const { return m_current_freq_hz; }
@@ -52,9 +54,9 @@ private:
     int32_t m_decay_mult_q15 = 32764; // Exponential decay to -60dB
     bool m_in_attack = true;
 
-    int16_t m_peak_amplitude = 248; // Gentle quiet volume scale
-    float m_gain_db = -42.42f;
-    float m_gain_pct = 30.0f;
+    int16_t m_peak_amplitude = 2011; // 60% (-24.24 dBFS) // Gentle quiet volume scale
+    float m_gain_db = -24.24f;
+    float m_gain_pct = 60.0f;
 };
 
 } // namespace Audio

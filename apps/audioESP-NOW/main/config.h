@@ -18,6 +18,25 @@ extern "C" {
 #define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK
 #endif
 
+#ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
+#define CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES 5 // Number of 10ms LC3 frames needed before leaving SCANNING to PREFILL (5 = 50ms)
+#endif
+
+#ifndef CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES
+#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES 5 // Consecutive missing frames / PLC before falling back from STREAMING to SCANNING (5 = 50ms)
+#endif
+
+#ifndef CONFIG_ESPNOW_SAMPLE_RATE_HZ
+#define CONFIG_ESPNOW_SAMPLE_RATE_HZ 32000 // Default sample rate (16000, 24000, 32000, 44100, 48000 Hz)
+#endif
+
+#ifndef CONFIG_ESPNOW_FRAME_LEN_OCTETS
+#define CONFIG_ESPNOW_FRAME_LEN_OCTETS 80 // Default LC3 octets per frame (40 - 120 octets)
+#endif
+
+#define MAX_LC3_FRAME_OCTETS 120 // Maximum LC3 frame size supported over ESP-NOW (up to 96 kbps @ 10ms)
+#define MAX_PCM_FRAME_SAMPLES 480 // Maximum PCM samples per 10ms frame (480 @ 48 kHz)
+
 typedef struct {
     uint8_t  node_id;
     uint8_t  node_role;
