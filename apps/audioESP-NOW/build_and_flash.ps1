@@ -1,0 +1,80 @@
+param(
+    [Parameter(Mandatory=$true)]
+    [ValidateSet("SOURCE", "SINK")]
+    [string]$Role,
+
+    [Parameter(Mandatory=$false)]
+    [string]$Port = "",
+
+    [Parameter(Mandatory=$false)]
+    [int]$Baud = 460800
+)
+
+$targetPort = if ($Port -ne "") { $Port } elseif ($Role -eq "SOURCE") { "COM21" } else { "COM23" }
+$nodeId = if ($Role -eq "SOURCE") { 21 } else { 23 }
+$nodeRole = if ($Role -eq "SOURCE") { "NODE_ROLE_SOURCE" } else { "NODE_ROLE_SINK" }
+
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host " Building & Flashing audioESP-NOW for Role: $Role ($targetPort)" -ForegroundColor Cyan
+Write-Host "==========================================================" -ForegroundColor Cyan
+
+# 1. Environment Setup
+$env:IDF_TOOLS_PATH = "C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
+$env:IDF_PYTHON_ENV_PATH = "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env"
+$env:PATH = "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts;" + $env:PATH
+. "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\export.ps1"
+
+# 2. Update config.h defines for this role
+$configPath = "c:\Git_ble_audio\apps\audioESP-NOW\main\config.h"
+$configContent = Get-Content $configPath -Raw
+$configContent = $configContent -replace '#define CONFIG_ACTIVE_NODE_ID \d+', "#define CONFIG_ACTIVE_NODE_ID $nodeId"
+$configContent = $configContent -replace '#define CONFIG_ACTIVE_NODE_ROLE \w+', "#define CONFIG_ACTIVE_NODE_ROLE $nodeRole"
+Set-Content -Path $configPath -Value $configContent -NoNewline
+
+# 3. Build firmware
+Push-Location "c:\Git_ble_audio\apps\audioESP-NOW"
+try {
+    Write-Host "Compiling firmware for $Role..." -ForegroundColor Yellow
+    idf.py build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Build failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+} finally {
+    Pop-Location
+}
+
+# 4. Check Port & Kill stale monitors
+Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR CommandLine LIKE '%idf_monitor%'" | ForEach-Object { 
+    Stop-Process -Id $_.ProcessId -Force 
+}
+Start-Sleep -Milliseconds 1000
+
+# 5. Flash Firmware via esptool.py
+$buildDir = "c:\Git_ble_audio\apps\audioESP-NOW\build"
+$bootloader = "$buildDir\bootloader\bootloader.bin"
+$partition = "$buildDir\partition_table\partition-table.bin"
+$appBin = "$buildDir\esp32c6_espnow_audio.bin"
+
+Write-Host "Flashing $Role to $targetPort at $Baud baud..." -ForegroundColor Yellow
+& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" -m esptool `
+    --chip esp32c6 `
+    -p $targetPort `
+    -b $Baud `
+    --connect-attempts 10 `
+    --before default_reset `
+    --after hard_reset `
+    write_flash `
+    --flash_mode dio `
+    --flash_size 8MB `
+    --flash_freq 80m `
+    0x0 $bootloader `
+    0x8000 $partition `
+    0x10000 $appBin
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Flashing failed on $targetPort"
+    exit $LASTEXITCODE
+}
+
+Write-Host "Successfully flashed $Role to $targetPort!" -ForegroundColor Green

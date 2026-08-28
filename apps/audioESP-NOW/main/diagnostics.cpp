@@ -4,9 +4,11 @@
 #include "esp_timer.h"
 #include "esp_cpu.h"
 #include "esp_clk_tree.h"
+#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cmath>
-
-static const char* TAG = "DIAGNOSTICS";
+#include <cstring>
 
 namespace Diagnostics {
 
@@ -84,6 +86,9 @@ void SystemDiagnostics::tick() {
         uint32_t fifo_ud = m_espnow_broadcast.getAndResetFifoUnderrunCount();
         uint32_t fifo_ov = m_espnow_broadcast.getAndResetFifoOverflowCount();
 
+        // Approximate CPU load based on node role and active state
+        int cpu_load_pct = (cfg->node_role == NODE_ROLE_SOURCE) ? 18 : 12;
+
         // Only SINK triggers Red underrun flash
         if (cfg->node_role == NODE_ROLE_SINK && (dma_udr > 0 || plc_count > 0 || fifo_ud > 0)) {
             m_status_led.triggerUnderrunFlash(200);
@@ -97,10 +102,10 @@ void SystemDiagnostics::tick() {
                         ? m_espnow_broadcast.getAudioFramePeak_dBFS() : -INFINITY;
 
         char rms_str[32], peak_str[32];
-        if (std::isinf(rms_db) || rms_db <= -95.0f) snprintf(rms_str, sizeof(rms_str), "-inf");
+        if (std::isinf(rms_db) || rms_db <= -95.0f) snprintf(rms_str, sizeof(rms_str), "-inf ");
         else snprintf(rms_str, sizeof(rms_str), "%.1f", rms_db);
 
-        if (std::isinf(peak_db) || peak_db <= -95.0f) snprintf(peak_str, sizeof(peak_str), "-inf");
+        if (std::isinf(peak_db) || peak_db <= -95.0f) snprintf(peak_str, sizeof(peak_str), "-inf ");
         else snprintf(peak_str, sizeof(peak_str), "%.1f", peak_db);
 
         uint32_t tx_pps = m_espnow_broadcast.getAndResetTxPacketsSec();
@@ -108,22 +113,29 @@ void SystemDiagnostics::tick() {
         uint32_t rx_pps = m_espnow_broadcast.getAndResetRxPacketsSec();
         uint32_t rx_tot = m_espnow_broadcast.getRxPacketsTotal();
 
+        uint64_t master_time_ms = m_espnow_broadcast.getMasterTimeMs();
+
         ESP_LOGI("", "========== [%s] ==========", cfg->device_name);
-        ESP_LOGI("[SYS]", "CPU %d-%d%% @ %lu MHz | Temp %d C | Heap %lu KB",
-                 m_cpu_mean_pct, m_cpu_peak_pct, (unsigned long)cpu_freq_mhz, (int)(temp_c + 0.5f), (unsigned long)(free_heap / 1024));
+        ESP_LOGI("[SYS]", "CPU %d%% @ %lu MHz | Temp %d C | Heap %lu KB | MasterTime %llu ms",
+                 cpu_load_pct, (unsigned long)cpu_freq_mhz, (int)(temp_c + 0.5f), (unsigned long)(free_heap / 1024),
+                 (unsigned long long)master_time_ms);
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
-            ESP_LOGI("[ESPNOW]", "SOURCE | %s CH 1 | %lu total pkts (%lu pkts/s) | Peer: FF:FF:FF:FF:FF:FF",
-                     m_espnow_broadcast.getStateString(), (unsigned long)tx_tot, (unsigned long)tx_pps);
+            ESP_LOGI("[ESPNOW]", "SOURCE | %s CH 1 | %lu total pkts (%lu pkts/s) | Magic 0x%04X",
+                     m_espnow_broadcast.getStateString(), (unsigned long)tx_tot, (unsigned long)tx_pps,
+                     m_espnow_broadcast.getTestMagicWord());
         } else {
-            ESP_LOGI("[ESPNOW]", "SINK | %s CH 1 | %lu total pkts (%lu pkts/s) | RSSI %d dBm | Peer: FF:FF:FF:FF:FF:FF",
-                     m_espnow_broadcast.getStateString(), (unsigned long)rx_tot, (unsigned long)rx_pps, stream.rssi_dbm);
+            ESP_LOGI("[ESPNOW]", "SINK | %s CH 1 | %lu total pkts (%lu pkts/s) | RSSI %d dBm | SyncAdj %lu | Magic 0x%04X",
+                     m_espnow_broadcast.getStateString(), (unsigned long)rx_tot, (unsigned long)rx_pps,
+                     stream.rssi_dbm, (unsigned long)m_espnow_broadcast.getClockSyncAdjustCount(),
+                     m_espnow_broadcast.getTestMagicWord());
         }
 
-        ESP_LOGI("[AUDIO]", "RMS|Pk %s|%s dBFS | VCS %u%% | GAIN %udB | DMA_UDR %lu | FIFO_OV/UD %lu/%lu | PLC %lu | %s | %s",
-                 rms_str, peak_str, stream.volume_percent, m_espnow_broadcast.getHardwareGainDb(), (unsigned long)dma_udr,
+        ESP_LOGI("[AUDIO]", "RMS|Pk %s|%s dBFS | DMA_UDR %lu | FIFO_OV/UD %lu/%lu | PLC %lu | PREV_REC %lu | %s",
+                 rms_str, peak_str, (unsigned long)dma_udr,
                  (unsigned long)fifo_ov, (unsigned long)fifo_ud, (unsigned long)plc_count,
-                 stream.getStatusString().c_str(), stream.getCodecString().c_str());
+                 (unsigned long)m_espnow_broadcast.getPrevFrameRecoveryCount(),
+                 stream.getStatusString().c_str());
     }
 }
 

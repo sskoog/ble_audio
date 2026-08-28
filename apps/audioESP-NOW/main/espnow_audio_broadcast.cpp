@@ -19,16 +19,19 @@ struct Lc3RxFrame {
     uint8_t  len;
     uint8_t  seq;
     uint16_t sample_rate_hz;
+    uint16_t frame_duration_us;
+    uint32_t pts_us;
 };
 
-static constexpr size_t LC3_RX_FIFO_CAPACITY = 16;
+static constexpr size_t LC3_RX_FIFO_CAPACITY = 24;
 static Lc3RxFrame s_rx_fifo[LC3_RX_FIFO_CAPACITY];
 static size_t s_rx_fifo_head = 0;
 static size_t s_rx_fifo_tail = 0;
 static size_t s_rx_fifo_count = 0;
 static portMUX_TYPE s_fifo_mux = portMUX_INITIALIZER_UNLOCKED;
 
-static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t seq, uint16_t sample_rate_hz) {
+static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t seq,
+                                     uint16_t sample_rate_hz, uint16_t frame_duration_us, uint32_t pts_us) {
     if (!data || len == 0 || len > MAX_LC3_FRAME_OCTETS) return false;
     taskENTER_CRITICAL(&s_fifo_mux);
     if (s_rx_fifo_count >= LC3_RX_FIFO_CAPACITY) {
@@ -39,6 +42,8 @@ static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t se
     s_rx_fifo[s_rx_fifo_head].len = static_cast<uint8_t>(len);
     s_rx_fifo[s_rx_fifo_head].seq = seq;
     s_rx_fifo[s_rx_fifo_head].sample_rate_hz = sample_rate_hz;
+    s_rx_fifo[s_rx_fifo_head].frame_duration_us = frame_duration_us;
+    s_rx_fifo[s_rx_fifo_head].pts_us = pts_us;
     memcpy(s_rx_fifo[s_rx_fifo_head].data, data, len);
     s_rx_fifo_head = (s_rx_fifo_head + 1) % LC3_RX_FIFO_CAPACITY;
     s_rx_fifo_count++;
@@ -46,7 +51,9 @@ static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t se
     return true;
 }
 
-static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t* out_seq = nullptr, uint16_t* out_sample_rate = nullptr) {
+static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t* out_seq = nullptr,
+                                    uint16_t* out_sample_rate = nullptr, uint16_t* out_frame_duration = nullptr,
+                                    uint32_t* out_pts = nullptr) {
     if (!out_data || !out_len) return false;
     taskENTER_CRITICAL(&s_fifo_mux);
     if (s_rx_fifo_count == 0) {
@@ -56,6 +63,8 @@ static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t*
     *out_len = s_rx_fifo[s_rx_fifo_tail].len;
     if (out_seq) *out_seq = s_rx_fifo[s_rx_fifo_tail].seq;
     if (out_sample_rate) *out_sample_rate = s_rx_fifo[s_rx_fifo_tail].sample_rate_hz;
+    if (out_frame_duration) *out_frame_duration = s_rx_fifo[s_rx_fifo_tail].frame_duration_us;
+    if (out_pts) *out_pts = s_rx_fifo[s_rx_fifo_tail].pts_us;
     memcpy(out_data, s_rx_fifo[s_rx_fifo_tail].data, *out_len);
     s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
     s_rx_fifo_count--;
@@ -78,7 +87,7 @@ static inline void clear_rx_fifo() {
     taskEXIT_CRITICAL(&s_fifo_mux);
 }
 
-static void onEspNowSendCb(const esp_now_send_info_t *info, esp_now_send_status_t status) {
+static void onEspNowSendCb(const uint8_t *mac_addr, esp_now_send_status_t status) {
     // Optional TX telemetry callback
 }
 
@@ -104,29 +113,42 @@ esp_err_t EspNowAudioBroadcast::init(uint8_t node_role) {
     m_node_role = node_role;
     m_node_id = get_system_config()->node_id;
     m_telemetry.sample_rate = CONFIG_ESPNOW_SAMPLE_RATE_HZ;
+    m_telemetry.frame_duration_us = 10000;
+    m_frame_duration_us = 10000;
     m_telemetry.channels = 1;
     m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
     m_telemetry.bitrate_kbps = (m_octets_per_frame * 8) / 10;
+    m_active_magic = VSAF_DEFAULT_MAGIC;
 
     if (m_node_role == NODE_ROLE_SOURCE) {
-        m_lc3_codec.initEncoder(m_telemetry.sample_rate, 1, 10000, m_octets_per_frame);
+        m_lc3_codec.initEncoder(m_telemetry.sample_rate, 1, m_frame_duration_us, m_octets_per_frame);
         if (m_tone_gen) {
             m_tone_gen->setSampleRate(m_telemetry.sample_rate);
         }
     } else { // SINK
-        m_lc3_codec.initDecoder(m_telemetry.sample_rate, 1, 10000, m_octets_per_frame);
+        m_lc3_codec.initDecoder(m_telemetry.sample_rate, 1, m_frame_duration_us, m_octets_per_frame);
         if (m_i2s_dac) {
             m_i2s_dac->reconfigureSampleRate(m_telemetry.sample_rate);
         }
     }
 
-    ESP_LOGI(TAG, "EspNowAudioBroadcast initialized (Role: %s, Node ID: %u, Fs: %lu Hz, Frame: %u octets)",
+    ESP_LOGI(TAG, "EspNowAudioBroadcast initialized (Role: %s, Node ID: %u, Fs: %lu Hz, Dur: %.1fms, Frame: %u octets, Magic: 0x%04X)",
              (node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", m_node_id,
-             (unsigned long)m_telemetry.sample_rate, m_octets_per_frame);
+             (unsigned long)m_telemetry.sample_rate, m_frame_duration_us / 1000.0f, m_octets_per_frame, m_active_magic);
     return ESP_OK;
 }
 
-esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets) {
+uint64_t EspNowAudioBroadcast::getMasterTimeMs() const {
+    int64_t local_us = esp_timer_get_time();
+    if (m_node_role == NODE_ROLE_SOURCE) {
+        return static_cast<uint64_t>(local_us / 1000);
+    } else {
+        int64_t master_us = local_us + m_master_time_offset_us;
+        return (master_us > 0) ? static_cast<uint64_t>(master_us / 1000) : 0;
+    }
+}
+
+esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets, uint32_t frame_duration_us) {
     if (sample_rate_hz != 16000 && sample_rate_hz != 24000 && sample_rate_hz != 32000 &&
         sample_rate_hz != 44100 && sample_rate_hz != 48000) {
         ESP_LOGE(TAG, "Unsupported sample rate: %lu Hz", (unsigned long)sample_rate_hz);
@@ -136,33 +158,54 @@ esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t
         ESP_LOGE(TAG, "Invalid LC3 frame len: %u octets (supported: 20..%u)", frame_len_octets, MAX_LC3_FRAME_OCTETS);
         return ESP_ERR_INVALID_ARG;
     }
+    if (frame_duration_us != 0 && frame_duration_us != 7500 && frame_duration_us != 10000) {
+        ESP_LOGE(TAG, "Invalid frame duration: %lu us (supported: 7500 or 10000)", (unsigned long)frame_duration_us);
+        return ESP_ERR_INVALID_ARG;
+    }
 
+    if (frame_duration_us != 0) {
+        m_frame_duration_us = frame_duration_us;
+        m_telemetry.frame_duration_us = frame_duration_us;
+    }
     m_telemetry.sample_rate = sample_rate_hz;
     m_octets_per_frame = frame_len_octets;
-    m_telemetry.bitrate_kbps = (static_cast<uint32_t>(frame_len_octets) * 8) / 10;
+    m_telemetry.bitrate_kbps = (static_cast<uint32_t>(frame_len_octets) * 8 * 1000000ULL) / (m_frame_duration_us * 1000ULL);
 
     if (m_node_role == NODE_ROLE_SOURCE) {
-        m_lc3_codec.reconfigureEncoder(sample_rate_hz, frame_len_octets);
+        m_lc3_codec.reconfigureEncoder(sample_rate_hz, frame_len_octets, m_frame_duration_us);
         if (m_tone_gen) {
             m_tone_gen->setSampleRate(sample_rate_hz);
         }
     } else {
-        m_lc3_codec.reconfigureDecoder(sample_rate_hz, frame_len_octets);
+        m_lc3_codec.reconfigureDecoder(sample_rate_hz, frame_len_octets, m_frame_duration_us);
         if (m_i2s_dac) {
             m_i2s_dac->reconfigureSampleRate(sample_rate_hz);
         }
     }
-    ESP_LOGI(TAG, "Audio Configuration updated on-the-fly: %lu Hz, %u octets/frame (%lu kbps)",
-             (unsigned long)sample_rate_hz, frame_len_octets, (unsigned long)m_telemetry.bitrate_kbps);
+    ESP_LOGI(TAG, "Audio Configuration updated on-the-fly: %lu Hz, %.1f ms, %u octets/frame (%lu kbps)",
+             (unsigned long)sample_rate_hz, m_frame_duration_us / 1000.0f, frame_len_octets, (unsigned long)m_telemetry.bitrate_kbps);
     return ESP_OK;
 }
 
 esp_err_t EspNowAudioBroadcast::setSampleRate(uint32_t sample_rate_hz) {
-    return setAudioConfig(sample_rate_hz, m_octets_per_frame);
+    return setAudioConfig(sample_rate_hz, m_octets_per_frame, m_frame_duration_us);
 }
 
 esp_err_t EspNowAudioBroadcast::setFrameLen(uint16_t frame_len_octets) {
-    return setAudioConfig(m_telemetry.sample_rate, frame_len_octets);
+    return setAudioConfig(m_telemetry.sample_rate, frame_len_octets, m_frame_duration_us);
+}
+
+esp_err_t EspNowAudioBroadcast::setFrameDuration(uint32_t frame_duration_us) {
+    // Automatically select proportional octets per frame to maintain target bitrate
+    uint16_t octets = m_octets_per_frame;
+    if (frame_duration_us == 7500 && m_frame_duration_us == 10000) {
+        octets = (m_octets_per_frame * 3) / 4; // e.g. 80 -> 60, 100 -> 75, 120 -> 90
+    } else if (frame_duration_us == 10000 && m_frame_duration_us == 7500) {
+        octets = (m_octets_per_frame * 4) / 3; // e.g. 60 -> 80, 75 -> 100, 90 -> 120
+    }
+    if (octets < 20) octets = 20;
+    if (octets > MAX_LC3_FRAME_OCTETS) octets = MAX_LC3_FRAME_OCTETS;
+    return setAudioConfig(m_telemetry.sample_rate, octets, frame_duration_us);
 }
 
 esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
@@ -223,7 +266,7 @@ void EspNowAudioBroadcast::audioTaskRoutine(void* pvParameters) {
 }
 
 void EspNowAudioBroadcast::runSourceLoop() {
-    ESP_LOGI(TAG, "ESP-NOW Audio Source Loop Started (Target: Exact 100.0 fps)...");
+    ESP_LOGI(TAG, "ESP-NOW Audio Source Loop Started (Dynamic Pacing: 7.5ms / 10.0ms)...");
 
     static int16_t pcm_buffer[MAX_PCM_FRAME_SAMPLES] = {0};
     static uint8_t curr_lc3[MAX_LC3_FRAME_OCTETS] = {0};
@@ -231,23 +274,25 @@ void EspNowAudioBroadcast::runSourceLoop() {
     size_t encoded_bytes = 0;
     uint8_t seq = 0;
 
-    int64_t next_frame_us = esp_timer_get_time() + 10000;
+    int64_t next_frame_us = esp_timer_get_time() + m_frame_duration_us;
 
     while (m_audio_task_running) {
         int64_t now_us = esp_timer_get_time();
         int64_t wait_us = next_frame_us - now_us;
-        if (wait_us > 2000) {
+        if (wait_us > 1500) {
             vTaskDelay(pdMS_TO_TICKS(wait_us / 1000 - 1));
         }
         while (esp_timer_get_time() < next_frame_us) {
             esp_rom_delay_us(10);
         }
-        next_frame_us += 10000;
+
+        uint32_t active_dur_us = m_frame_duration_us;
+        next_frame_us += active_dur_us;
 
         if (m_state == NetworkState::BROADCASTING) {
             uint32_t current_sr = m_telemetry.sample_rate;
             uint16_t current_len = m_octets_per_frame;
-            size_t samples_to_gen = (current_sr == 44100) ? 441 : ((current_sr * 10) / 1000);
+            size_t samples_to_gen = Codec::calculateRequiredPcmSamples(current_sr, active_dur_us);
 
             if (m_tone_gen) {
                 m_tone_gen->generateFrame(pcm_buffer, samples_to_gen);
@@ -255,19 +300,28 @@ void EspNowAudioBroadcast::runSourceLoop() {
             m_lc3_codec.encodeFrame(pcm_buffer, samples_to_gen, curr_lc3, sizeof(curr_lc3), &encoded_bytes);
             m_audio_meter.pushFramePcm(pcm_buffer, samples_to_gen);
 
-            // Assemble VSAF Packet with Recipient Tag (0xFF = broadcast to all SINKs)
+            // Check if simulated packet drop is requested
+            uint32_t drop_val = m_simulated_drop_count.load(std::memory_order_relaxed);
+            if (drop_val > 0) {
+                m_simulated_drop_count.store(0, std::memory_order_relaxed);
+                ESP_LOGW(TAG, "SOURCE: [TEST] Deliberately dropping packet Seq #%u to test SINK prev_frame recovery", seq);
+                seq++; // Advance sequence number to simulate RF loss!
+                memcpy(prev_lc3, curr_lc3, current_len);
+                continue;
+            }
+
+            // Assemble 248-Byte VSAF Packet
             EspNowAudioPacket pkt;
-            pkt.magic = 0xE501;
-            pkt.target_node_id = 0xFF; // Broadcast to all SINKs (or specific SINK node_id)
-            pkt.source_node_id = m_node_id;
+            pkt.magic = m_active_magic;
             pkt.seq = seq++;
-            pkt.flags = m_telemetry.is_muted ? 0x01 : 0x00;
-            pkt.frame_len = current_len;
-            pkt.sample_rate_hz = static_cast<uint16_t>(current_sr);
+            // Config byte: [0..2: ch_id=0] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync]
+            uint8_t dur_bit = (active_dur_us == 7500) ? 1 : 0;
+            pkt.cfg = (0 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
+            pkt.pts_us = static_cast<uint32_t>(esp_timer_get_time());
             memcpy(pkt.curr_frame, curr_lc3, current_len);
             memcpy(pkt.prev_frame, prev_lc3, current_len);
 
-            // Transmit exact byte length over high-speed broadcast
+            // Transmit packet (VSAF_HEADER_LEN + 2 * current_len)
             size_t pkt_len = VSAF_HEADER_LEN + 2 * current_len;
             esp_now_send(s_broadcast_mac, reinterpret_cast<const uint8_t*>(&pkt), pkt_len);
             memcpy(prev_lc3, curr_lc3, current_len);
@@ -285,6 +339,7 @@ void EspNowAudioBroadcast::runSinkLoop() {
     size_t actual_samples = 0;
     size_t bytes_written = 0;
     uint32_t consecutive_plc_count = 0;
+    uint32_t sync_eval_counter = 0;
 
     while (m_audio_task_running) {
         uint32_t vol_scale = m_telemetry.is_muted ? 0 : ((static_cast<uint32_t>(m_telemetry.volume_percent) * 255) / 100);
@@ -303,8 +358,7 @@ void EspNowAudioBroadcast::runSinkLoop() {
                              buffered, (unsigned long)m_prefill_threshold_frames);
                     transitionTo(NetworkState::PREFILL);
                 } else {
-                    // Wait for producer notification on incoming packets
-                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(40));
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30));
                 }
                 break;
             }
@@ -314,13 +368,18 @@ void EspNowAudioBroadcast::runSinkLoop() {
                 size_t lc3_len = 0;
                 uint8_t seq = 0;
                 uint16_t frame_sr = 0;
-                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr) && lc3_len >= 20) {
-                    if (frame_sr > 0 && frame_sr != m_telemetry.sample_rate) {
+                uint16_t frame_dur = 0;
+                uint32_t frame_pts = 0;
+
+                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts) && lc3_len >= 20) {
+                    if (frame_sr > 0 && (frame_sr != m_telemetry.sample_rate || frame_dur != m_telemetry.frame_duration_us)) {
                         m_telemetry.sample_rate = frame_sr;
-                        m_telemetry.bitrate_kbps = (lc3_len * 8) / 10;
+                        m_telemetry.frame_duration_us = frame_dur;
+                        m_telemetry.bitrate_kbps = (lc3_len * 8 * 1000000ULL) / (frame_dur * 1000ULL);
                         if (m_i2s_dac) m_i2s_dac->reconfigureSampleRate(frame_sr);
                     }
-                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples, m_telemetry.sample_rate);
+                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
                     for (size_t i = 0; i < actual_samples; ++i) {
                         int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
                         stereo_pcm[2 * i]     = sample; // Left
@@ -333,13 +392,15 @@ void EspNowAudioBroadcast::runSinkLoop() {
                 }
 
                 // Pop & decode Frame 2 for DMA Descriptor 1
-                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr) && lc3_len >= 20) {
-                    if (frame_sr > 0 && frame_sr != m_telemetry.sample_rate) {
+                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts) && lc3_len >= 20) {
+                    if (frame_sr > 0 && (frame_sr != m_telemetry.sample_rate || frame_dur != m_telemetry.frame_duration_us)) {
                         m_telemetry.sample_rate = frame_sr;
-                        m_telemetry.bitrate_kbps = (lc3_len * 8) / 10;
+                        m_telemetry.frame_duration_us = frame_dur;
+                        m_telemetry.bitrate_kbps = (lc3_len * 8 * 1000000ULL) / (frame_dur * 1000ULL);
                         if (m_i2s_dac) m_i2s_dac->reconfigureSampleRate(frame_sr);
                     }
-                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples, m_telemetry.sample_rate);
+                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
                     for (size_t i = 0; i < actual_samples; ++i) {
                         int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
                         stereo_pcm[2 * i]     = sample;
@@ -352,36 +413,51 @@ void EspNowAudioBroadcast::runSinkLoop() {
                 }
 
                 consecutive_plc_count = 0;
-                ESP_LOGI(TAG, "SINK: PREFILL complete (2 DMA descriptors loaded @ %lu Hz, %zu pkts cushion). Requesting transition to STREAMING...",
-                         (unsigned long)m_telemetry.sample_rate, get_rx_fifo_count());
+                ESP_LOGI(TAG, "SINK: PREFILL complete (2 DMA descriptors loaded @ %lu Hz, %.1fms, %zu pkts cushion). Transitioning to STREAMING...",
+                         (unsigned long)m_telemetry.sample_rate, m_telemetry.frame_duration_us / 1000.0f, get_rx_fifo_count());
                 transitionTo(NetworkState::STREAMING);
                 break;
             }
 
             case NetworkState::STREAMING: {
-                // Block until 1 DMA descriptor finishes playing (driven by DMA on_sent ISR)
+                // Block until 1 DMA descriptor finishes playing
                 if (m_i2s_dac && m_i2s_dac->isRunning()) {
-                    m_i2s_dac->waitForDmaSlot(25);
+                    m_i2s_dac->waitForDmaSlot(20);
                 }
 
                 size_t lc3_len = 0;
                 uint8_t seq = 0;
                 uint16_t frame_sr = 0;
-                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr);
+                uint16_t frame_dur = 0;
+                uint32_t frame_pts = 0;
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts);
 
                 if (has_packet && lc3_len >= 20) {
                     consecutive_plc_count = 0;
 
-                    // Dynamic sample rate update on SINK if stream properties change on the fly
-                    if (frame_sr > 0 && frame_sr != m_telemetry.sample_rate) {
+                    // Dynamic sample rate / frame duration update on SINK if stream properties change on the fly
+                    if (frame_sr > 0 && (frame_sr != m_telemetry.sample_rate || frame_dur != m_telemetry.frame_duration_us)) {
                         m_telemetry.sample_rate = frame_sr;
-                        m_telemetry.bitrate_kbps = (lc3_len * 8) / 10;
+                        m_telemetry.frame_duration_us = frame_dur;
+                        m_telemetry.bitrate_kbps = (lc3_len * 8 * 1000000ULL) / (frame_dur * 1000ULL);
                         if (m_i2s_dac) {
                             m_i2s_dac->reconfigureSampleRate(frame_sr);
                         }
                     }
 
-                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples, m_telemetry.sample_rate);
+                    // Software PLL / Clock sync phase error check (every 50 frames)
+                    sync_eval_counter++;
+                    if ((sync_eval_counter % 50) == 0) {
+                        int64_t now_us = esp_timer_get_time();
+                        int64_t expected_pts_us = now_us + m_master_time_offset_us;
+                        int64_t phase_err = static_cast<int64_t>(frame_pts) - expected_pts_us;
+                        if (std::abs(phase_err) > 20) {
+                            m_clock_sync_micro_adjust_count.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+
+                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
 
                     for (size_t i = 0; i < actual_samples; ++i) {
                         int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
@@ -391,7 +467,7 @@ void EspNowAudioBroadcast::runSinkLoop() {
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
 
                     if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                        m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 20);
+                        m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 15);
                     }
                 } else {
                     // FIFO was empty: increment consecutive PLC watchdog
@@ -400,7 +476,8 @@ void EspNowAudioBroadcast::runSinkLoop() {
 
                     if (consecutive_plc_count < m_watchdog_timeout_frames) {
                         // Conceal frame using LC3 PLC
-                        m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples, m_telemetry.sample_rate);
+                        m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                                m_telemetry.sample_rate, m_telemetry.frame_duration_us);
                         for (size_t i = 0; i < actual_samples; ++i) {
                             int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
                             stereo_pcm[2 * i]     = sample;
@@ -409,12 +486,13 @@ void EspNowAudioBroadcast::runSinkLoop() {
                         m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
 
                         if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                            m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 20);
+                            m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 15);
                         }
                     } else {
                         // Reached consecutive PLC watchdog threshold -> Transition back to SCANNING
                         ESP_LOGW(TAG, "SINK: Reached %lu consecutive PLC frames (%lu ms loss). Requesting transition to SCANNING...",
-                                 (unsigned long)m_watchdog_timeout_frames, (unsigned long)(m_watchdog_timeout_frames * 10));
+                                 (unsigned long)m_watchdog_timeout_frames,
+                                 (unsigned long)((m_watchdog_timeout_frames * m_telemetry.frame_duration_us) / 1000));
                         consecutive_plc_count = 0;
                         transitionTo(NetworkState::SCANNING);
                     }
@@ -434,40 +512,50 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
     if (data_len < static_cast<int>(VSAF_HEADER_LEN)) return;
 
     const auto* pkt = reinterpret_cast<const EspNowAudioPacket*>(data);
-    if (pkt->magic != 0xE501) return;
-
-    // Fast receiver filtering: check recipient address tag (0xFF = broadcast, or matches local node_id)
-    if (pkt->target_node_id != 0xFF && pkt->target_node_id != m_node_id) {
-        return; // Discard packet intended for another SINK node
+    if (pkt->magic != m_active_magic) {
+        return;
     }
 
-    uint16_t frame_len = pkt->frame_len;
-    if (frame_len < 20 || frame_len > MAX_LC3_FRAME_OCTETS) return;
-    if (data_len < static_cast<int>(VSAF_HEADER_LEN + 2 * frame_len)) return;
+    uint8_t sr_code = (pkt->cfg >> 3) & 0x07;
+    uint32_t sample_rate = codeToSampleRate(sr_code);
+    uint8_t dur_bit = (pkt->cfg >> 6) & 0x01;
+    uint32_t pkt_dur_us = dur_bit ? 7500 : 10000;
 
-    uint16_t sample_rate = pkt->sample_rate_hz;
-    if (sample_rate == 0) sample_rate = 32000;
+    // Compute active frame length from received packet length
+    size_t payload_len = data_len - VSAF_HEADER_LEN;
+    uint16_t frame_len = payload_len / 2;
+    if (frame_len < 20 || frame_len > MAX_LC3_FRAME_OCTETS) return;
+
+    uint32_t pts_curr = pkt->pts_us;
+    int64_t now_us = esp_timer_get_time();
+    m_master_time_offset_us = static_cast<int64_t>(pts_curr) - now_us;
 
     m_telemetry.rssi_dbm = -26;
 
     // Check packet sequence number & de-duplicate
     if (m_has_last_rx_seq) {
         if (pkt->seq == m_last_rx_seq) {
-            return; // Exact duplicate of already processed packet
+            return; // Exact duplicate
         }
 
         uint8_t expected = m_last_rx_seq + 1;
         if (pkt->seq == static_cast<uint8_t>(expected + 1)) {
             // Exactly 1 packet was dropped! Recover frame N-1 from pkt->prev_frame!
-            if (push_rx_lc3_frame(pkt->prev_frame, frame_len, expected, sample_rate)) {
+            uint32_t pts_prev = pts_curr - pkt_dur_us;
+            if (push_rx_lc3_frame(pkt->prev_frame, frame_len, expected, static_cast<uint16_t>(sample_rate),
+                                  static_cast<uint16_t>(pkt_dur_us), pts_prev)) {
                 m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
                 m_rx_packets_sec.fetch_add(1, std::memory_order_relaxed);
+                m_prev_frame_recoveries.fetch_add(1, std::memory_order_relaxed);
+                ESP_LOGI(TAG, "SINK: [PLC-RECOVERY] Successfully recovered dropped packet Seq #%u (PTS: %lu us, Dur: %.1fms) from prev_frame!",
+                         expected, (unsigned long)pts_prev, pkt_dur_us / 1000.0f);
             }
         }
     }
 
     // Push unique current frame N
-    if (push_rx_lc3_frame(pkt->curr_frame, frame_len, pkt->seq, sample_rate)) {
+    if (push_rx_lc3_frame(pkt->curr_frame, frame_len, pkt->seq, static_cast<uint16_t>(sample_rate),
+                          static_cast<uint16_t>(pkt_dur_us), pts_curr)) {
         m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
         m_rx_packets_sec.fetch_add(1, std::memory_order_relaxed);
 
@@ -491,7 +579,6 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
 
     ESP_LOGI(TAG, "State Machine Transition: [%s] ---> [%s]", old_str, new_str);
 
-    // --- State Exit / Entry Dispatcher Actions ---
     switch (new_state) {
         case NetworkState::OFF: {
             if (m_i2s_dac) {
@@ -508,7 +595,7 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
                 enableWifiEspNow();
             }
             if (m_i2s_dac) {
-                m_i2s_dac->stop(); // Ensure I2S clocks are gated
+                m_i2s_dac->stop();
             }
             clear_rx_fifo();
             m_has_last_rx_seq = false;
@@ -530,7 +617,6 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
         }
 
         case NetworkState::PREFILL: {
-            // Found audio stream, decoding initial frames to prefill DMA buffer
             if (m_i2s_dac) {
                 m_i2s_dac->stop();
             }
@@ -538,7 +624,6 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
         }
 
         case NetworkState::STREAMING: {
-            // Locked to audio stream, start I2S hardware clocks (playing prefilled descriptors)
             if (m_i2s_dac) {
                 m_i2s_dac->start();
             }

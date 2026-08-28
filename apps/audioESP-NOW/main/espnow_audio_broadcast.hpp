@@ -3,51 +3,79 @@
 #include "lc3_codec.hpp"
 #include "tone_generator.hpp"
 #include "i2s_audio.hpp"
-#include "audio_metering.hpp"
 #include "config.h"
+#include "esp_err.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
-#include "freertos/portmacro.h"
-#include <stdint.h>
-#include <stddef.h>
-#include <string>
 #include <atomic>
+#include <string>
+#include <cmath>
 
-#ifndef ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT
-#ifdef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
-#define ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
+#ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
+#ifdef ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT
+#define CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT
 #else
-#define ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT 5
+#define CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES 5
 #endif
 #endif
 
-#ifndef ESPNOW_WATCHDOG_TIMEOUT_FRAMES_DEFAULT
-#ifdef CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES
-#define ESPNOW_WATCHDOG_TIMEOUT_FRAMES_DEFAULT CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES
+#ifndef CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES
+#ifdef ESPNOW_WATCHDOG_TIMEOUT_FRAMES_DEFAULT
+#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES ESPNOW_WATCHDOG_TIMEOUT_FRAMES_DEFAULT
 #else
-#define ESPNOW_WATCHDOG_TIMEOUT_FRAMES_DEFAULT 5
+#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES 5
 #endif
 #endif
 
 namespace AudioNet {
 
-// VSAF Protocol Packet Definition (Dual-Frame Redundant Payload with Dynamic Multi-Rate Header)
-struct EspNowAudioPacket {
-    uint16_t magic;          // 0xE501 (VSAF Magic)
-    uint8_t  target_node_id; // Recipient Node ID (0xFF = broadcast to all SINKs, or specific ID e.g. 23)
-    uint8_t  source_node_id; // Sender Node ID (e.g. 21)
-    uint8_t  seq;            // Sequence number (0-255)
-    uint8_t  flags;          // Bit 0: Muted, Bit 1: Stereo/Mono
-    uint16_t frame_len;      // Octets per LC3 frame (e.g. 40..120)
-    uint16_t sample_rate_hz; // Sample rate in Hz (16000, 24000, 32000, 44100, 48000)
-    uint8_t  curr_frame[120];// Primary Frame N (Offsets 10..129)
-    uint8_t  prev_frame[120];// Redundant Frame N-1 (Offsets 130..249)
-} __attribute__((packed));
+enum class Lc3SampleRateCode : uint8_t {
+    SR_8000  = 0,
+    SR_16000 = 1,
+    SR_24000 = 2,
+    SR_32000 = 3,
+    SR_44100 = 4,
+    SR_48000 = 5,
+};
 
-static constexpr size_t VSAF_HEADER_LEN = 10;
+static inline uint8_t sampleRateToCode(uint32_t hz) {
+    switch (hz) {
+        case 8000:  return 0;
+        case 16000: return 1;
+        case 24000: return 2;
+        case 32000: return 3;
+        case 44100: return 4;
+        case 48000: return 5;
+        default:    return 3;
+    }
+}
+
+static inline uint32_t codeToSampleRate(uint8_t code) {
+    switch (code & 0x07) {
+        case 0: return 8000;
+        case 1: return 16000;
+        case 2: return 24000;
+        case 3: return 32000;
+        case 4: return 44100;
+        case 5: return 48000;
+        default: return 32000;
+    }
+}
+
+static constexpr uint16_t VSAF_DEFAULT_MAGIC = 0x1337;
+static constexpr size_t VSAF_HEADER_LEN = 8;
+
+// 248-Byte Word-Aligned Dual-Frame Audio Packet
+struct EspNowAudioPacket {
+    uint16_t magic;          // 0x1337 (Offsets 0..1, 16-bit aligned)
+    uint8_t  seq;            // Sequence counter 0..255 (Offset 2)
+    uint8_t  cfg;            // [0..2: ch_id] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync] (Offset 3)
+    uint32_t pts_us;         // 32-bit Microsecond Presentation Timestamp (Offsets 4..7, 32-bit aligned)
+    uint8_t  curr_frame[120];// Primary Frame N   (Offsets 8..127, 32-bit aligned)
+    uint8_t  prev_frame[120];// Redundant Frame N-1 (Offsets 128..247, 32-bit aligned)
+} __attribute__((packed));
 
 enum class NetworkState {
     OFF,           // WiFi disabled
@@ -60,6 +88,7 @@ enum class NetworkState {
 
 struct StreamTelemetry {
     uint32_t sample_rate = CONFIG_ESPNOW_SAMPLE_RATE_HZ;
+    uint32_t frame_duration_us = 10000;
     uint8_t  channels = 1;
     uint32_t bitrate_kbps = (CONFIG_ESPNOW_FRAME_LEN_OCTETS * 8) / 10;
     int8_t   rssi_dbm = -26;
@@ -75,9 +104,61 @@ struct StreamTelemetry {
 
     std::string getCodecString() const {
         char buf[64];
-        snprintf(buf, sizeof(buf), "LC3 fixp @ %lu kbps", (unsigned long)bitrate_kbps);
+        snprintf(buf, sizeof(buf), "LC3 %lu kbps (%.1fms)", (unsigned long)bitrate_kbps, frame_duration_us / 1000.0f);
         return std::string(buf);
     }
+};
+
+class AudioLevelMeter {
+public:
+    AudioLevelMeter() : m_rms_dbfs(-INFINITY), m_peak_dbfs(-INFINITY), m_rms_int16(0), m_peak_int16(0) {}
+
+    void pushFramePcm(const int16_t* samples, size_t count) {
+        if (!samples || count == 0) {
+            pushSilence();
+            return;
+        }
+
+        int32_t peak = 0;
+        int64_t sum_sq = 0;
+
+        for (size_t i = 0; i < count; ++i) {
+            int16_t s = samples[i];
+            int32_t abs_s = std::abs(static_cast<int32_t>(s));
+            if (abs_s > peak) peak = abs_s;
+            sum_sq += static_cast<int64_t>(s) * s;
+        }
+
+        float mean_sq = static_cast<float>(sum_sq) / static_cast<float>(count);
+        float rms_linear = std::sqrt(mean_sq);
+
+        m_rms_int16 = static_cast<int16_t>(rms_linear);
+        m_peak_int16 = static_cast<int16_t>(peak);
+
+        float rms_norm = rms_linear / 32768.0f;
+        m_rms_dbfs = (rms_norm > 0.00001f) ? 20.0f * std::log10(rms_norm) : -100.0f;
+
+        float peak_norm = static_cast<float>(peak) / 32768.0f;
+        m_peak_dbfs = (peak_norm > 0.00001f) ? 20.0f * std::log10(peak_norm) : -100.0f;
+    }
+
+    void pushSilence() {
+        m_rms_dbfs = -INFINITY;
+        m_peak_dbfs = -INFINITY;
+        m_rms_int16 = 0;
+        m_peak_int16 = 0;
+    }
+
+    float getAudioFrameRMS_dBFS() const { return m_rms_dbfs; }
+    float getAudioFramePeak_dBFS() const { return m_peak_dbfs; }
+    int16_t getAudioFrameRMS_int16() const { return m_rms_int16; }
+    int16_t getAudioFramePeak_int16() const { return m_peak_int16; }
+
+private:
+    float m_rms_dbfs;
+    float m_peak_dbfs;
+    int16_t m_rms_int16;
+    int16_t m_peak_int16;
 };
 
 class EspNowAudioBroadcast {
@@ -92,10 +173,12 @@ public:
     esp_err_t startAudioTask();
 
     // On-the-fly audio stream reconfiguration (SOURCE node)
-    esp_err_t setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets);
+    esp_err_t setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets, uint32_t frame_duration_us = 0);
     esp_err_t setSampleRate(uint32_t sample_rate_hz);
     esp_err_t setFrameLen(uint16_t frame_len_octets);
+    esp_err_t setFrameDuration(uint32_t frame_duration_us);
     uint32_t getSampleRate() const { return m_telemetry.sample_rate; }
+    uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
     uint16_t getFrameLen() const { return m_octets_per_frame; }
 
     void onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len);
@@ -130,43 +213,56 @@ public:
 
     void setPrefillThresholdFrames(uint32_t frames) { m_prefill_threshold_frames = frames; }
     uint32_t getPrefillThresholdFrames() const { return m_prefill_threshold_frames; }
-
     void setWatchdogTimeoutFrames(uint32_t frames) { m_watchdog_timeout_frames = frames; }
     uint32_t getWatchdogTimeoutFrames() const { return m_watchdog_timeout_frames; }
+
+    // Time Synchronization & Diagnostics Getters
+    uint64_t getMasterTimeMs() const;
+    uint32_t getClockSyncAdjustCount() const { return m_clock_sync_micro_adjust_count.load(std::memory_order_relaxed); }
+    uint32_t getPrevFrameRecoveryCount() const { return m_prev_frame_recoveries.load(std::memory_order_relaxed); }
+
+    // Test Hooks
+    void setTestMagicWord(uint16_t magic) { m_active_magic = magic; }
+    uint16_t getTestMagicWord() const { return m_active_magic; }
+    void triggerSimulatedPacketDrop() { m_simulated_drop_count = 1; }
 
 private:
     static void audioTaskRoutine(void* pvParameters);
     void runSourceLoop();
     void runSinkLoop();
 
-    Codec::Lc3CodecEngine& m_lc3_codec;
-    Audio::ToneGenerator* m_tone_gen;
-    Hardware::I2sAudioDriver* m_i2s_dac;
-    AudioMetering::AudioSignalMeter m_audio_meter;
+    Codec::Lc3CodecEngine&     m_lc3_codec;
+    Audio::ToneGenerator*      m_tone_gen;
+    Hardware::I2sAudioDriver*  m_i2s_dac;
 
-    uint8_t m_node_role = 0;
-    uint8_t m_node_id = 0;
-    uint16_t m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
-    NetworkState m_state = NetworkState::OFF;
-    StreamTelemetry m_telemetry;
-    bool m_audio_task_running = false;
-    bool m_wifi_initialized = false;
+    uint8_t                    m_node_role;
+    uint8_t                    m_node_id;
+    uint16_t                   m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
+    uint32_t                   m_frame_duration_us = 10000;
+    NetworkState               m_state = NetworkState::OFF;
+    StreamTelemetry            m_telemetry;
+    AudioLevelMeter            m_audio_meter;
 
-    // Prefill cushion & Watchdog loss thresholds
-    uint32_t m_prefill_threshold_frames = ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT;
-    uint32_t m_watchdog_timeout_frames = ESPNOW_WATCHDOG_TIMEOUT_FRAMES_DEFAULT;
+    bool                       m_wifi_initialized = false;
+    bool                       m_audio_task_running = false;
+    uint8_t                    m_last_rx_seq = 0;
+    bool                       m_has_last_rx_seq = false;
 
-    // Sequence tracking & deduplication
-    uint8_t m_last_rx_seq = 0;
-    bool m_has_last_rx_seq = false;
+    uint32_t                   m_prefill_threshold_frames = CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES;
+    uint32_t                   m_watchdog_timeout_frames  = CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES;
 
-    // Real-time packet throughput counters
-    std::atomic<uint32_t> m_tx_packets_total{0};
-    std::atomic<uint32_t> m_tx_packets_sec{0};
-    std::atomic<uint32_t> m_rx_packets_total{0};
-    std::atomic<uint32_t> m_rx_packets_sec{0};
-    std::atomic<uint32_t> m_fifo_overflow{0};
-    std::atomic<uint32_t> m_fifo_underrun{0};
+    uint16_t                   m_active_magic = VSAF_DEFAULT_MAGIC;
+    int64_t                    m_master_time_offset_us = 0;
+    std::atomic<uint32_t>      m_clock_sync_micro_adjust_count{0};
+    std::atomic<uint32_t>      m_prev_frame_recoveries{0};
+    std::atomic<uint32_t>      m_simulated_drop_count{0};
+
+    std::atomic<uint32_t>      m_tx_packets_total{0};
+    std::atomic<uint32_t>      m_tx_packets_sec{0};
+    std::atomic<uint32_t>      m_rx_packets_total{0};
+    std::atomic<uint32_t>      m_rx_packets_sec{0};
+    std::atomic<uint32_t>      m_fifo_overflow{0};
+    std::atomic<uint32_t>      m_fifo_underrun{0};
 };
 
 } // namespace AudioNet

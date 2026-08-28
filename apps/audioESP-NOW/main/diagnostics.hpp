@@ -2,9 +2,8 @@
 
 #include "espnow_audio_broadcast.hpp"
 #include "status_led.hpp"
-#include "esp_timer.h"
 #include "driver/temperature_sensor.h"
-#include <stdint.h>
+#include <cstdint>
 
 namespace Diagnostics {
 
@@ -18,12 +17,11 @@ public:
 
 private:
     AudioNet::EspNowAudioBroadcast& m_espnow_broadcast;
-    Hardware::StatusLed& m_status_led;
+    Hardware::StatusLed&            m_status_led;
+    temperature_sensor_handle_t     m_temp_sensor = nullptr;
 
-    temperature_sensor_handle_t m_temp_sensor = nullptr;
-    uint32_t m_loop_count = 0;
-    int m_cpu_mean_pct = 2;
-    int m_cpu_peak_pct = 4;
+    uint32_t                        m_loop_count = 0;
+    int                             m_cpu_pct = 0;
 };
 
 } // namespace Diagnostics

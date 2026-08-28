@@ -9,11 +9,14 @@
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 static const char* TAG = "MAIN";
 
 static Codec::Lc3CodecEngine s_lc3_codec;
-static Audio::ToneGenerator s_tone_gen(32000);
+static Audio::ToneGenerator s_tone_gen(CONFIG_ESPNOW_SAMPLE_RATE_HZ);
 static Hardware::I2sAudioDriver* s_i2s_dac = nullptr;
 static Hardware::StatusLed* s_status_led = nullptr;
 static AudioNet::EspNowAudioBroadcast* s_espnow_broadcast = nullptr;
@@ -24,6 +27,56 @@ static void diagnostics_task_routine(void* pvParameters) {
     while (true) {
         diag->tick();
         vTaskDelay(pdMS_TO_TICKS(100)); // 100 ms tick (10 Hz)
+    }
+}
+
+static void console_task_routine(void* pvParameters) {
+    char line_buf[64];
+    int line_idx = 0;
+
+    while (true) {
+        int c = getchar();
+        if (c == EOF || c == 0xFF) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        if (c == '\r' || c == '\n') {
+            if (line_idx > 0) {
+                line_buf[line_idx] = '\0';
+                ESP_LOGI(TAG, "Console CMD: '%s'", line_buf);
+
+                if (strncmp(line_buf, "rate ", 5) == 0) {
+                    uint32_t rate = atoi(line_buf + 5);
+                    if (s_espnow_broadcast) {
+                        s_espnow_broadcast->setSampleRate(rate);
+                    }
+                } else if (strncmp(line_buf, "magic ", 6) == 0) {
+                    uint16_t magic = strtoul(line_buf + 6, nullptr, 0);
+                    if (s_espnow_broadcast) {
+                        s_espnow_broadcast->setTestMagicWord(magic);
+                        ESP_LOGW(TAG, "Active Magic Word set to: 0x%04X", magic);
+                    }
+                } else if (strncmp(line_buf, "dur ", 4) == 0 || strncmp(line_buf, "duration ", 9) == 0) {
+                    const char* p = (strncmp(line_buf, "dur ", 4) == 0) ? (line_buf + 4) : (line_buf + 9);
+                    uint32_t dur_us = 10000;
+                    if (strstr(p, "7.5") != nullptr || strstr(p, "7500") != nullptr) {
+                        dur_us = 7500;
+                    } else {
+                        dur_us = 10000;
+                    }
+                    if (s_espnow_broadcast) {
+                        s_espnow_broadcast->setFrameDuration(dur_us);
+                    }
+                } else if (strcmp(line_buf, "drop") == 0) {
+                    if (s_espnow_broadcast) {
+                        s_espnow_broadcast->triggerSimulatedPacketDrop();
+                    }
+                }
+                line_idx = 0;
+            }
+        } else if (line_idx < sizeof(line_buf) - 1) {
+            line_buf[line_idx++] = static_cast<char>(c);
+        }
     }
 }
 
@@ -53,7 +106,7 @@ extern "C" void app_main(void) {
     // Initialize I2S DAC (for SINK node - pin configurations, etc.)
     if (cfg->node_role == NODE_ROLE_SINK) {
         s_i2s_dac = new Hardware::I2sAudioDriver(cfg->i2s_bclk_gpio, cfg->i2s_ws_gpio, cfg->i2s_dout_gpio, -1, 0);
-        s_i2s_dac->init(32000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+        s_i2s_dac->init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
     }
 
     // Step 2: Initialize ESP-NOW Audio Broadcast Subsystem (node automatically enters state OFF)
@@ -79,6 +132,9 @@ extern "C" void app_main(void) {
 
     // Start Diagnostics Task (1 Hz telemetry logger)
     xTaskCreate(diagnostics_task_routine, "diag_task", 4096, s_diagnostics, 3, nullptr);
+
+    // Start Interactive Console Task
+    xTaskCreate(console_task_routine, "console_task", 3072, nullptr, 2, nullptr);
 
     ESP_LOGI(TAG, "System initialization complete. Audio pipeline running!");
 }
