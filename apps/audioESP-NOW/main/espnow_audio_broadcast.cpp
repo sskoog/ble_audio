@@ -294,8 +294,11 @@ void EspNowAudioBroadcast::runSourceLoop() {
     ESP_LOGI(TAG, "ESP-NOW Audio Source Loop Started (Dual Mode: USB Ingest + Internal Synth Fallback)...");
 
     static int16_t pcm_buffer[MAX_PCM_FRAME_SAMPLES] = {0};
+    static int16_t pcm_buffer_ch1[MAX_PCM_FRAME_SAMPLES] = {0};
     static uint8_t curr_lc3[MAX_LC3_FRAME_OCTETS] = {0};
     static uint8_t prev_lc3[MAX_LC3_FRAME_OCTETS] = {0};
+    static uint8_t curr_lc3_ch1[MAX_LC3_FRAME_OCTETS] = {0};
+    static uint8_t prev_lc3_ch1[MAX_LC3_FRAME_OCTETS] = {0};
     size_t encoded_bytes = 0;
     uint8_t seq = 0;
 
@@ -342,6 +345,7 @@ void EspNowAudioBroadcast::runSourceLoop() {
                 }
             }
 
+            // Channel 0 (Left)
             if (m_tone_gen) {
                 m_tone_gen->generateFrame(pcm_buffer, samples_to_gen);
             }
@@ -371,8 +375,20 @@ void EspNowAudioBroadcast::runSourceLoop() {
             esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
             memcpy(prev_lc3, curr_lc3, current_len);
 
-            m_tx_packets_total.fetch_add(1, std::memory_order_relaxed);
-            m_tx_packets_sec.fetch_add(1, std::memory_order_relaxed);
+            // Channel 1 (Right) - Synthesize complementary stereo audio for Right SINK (Node 24)
+            for (size_t s = 0; s < samples_to_gen; ++s) {
+                pcm_buffer_ch1[s] = static_cast<int16_t>(pcm_buffer[s] * 0.9f);
+            }
+            m_lc3_codec.encodeFrame(pcm_buffer_ch1, samples_to_gen, curr_lc3_ch1, sizeof(curr_lc3_ch1), &encoded_bytes);
+            hdr->seq = seq++;
+            hdr->cfg = (1 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
+            memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3_ch1, current_len);
+            memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3_ch1, current_len);
+            esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
+            memcpy(prev_lc3_ch1, curr_lc3_ch1, current_len);
+
+            m_tx_packets_total.fetch_add(2, std::memory_order_relaxed);
+            m_tx_packets_sec.fetch_add(2, std::memory_order_relaxed);
         }
     }
 }
