@@ -11,8 +11,8 @@
 #include "esp_idf_version.h"
 #include "nvs_flash.h"
 #include "driver/uart.h"
-#include "driver/uart_vfs.h"
-#include "esp_vfs_dev.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <cstdio>
@@ -28,6 +28,41 @@ static Audio::ToneGenerator        s_tone_gen;
 static AudioNet::EspNowAudioBroadcast* s_espnow_broadcast = nullptr;
 static Diagnostics::SystemDiagnostics* s_diagnostics = nullptr;
 
+static void handle_ascii_command(const char* line) {
+    if (!line || strlen(line) == 0) return;
+    ESP_LOGI(TAG, "Console CMD: '%s'", line);
+
+    if (strncmp(line, "rate ", 5) == 0) {
+        uint32_t rate = atoi(line + 5);
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->setSampleRate(rate);
+        }
+    } else if (strncmp(line, "ch ", 3) == 0 || strncmp(line, "channel ", 8) == 0) {
+        const char* p = (strncmp(line, "ch ", 3) == 0) ? (line + 3) : (line + 8);
+        uint8_t ch = atoi(p);
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->setTargetChannel(ch);
+            ESP_LOGW(TAG, "Target Listening Audio Channel set to: Ch %u", ch);
+        }
+    } else if (strncmp(line, "magic ", 6) == 0) {
+        uint16_t magic = strtoul(line + 6, nullptr, 0);
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->setTestMagicWord(magic);
+            ESP_LOGW(TAG, "Active Magic Word set to: 0x%04X", magic);
+        }
+    } else if (strncmp(line, "dur ", 4) == 0 || strncmp(line, "duration ", 9) == 0) {
+        const char* p = (strncmp(line, "dur ", 4) == 0) ? (line + 4) : (line + 9);
+        uint32_t dur_us = (strstr(p, "7.5") != nullptr || strstr(p, "7500") != nullptr) ? 7500 : 10000;
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->setFrameDuration(dur_us);
+        }
+    } else if (strcmp(line, "drop") == 0) {
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->triggerSimulatedPacketDrop();
+        }
+    }
+}
+
 static void diagnostics_task_routine(void* pvParameters) {
     while (true) {
         if (s_diagnostics) {
@@ -39,14 +74,35 @@ static void diagnostics_task_routine(void* pvParameters) {
 
 static void console_task_routine(void* pvParameters) {
     uint8_t rx_buf[512];
+    uint8_t usj_buf[128];
     static uint8_t ring_buf[1024];
     size_t ring_len = 0;
     char line_buf[64];
     int line_idx = 0;
+    char usj_line_buf[64];
+    int usj_line_idx = 0;
 
     const size_t PACKET_SIZE = sizeof(AudioNet::EspNowAudioPacket); // 248 bytes
 
     while (true) {
+        // 1. Process USB Serial / JTAG (COM21 / COM23) ASCII commands
+        int usj_n = usb_serial_jtag_read_bytes(usj_buf, sizeof(usj_buf), 0);
+        if (usj_n > 0) {
+            for (int i = 0; i < usj_n; ++i) {
+                char c = static_cast<char>(usj_buf[i]);
+                if (c == '\r' || c == '\n') {
+                    if (usj_line_idx > 0) {
+                        usj_line_buf[usj_line_idx] = '\0';
+                        handle_ascii_command(usj_line_buf);
+                        usj_line_idx = 0;
+                    }
+                } else if (usj_line_idx < sizeof(usj_line_buf) - 1 && c >= 32 && c <= 126) {
+                    usj_line_buf[usj_line_idx++] = c;
+                }
+            }
+        }
+
+        // 2. Ingest Binary Audio Packets from UART0 (COM121 @ 2 Mbaud)
         int n = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(5));
         if (n <= 0) {
             continue;
@@ -62,42 +118,12 @@ static void console_task_routine(void* pvParameters) {
                 ring_buf[ring_len - 1] = byte;
             }
 
-            // ASCII command collection if not in binary sync
+            // ASCII command collection on UART0 if not in binary sync
             if (ring_len < 2 || (ring_buf[0] != 0x37 || ring_buf[1] != 0x13)) {
                 if (byte == '\r' || byte == '\n') {
                     if (line_idx > 0) {
                         line_buf[line_idx] = '\0';
-                        ESP_LOGI(TAG, "Console CMD: '%s'", line_buf);
-
-                        if (strncmp(line_buf, "rate ", 5) == 0) {
-                            uint32_t rate = atoi(line_buf + 5);
-                            if (s_espnow_broadcast) {
-                                s_espnow_broadcast->setSampleRate(rate);
-                            }
-                        } else if (strncmp(line_buf, "ch ", 3) == 0 || strncmp(line_buf, "channel ", 8) == 0) {
-                            const char* p = (strncmp(line_buf, "ch ", 3) == 0) ? (line_buf + 3) : (line_buf + 8);
-                            uint8_t ch = atoi(p);
-                            if (s_espnow_broadcast) {
-                                s_espnow_broadcast->setTargetChannel(ch);
-                                ESP_LOGW(TAG, "Target Listening Audio Channel set to: Ch %u", ch);
-                            }
-                        } else if (strncmp(line_buf, "magic ", 6) == 0) {
-                            uint16_t magic = strtoul(line_buf + 6, nullptr, 0);
-                            if (s_espnow_broadcast) {
-                                s_espnow_broadcast->setTestMagicWord(magic);
-                                ESP_LOGW(TAG, "Active Magic Word set to: 0x%04X", magic);
-                            }
-                        } else if (strncmp(line_buf, "dur ", 4) == 0 || strncmp(line_buf, "duration ", 9) == 0) {
-                            const char* p = (strncmp(line_buf, "dur ", 4) == 0) ? (line_buf + 4) : (line_buf + 9);
-                            uint32_t dur_us = (strstr(p, "7.5") != nullptr || strstr(p, "7500") != nullptr) ? 7500 : 10000;
-                            if (s_espnow_broadcast) {
-                                s_espnow_broadcast->setFrameDuration(dur_us);
-                            }
-                        } else if (strcmp(line_buf, "drop") == 0) {
-                            if (s_espnow_broadcast) {
-                                s_espnow_broadcast->triggerSimulatedPacketDrop();
-                            }
-                        }
+                        handle_ascii_command(line_buf);
                         line_idx = 0;
                     }
                 } else if (line_idx < sizeof(line_buf) - 1 && byte >= 32 && byte <= 126) {
@@ -126,12 +152,20 @@ static void console_task_routine(void* pvParameters) {
 }
 
 extern "C" void app_main(void) {
+    // 1. Install USB-Serial/JTAG driver for COM21 (Node 21) & COM23 (Node 23) Telemetry Console
+    usb_serial_jtag_driver_config_t usj_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    usj_config.rx_buffer_size = 512;
+    usj_config.tx_buffer_size = 1024;
+    usb_serial_jtag_driver_install(&usj_config);
+    usb_serial_jtag_vfs_use_driver();
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     ESP_LOGI(TAG, "=========================================================");
     ESP_LOGI(TAG, "   audioESP-NOW: High-Fidelity LC3 Audio Streamer        ");
     ESP_LOGI(TAG, "   Target: ESP32-C6 | Wi-Fi ESP-NOW | Bluetooth DISABLED ");
     ESP_LOGI(TAG, "=========================================================");
 
-    // Install high-performance UART0 driver for 2000000 baud (2 Mbaud) transparent binary ingestion
+    // 2. Install UART0 driver for COM121 (CH343) @ 2,000,000 baud dedicated binary audio ingestion
     uart_config_t uart_config = {
         .baud_rate = 2000000,
         .data_bits = UART_DATA_8_BITS,
@@ -143,11 +177,6 @@ extern "C" void app_main(void) {
     };
     uart_driver_install(UART_NUM_0, 4096, 512, 0, NULL, 0);
     uart_param_config(UART_NUM_0, &uart_config);
-#if defined(ESP_IDF_VERSION) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
-    uart_vfs_dev_use_driver(UART_NUM_0);
-#else
-    esp_vfs_dev_uart_use_driver(UART_NUM_0);
-#endif
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
