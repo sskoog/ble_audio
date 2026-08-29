@@ -42,9 +42,7 @@ esp_err_t StatusLed::init(int gpio_num) {
     strip_config.flags.invert_out = false;
 
     led_strip_rmt_config_t rmt_config = {};
-    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
     rmt_config.resolution_hz = 10 * 1000 * 1000; // 10MHz RMT resolution
-    rmt_config.flags.with_dma = false;
 
     esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &m_strip_handle);
     if (ret != ESP_OK) {
@@ -52,12 +50,10 @@ esp_err_t StatusLed::init(int gpio_num) {
         return ret;
     }
 
-    // Turn LED off initially
-    led_strip_set_pixel(m_strip_handle, 0, 0, 0, 0);
-    led_strip_refresh(m_strip_handle);
+    led_strip_clear(m_strip_handle);
 
-    // Initial default: Blue fast blink for SOURCE with 20% brightness & 20/255 duty cycle
-    setPattern(LED_COLOR_BLUE, DEFAULT_LED_BRIGHTNESS, BLINK_FAST);
+    // Initial default: Blue fast blink for SOURCE
+    setSystemState(SystemState::BROADCASTING);
 
     // Start background non-blocking blinking task
     m_running = true;
@@ -155,11 +151,11 @@ void StatusLed::updateHardwareLed(bool is_on) {
         uint32_t scaled_r = (static_cast<uint32_t>(m_r) * m_brightness + 127) / 255;
         uint32_t scaled_g = (static_cast<uint32_t>(m_g) * m_brightness + 127) / 255;
         uint32_t scaled_b = (static_cast<uint32_t>(m_b) * m_brightness + 127) / 255;
-        led_strip_set_pixel(m_strip_handle, 0, scaled_r, scaled_g, scaled_b);
+        // Hardware die order compensation (ESP32-C6 WS2812 maps first byte to Green, second to Red)
+        led_strip_set_pixel(m_strip_handle, 0, scaled_g, scaled_r, scaled_b);
         led_strip_refresh(m_strip_handle);
     } else {
-        led_strip_set_pixel(m_strip_handle, 0, 0, 0, 0);
-        led_strip_refresh(m_strip_handle);
+        led_strip_clear(m_strip_handle);
     }
 }
 
@@ -170,9 +166,9 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
         TickType_t flash_until = instance->m_flash_red_until_tick.load(std::memory_order_acquire);
         TickType_t now = xTaskGetTickCount();
         if (flash_until > now) {
-            // Flash soft RED for SINK underrun event (20% brightness)
+            // Flash soft RED for SINK underrun event (GRB: G=0, R=scaled, B=0)
             if (instance->m_strip_handle) {
-                led_strip_set_pixel(instance->m_strip_handle, 0, DEFAULT_LED_BRIGHTNESS, 0, 0);
+                led_strip_set_pixel(instance->m_strip_handle, 0, 0, DEFAULT_LED_BRIGHTNESS, 0);
                 led_strip_refresh(instance->m_strip_handle);
             }
             TickType_t remaining = flash_until - now;
@@ -186,13 +182,13 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
 
         if (duty == 0) {
             instance->updateHardwareLed(false);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
             continue;
         }
 
         if (duty >= 255) {
             instance->updateHardwareLed(true);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -209,11 +205,15 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
 
         // Turn ON
         instance->updateHardwareLed(true);
-        vTaskDelay(pdMS_TO_TICKS(on_ms));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(on_ms)) != 0) {
+            continue;
+        }
 
         // Turn OFF
         instance->updateHardwareLed(false);
-        vTaskDelay(pdMS_TO_TICKS(off_ms));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(off_ms)) != 0) {
+            continue;
+        }
     }
 
     vTaskDelete(NULL);

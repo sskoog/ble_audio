@@ -44,7 +44,7 @@ Unique hardware nodes in this project are enumerated according to their assigned
 | COM Port(s) | Node Identifier | Hardware Board / Module | Description & Product References |
 | :--- | :--- | :--- | :--- |
 | **COM20** | **Node20** | **ESP32-C6-LCD** | [Waveshare ESP32-C6-LCD](https://www.amazon.se/dp/B0DHTMYTCY) 18-pin thumb-size module with 1.47" 172x320 px LCD + WS2812B RGB LED |
-| **COM21 / COM22** | **Node21** | **ESP32-C6-WROOM** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY?ref=ppx_yo2ov_dt_b_fed_asin_title) 32-pin full-size module + WS2812B RGB LED |
+| **COM21 / COM121** | **Node21** | **ESP32-C6-WROOM** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY?ref=ppx_yo2ov_dt_b_fed_asin_title) 32-pin full-size module (COM21: Flash & Telemetry, COM121: Bumble & Audio Ingest) + WS2812B RGB LED |
 | COM23 | Node23 | **ESP32-C6-zero** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) 18-pin thumb-size module |
 | COM24 | Node24 | **ESP32-C6-zero** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) 18-pin thumb-size module |
 | COM25 | Node25 | **ESP32-C6-mini** | [Heemol ESP32-C6 Mini](https://www.amazon.se/dp/B0H33M4Y9R) 20-pin thumb-size module |

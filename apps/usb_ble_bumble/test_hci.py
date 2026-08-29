@@ -2,7 +2,7 @@ import sys
 import time
 import serial
 
-def probe_hci(port="COM22", baud=115200):
+def probe_hci(port="COM121", baud=115200):
     print(f"=== Probing ESP32-C6 HCI Controller on {port} ===")
     
     # Initialize serial port without asserting RTS/DTR resets
@@ -47,5 +47,5 @@ def probe_hci(port="COM22", baud=115200):
     print("\n=== ESP32-C6 HCI Controller Diagnostic Complete ===")
 
 if __name__ == '__main__':
-    port = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else 'COM22'
+    port = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else 'COM121'
     probe_hci(port)

@@ -5,6 +5,7 @@
 #include "i2s_audio.hpp"
 #include "config.h"
 #include "esp_err.h"
+#include "esp_idf_version.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -67,11 +68,19 @@ static inline uint32_t codeToSampleRate(uint8_t code) {
 static constexpr uint16_t VSAF_DEFAULT_MAGIC = 0x1337;
 static constexpr size_t VSAF_HEADER_LEN = 8;
 
+// 8-Byte Word-Aligned VSAF Header
+struct EspNowAudioHeader {
+    uint16_t magic;          // 0x1337 (Offsets 0..1, 16-bit aligned)
+    uint8_t  seq;            // Sequence counter 0..255 (Offset 2)
+    uint8_t  cfg;            // [0..2: ch_id 0..7] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync] (Offset 3)
+    uint32_t pts_us;         // 32-bit Microsecond Presentation Timestamp (Offsets 4..7, 32-bit aligned)
+} __attribute__((packed));
+
 // 248-Byte Word-Aligned Dual-Frame Audio Packet
 struct EspNowAudioPacket {
     uint16_t magic;          // 0x1337 (Offsets 0..1, 16-bit aligned)
     uint8_t  seq;            // Sequence counter 0..255 (Offset 2)
-    uint8_t  cfg;            // [0..2: ch_id] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync] (Offset 3)
+    uint8_t  cfg;            // [0..2: ch_id 0..7] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync] (Offset 3)
     uint32_t pts_us;         // 32-bit Microsecond Presentation Timestamp (Offsets 4..7, 32-bit aligned)
     uint8_t  curr_frame[120];// Primary Frame N   (Offsets 8..127, 32-bit aligned)
     uint8_t  prev_frame[120];// Redundant Frame N-1 (Offsets 128..247, 32-bit aligned)
@@ -181,6 +190,14 @@ public:
     uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
     uint16_t getFrameLen() const { return m_octets_per_frame; }
 
+    // Multi-Channel Target Selection (SINK node: 0..7)
+    void setTargetChannel(uint8_t channel_id) { m_target_channel = channel_id & 0x07; }
+    uint8_t getTargetChannel() const { return m_target_channel; }
+
+    // Real-Time USB Audio Stream Ingestion (SOURCE node)
+    void processUsbVsafPacket(const uint8_t* data, size_t len);
+    bool isUsbStreamActive() const { return m_usb_stream_active.load(std::memory_order_relaxed); }
+
     void onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len);
     void transitionTo(NetworkState new_state);
 
@@ -237,6 +254,7 @@ private:
 
     uint8_t                    m_node_role;
     uint8_t                    m_node_id;
+    uint8_t                    m_target_channel = 0; // SINK listens to this channel (0..7)
     uint16_t                   m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
     uint32_t                   m_frame_duration_us = 10000;
     NetworkState               m_state = NetworkState::OFF;
@@ -256,6 +274,10 @@ private:
     std::atomic<uint32_t>      m_clock_sync_micro_adjust_count{0};
     std::atomic<uint32_t>      m_prev_frame_recoveries{0};
     std::atomic<uint32_t>      m_simulated_drop_count{0};
+
+    // USB Stream Ingest State (SOURCE node)
+    std::atomic<bool>          m_usb_stream_active{false};
+    std::atomic<int64_t>       m_last_usb_packet_time_us{0};
 
     std::atomic<uint32_t>      m_tx_packets_total{0};
     std::atomic<uint32_t>      m_tx_packets_sec{0};

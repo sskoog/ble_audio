@@ -30,24 +30,24 @@ inline constexpr RgbColor LED_COLOR_PURPLE{200, 0, 255};
 inline constexpr RgbColor LED_COLOR_ORANGE{255, 100, 0};
 inline constexpr RgbColor LED_COLOR_YELLOW{200, 200, 0};
 
-// Default brightness: 20% (51/255)
-// Default duty cycle: 20/255
-inline constexpr uint8_t DEFAULT_LED_BRIGHTNESS = 51; // 20%
-inline constexpr uint8_t DEFAULT_LED_DUTY_CYCLE = 20; // 20/255
+// Default brightness: 25% (64/255)
+// Default duty cycle: 48/255 (~19% pulse)
+inline constexpr uint8_t DEFAULT_LED_BRIGHTNESS = 64; 
+inline constexpr uint8_t DEFAULT_LED_DUTY_CYCLE = 48; 
 
 // =====================================================================
 //                   BLINK PATTERN CONSTANTS
 // =====================================================================
 struct BlinkConfig {
-    uint8_t duty_cycle; // 0 to 255 (0 = OFF, 255 = SOLID ON, 20 = 20/255 pulse)
+    uint8_t duty_cycle; // 0 to 255 (0 = OFF, 255 = SOLID ON, 48 = ~19% pulse)
     float   blink_freq; // 0.1 Hz to 10.0 Hz
 
     constexpr BlinkConfig(uint8_t duty = DEFAULT_LED_DUTY_CYCLE, float freq = 1.0f)
         : duty_cycle(duty), blink_freq(freq) {}
 };
 
-inline constexpr BlinkConfig BLINK_SLOW{DEFAULT_LED_DUTY_CYCLE, 0.5f}; // 0.5 Hz (20/255 duty cycle)
-inline constexpr BlinkConfig BLINK_FAST{DEFAULT_LED_DUTY_CYCLE, 2.0f}; // 2.0 Hz (20/255 duty cycle)
+inline constexpr BlinkConfig BLINK_SLOW{DEFAULT_LED_DUTY_CYCLE, 1.0f}; // 1.0 Hz
+inline constexpr BlinkConfig BLINK_FAST{DEFAULT_LED_DUTY_CYCLE, 2.5f}; // 2.5 Hz fast pulse
 inline constexpr BlinkConfig BLINK_SOLID{255, 1.0f};
 inline constexpr BlinkConfig BLINK_OFF{0, 1.0f};
 

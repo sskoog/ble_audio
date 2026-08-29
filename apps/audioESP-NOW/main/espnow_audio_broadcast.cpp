@@ -35,7 +35,6 @@ static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t se
     if (!data || len == 0 || len > MAX_LC3_FRAME_OCTETS) return false;
     taskENTER_CRITICAL(&s_fifo_mux);
     if (s_rx_fifo_count >= LC3_RX_FIFO_CAPACITY) {
-        // Drop oldest frame on overflow
         s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
         s_rx_fifo_count--;
     }
@@ -87,9 +86,11 @@ static inline void clear_rx_fifo() {
     taskEXIT_CRITICAL(&s_fifo_mux);
 }
 
-static void onEspNowSendCb(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    // Optional TX telemetry callback
-}
+#if defined(ESP_IDF_VERSION) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+static void onEspNowSendCb(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {}
+#else
+static void onEspNowSendCb(const uint8_t *mac_addr, esp_now_send_status_t status) {}
+#endif
 
 static void onEspNowRecvCb(const esp_now_recv_info_t* recv_info, const uint8_t* data, int len) {
     if (s_instance) {
@@ -116,9 +117,12 @@ esp_err_t EspNowAudioBroadcast::init(uint8_t node_role) {
     m_telemetry.frame_duration_us = 10000;
     m_frame_duration_us = 10000;
     m_telemetry.channels = 1;
+    m_target_channel = 0;
     m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
     m_telemetry.bitrate_kbps = (m_octets_per_frame * 8) / 10;
     m_active_magic = VSAF_DEFAULT_MAGIC;
+    m_usb_stream_active.store(false);
+    m_last_usb_packet_time_us.store(0);
 
     if (m_node_role == NODE_ROLE_SOURCE) {
         m_lc3_codec.initEncoder(m_telemetry.sample_rate, 1, m_frame_duration_us, m_octets_per_frame);
@@ -132,9 +136,9 @@ esp_err_t EspNowAudioBroadcast::init(uint8_t node_role) {
         }
     }
 
-    ESP_LOGI(TAG, "EspNowAudioBroadcast initialized (Role: %s, Node ID: %u, Fs: %lu Hz, Dur: %.1fms, Frame: %u octets, Magic: 0x%04X)",
+    ESP_LOGI(TAG, "EspNowAudioBroadcast initialized (Role: %s, ID: %u, Fs: %lu Hz, Dur: %.1fms, Frame: %u octets, Magic: 0x%04X, Ch: %u)",
              (node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", m_node_id,
-             (unsigned long)m_telemetry.sample_rate, m_frame_duration_us / 1000.0f, m_octets_per_frame, m_active_magic);
+             (unsigned long)m_telemetry.sample_rate, m_frame_duration_us / 1000.0f, m_octets_per_frame, m_active_magic, m_target_channel);
     return ESP_OK;
 }
 
@@ -149,7 +153,7 @@ uint64_t EspNowAudioBroadcast::getMasterTimeMs() const {
 }
 
 esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets, uint32_t frame_duration_us) {
-    if (sample_rate_hz != 16000 && sample_rate_hz != 24000 && sample_rate_hz != 32000 &&
+    if (sample_rate_hz != 8000 && sample_rate_hz != 16000 && sample_rate_hz != 24000 && sample_rate_hz != 32000 &&
         sample_rate_hz != 44100 && sample_rate_hz != 48000) {
         ESP_LOGE(TAG, "Unsupported sample rate: %lu Hz", (unsigned long)sample_rate_hz);
         return ESP_ERR_INVALID_ARG;
@@ -196,16 +200,38 @@ esp_err_t EspNowAudioBroadcast::setFrameLen(uint16_t frame_len_octets) {
 }
 
 esp_err_t EspNowAudioBroadcast::setFrameDuration(uint32_t frame_duration_us) {
-    // Automatically select proportional octets per frame to maintain target bitrate
-    uint16_t octets = m_octets_per_frame;
-    if (frame_duration_us == 7500 && m_frame_duration_us == 10000) {
-        octets = (m_octets_per_frame * 3) / 4; // e.g. 80 -> 60, 100 -> 75, 120 -> 90
-    } else if (frame_duration_us == 10000 && m_frame_duration_us == 7500) {
-        octets = (m_octets_per_frame * 4) / 3; // e.g. 60 -> 80, 75 -> 100, 90 -> 120
+    return setAudioConfig(m_telemetry.sample_rate, 120, frame_duration_us);
+}
+
+void EspNowAudioBroadcast::processUsbVsafPacket(const uint8_t* data, size_t len) {
+    if (m_node_role != NODE_ROLE_SOURCE) return;
+    if (!data || len < sizeof(EspNowAudioPacket)) return;
+
+    const auto* pkt = reinterpret_cast<const EspNowAudioPacket*>(data);
+    if (pkt->magic != m_active_magic) return;
+
+    // Check if transitioning to USB active mode
+    if (!m_usb_stream_active.load(std::memory_order_relaxed)) {
+        ESP_LOGI(TAG, "SOURCE: Detected USB PC Audio Stream! Suspending internal tone generator...");
     }
-    if (octets < 20) octets = 20;
-    if (octets > MAX_LC3_FRAME_OCTETS) octets = MAX_LC3_FRAME_OCTETS;
-    return setAudioConfig(m_telemetry.sample_rate, octets, frame_duration_us);
+    m_usb_stream_active.store(true, std::memory_order_relaxed);
+    m_last_usb_packet_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
+
+    // Update telemetry from packet config
+    uint8_t sr_code = (pkt->cfg >> 3) & 0x07;
+    uint8_t dur_bit = (pkt->cfg >> 6) & 0x01;
+    uint32_t stream_sr = codeToSampleRate(sr_code);
+    uint32_t stream_dur = dur_bit ? 7500 : 10000;
+    m_telemetry.sample_rate = stream_sr;
+    m_telemetry.frame_duration_us = stream_dur;
+    m_octets_per_frame = 120;
+    m_telemetry.bitrate_kbps = (120 * 8 * 1000000ULL) / (stream_dur * 1000ULL);
+
+    // Directly broadcast intact 248-byte packet over ESP-NOW
+    esp_now_send(s_broadcast_mac, data, sizeof(EspNowAudioPacket));
+
+    m_tx_packets_total.fetch_add(1, std::memory_order_relaxed);
+    m_tx_packets_sec.fetch_add(1, std::memory_order_relaxed);
 }
 
 esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
@@ -222,10 +248,10 @@ esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    esp_wifi_config_11b_rate(WIFI_IF_STA, true); // Disable slow 11b basic rate
-    esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_24M); // 24Mbps OFDM
+    esp_wifi_config_11b_rate(WIFI_IF_STA, true);
+    esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_24M);
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE)); // Full power / unthrottled streaming
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
 
     uint8_t mac[6];
@@ -236,7 +262,6 @@ esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
     ESP_ERROR_CHECK(esp_now_register_send_cb(onEspNowSendCb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(onEspNowRecvCb));
 
-    // Add broadcast peer
     esp_now_peer_info_t bcast_peer = {};
     memcpy(bcast_peer.peer_addr, s_broadcast_mac, 6);
     bcast_peer.channel = 1;
@@ -266,7 +291,7 @@ void EspNowAudioBroadcast::audioTaskRoutine(void* pvParameters) {
 }
 
 void EspNowAudioBroadcast::runSourceLoop() {
-    ESP_LOGI(TAG, "ESP-NOW Audio Source Loop Started (Dynamic Pacing: 7.5ms / 10.0ms)...");
+    ESP_LOGI(TAG, "ESP-NOW Audio Source Loop Started (Dual Mode: USB Ingest + Internal Synth Fallback)...");
 
     static int16_t pcm_buffer[MAX_PCM_FRAME_SAMPLES] = {0};
     static uint8_t curr_lc3[MAX_LC3_FRAME_OCTETS] = {0};
@@ -277,6 +302,22 @@ void EspNowAudioBroadcast::runSourceLoop() {
     int64_t next_frame_us = esp_timer_get_time() + m_frame_duration_us;
 
     while (m_audio_task_running) {
+        // Check if USB streaming from PC is currently active
+        bool usb_active = m_usb_stream_active.load(std::memory_order_relaxed);
+        if (usb_active) {
+            int64_t now_us = esp_timer_get_time();
+            int64_t last_usb_us = m_last_usb_packet_time_us.load(std::memory_order_relaxed);
+            if (now_us - last_usb_us > 250000) { // 250 ms timeout
+                m_usb_stream_active.store(false, std::memory_order_relaxed);
+                ESP_LOGW(TAG, "SOURCE: USB stream timed out (>250ms). Resuming internal tone generator...");
+                next_frame_us = esp_timer_get_time() + m_frame_duration_us;
+            } else {
+                // USB Stream active: suspend internal encoder loop (0% ESP32 CPU overhead)
+                vTaskDelay(pdMS_TO_TICKS(15));
+                continue;
+            }
+        }
+
         int64_t now_us = esp_timer_get_time();
         int64_t wait_us = next_frame_us - now_us;
         if (wait_us > 1500) {
@@ -294,36 +335,40 @@ void EspNowAudioBroadcast::runSourceLoop() {
             uint16_t current_len = m_octets_per_frame;
             size_t samples_to_gen = Codec::calculateRequiredPcmSamples(current_sr, active_dur_us);
 
+            if (m_lc3_codec.getSampleRate() != current_sr || m_lc3_codec.getFrameDurationUs() != active_dur_us) {
+                m_lc3_codec.reconfigureEncoder(current_sr, current_len, active_dur_us);
+                if (m_tone_gen) {
+                    m_tone_gen->setSampleRate(current_sr);
+                }
+            }
+
             if (m_tone_gen) {
                 m_tone_gen->generateFrame(pcm_buffer, samples_to_gen);
             }
             m_lc3_codec.encodeFrame(pcm_buffer, samples_to_gen, curr_lc3, sizeof(curr_lc3), &encoded_bytes);
             m_audio_meter.pushFramePcm(pcm_buffer, samples_to_gen);
 
-            // Check if simulated packet drop is requested
             uint32_t drop_val = m_simulated_drop_count.load(std::memory_order_relaxed);
             if (drop_val > 0) {
                 m_simulated_drop_count.store(0, std::memory_order_relaxed);
                 ESP_LOGW(TAG, "SOURCE: [TEST] Deliberately dropping packet Seq #%u to test SINK prev_frame recovery", seq);
-                seq++; // Advance sequence number to simulate RF loss!
+                seq++;
                 memcpy(prev_lc3, curr_lc3, current_len);
                 continue;
             }
 
-            // Assemble 248-Byte VSAF Packet
-            EspNowAudioPacket pkt;
-            pkt.magic = m_active_magic;
-            pkt.seq = seq++;
-            // Config byte: [0..2: ch_id=0] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync]
+            uint8_t pkt_buf[VSAF_HEADER_LEN + 2 * MAX_LC3_FRAME_OCTETS];
+            auto* hdr = reinterpret_cast<EspNowAudioHeader*>(pkt_buf);
+            hdr->magic = m_active_magic;
+            hdr->seq = seq++;
             uint8_t dur_bit = (active_dur_us == 7500) ? 1 : 0;
-            pkt.cfg = (0 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
-            pkt.pts_us = static_cast<uint32_t>(esp_timer_get_time());
-            memcpy(pkt.curr_frame, curr_lc3, current_len);
-            memcpy(pkt.prev_frame, prev_lc3, current_len);
+            hdr->cfg = (0 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
+            hdr->pts_us = static_cast<uint32_t>(esp_timer_get_time());
+            memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3, current_len);
+            memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3, current_len);
 
-            // Transmit packet (VSAF_HEADER_LEN + 2 * current_len)
             size_t pkt_len = VSAF_HEADER_LEN + 2 * current_len;
-            esp_now_send(s_broadcast_mac, reinterpret_cast<const uint8_t*>(&pkt), pkt_len);
+            esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
             memcpy(prev_lc3, curr_lc3, current_len);
 
             m_tx_packets_total.fetch_add(1, std::memory_order_relaxed);
@@ -364,7 +409,6 @@ void EspNowAudioBroadcast::runSinkLoop() {
             }
 
             case NetworkState::PREFILL: {
-                // Pop & decode Frame 1 for DMA Descriptor 0
                 size_t lc3_len = 0;
                 uint8_t seq = 0;
                 uint16_t frame_sr = 0;
@@ -382,8 +426,8 @@ void EspNowAudioBroadcast::runSinkLoop() {
                                             m_telemetry.sample_rate, m_telemetry.frame_duration_us);
                     for (size_t i = 0; i < actual_samples; ++i) {
                         int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
-                        stereo_pcm[2 * i]     = sample; // Left
-                        stereo_pcm[2 * i + 1] = sample; // Right
+                        stereo_pcm[2 * i]     = sample;
+                        stereo_pcm[2 * i + 1] = sample;
                     }
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
                     if (m_i2s_dac) {
@@ -391,7 +435,6 @@ void EspNowAudioBroadcast::runSinkLoop() {
                     }
                 }
 
-                // Pop & decode Frame 2 for DMA Descriptor 1
                 if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts) && lc3_len >= 20) {
                     if (frame_sr > 0 && (frame_sr != m_telemetry.sample_rate || frame_dur != m_telemetry.frame_duration_us)) {
                         m_telemetry.sample_rate = frame_sr;
@@ -420,7 +463,6 @@ void EspNowAudioBroadcast::runSinkLoop() {
             }
 
             case NetworkState::STREAMING: {
-                // Block until 1 DMA descriptor finishes playing
                 if (m_i2s_dac && m_i2s_dac->isRunning()) {
                     m_i2s_dac->waitForDmaSlot(20);
                 }
@@ -435,7 +477,6 @@ void EspNowAudioBroadcast::runSinkLoop() {
                 if (has_packet && lc3_len >= 20) {
                     consecutive_plc_count = 0;
 
-                    // Dynamic sample rate / frame duration update on SINK if stream properties change on the fly
                     if (frame_sr > 0 && (frame_sr != m_telemetry.sample_rate || frame_dur != m_telemetry.frame_duration_us)) {
                         m_telemetry.sample_rate = frame_sr;
                         m_telemetry.frame_duration_us = frame_dur;
@@ -445,7 +486,6 @@ void EspNowAudioBroadcast::runSinkLoop() {
                         }
                     }
 
-                    // Software PLL / Clock sync phase error check (every 50 frames)
                     sync_eval_counter++;
                     if ((sync_eval_counter % 50) == 0) {
                         int64_t now_us = esp_timer_get_time();
@@ -470,12 +510,10 @@ void EspNowAudioBroadcast::runSinkLoop() {
                         m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 15);
                     }
                 } else {
-                    // FIFO was empty: increment consecutive PLC watchdog
                     m_fifo_underrun.fetch_add(1, std::memory_order_relaxed);
                     consecutive_plc_count++;
 
                     if (consecutive_plc_count < m_watchdog_timeout_frames) {
-                        // Conceal frame using LC3 PLC
                         m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
                                                 m_telemetry.sample_rate, m_telemetry.frame_duration_us);
                         for (size_t i = 0; i < actual_samples; ++i) {
@@ -489,7 +527,6 @@ void EspNowAudioBroadcast::runSinkLoop() {
                             m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 15);
                         }
                     } else {
-                        // Reached consecutive PLC watchdog threshold -> Transition back to SCANNING
                         ESP_LOGW(TAG, "SINK: Reached %lu consecutive PLC frames (%lu ms loss). Requesting transition to SCANNING...",
                                  (unsigned long)m_watchdog_timeout_frames,
                                  (unsigned long)((m_watchdog_timeout_frames * m_telemetry.frame_duration_us) / 1000));
@@ -509,22 +546,24 @@ void EspNowAudioBroadcast::runSinkLoop() {
 
 void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len) {
     if (m_node_role != NODE_ROLE_SINK) return;
-    if (data_len < static_cast<int>(VSAF_HEADER_LEN)) return;
+    if (data_len < static_cast<int>(sizeof(EspNowAudioPacket))) return;
 
     const auto* pkt = reinterpret_cast<const EspNowAudioPacket*>(data);
     if (pkt->magic != m_active_magic) {
         return;
     }
 
+    // Filter by audio channel
+    uint8_t pkt_ch = pkt->cfg & 0x07;
+    if (pkt_ch != m_target_channel) {
+        return; // Discard packets intended for other audio channels
+    }
+
     uint8_t sr_code = (pkt->cfg >> 3) & 0x07;
     uint32_t sample_rate = codeToSampleRate(sr_code);
     uint8_t dur_bit = (pkt->cfg >> 6) & 0x01;
     uint32_t pkt_dur_us = dur_bit ? 7500 : 10000;
-
-    // Compute active frame length from received packet length
-    size_t payload_len = data_len - VSAF_HEADER_LEN;
-    uint16_t frame_len = payload_len / 2;
-    if (frame_len < 20 || frame_len > MAX_LC3_FRAME_OCTETS) return;
+    uint16_t frame_len = 120; // Fixed intact 120-octet LC3 frame
 
     uint32_t pts_curr = pkt->pts_us;
     int64_t now_us = esp_timer_get_time();
@@ -532,15 +571,13 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
 
     m_telemetry.rssi_dbm = -26;
 
-    // Check packet sequence number & de-duplicate
     if (m_has_last_rx_seq) {
         if (pkt->seq == m_last_rx_seq) {
-            return; // Exact duplicate
+            return;
         }
 
         uint8_t expected = m_last_rx_seq + 1;
         if (pkt->seq == static_cast<uint8_t>(expected + 1)) {
-            // Exactly 1 packet was dropped! Recover frame N-1 from pkt->prev_frame!
             uint32_t pts_prev = pts_curr - pkt_dur_us;
             if (push_rx_lc3_frame(pkt->prev_frame, frame_len, expected, static_cast<uint16_t>(sample_rate),
                                   static_cast<uint16_t>(pkt_dur_us), pts_prev)) {
@@ -553,7 +590,6 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
         }
     }
 
-    // Push unique current frame N
     if (push_rx_lc3_frame(pkt->curr_frame, frame_len, pkt->seq, static_cast<uint16_t>(sample_rate),
                           static_cast<uint16_t>(pkt_dur_us), pts_curr)) {
         m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
@@ -563,7 +599,7 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
         m_has_last_rx_seq = true;
 
         if (s_audio_task_handle) {
-            vTaskNotifyGiveFromISR(s_audio_task_handle, nullptr);
+            xTaskNotifyGive(s_audio_task_handle);
         }
     } else {
         m_fifo_overflow.fetch_add(1, std::memory_order_relaxed);

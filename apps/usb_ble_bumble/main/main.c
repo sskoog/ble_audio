@@ -1,6 +1,6 @@
 /*
  * ESP32-C6 USB BLE 5.3 HCI Controller Firmware
- * Pure binary H4 transport over UART0 (COM22)
+ * Pure binary H4 transport over UART0 (COM121)
  * Direct NimBLE Controller HCI Transport Bridge with WS2812 Status LED Feedback
  */
 

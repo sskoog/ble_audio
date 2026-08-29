@@ -77,7 +77,7 @@ class SerialDisconnectFilter(logging.Filter):
         return True
 
 from lc3_encoder import LC3Encoder
-from audio_source import LfoSineAudioSource, DeviceAudioSource, list_audio_devices
+from audio_source import Mp3FolderAudioSource, LfoSineAudioSource, DeviceAudioSource, list_audio_devices
 from bap_config import (
     build_base_data,
     get_sampling_frequency_code,
@@ -264,7 +264,7 @@ async def run_broadcaster(args):
         except asyncio.TimeoutError:
             print("\n[ERROR] Timed out waiting for ESP32-C6 HCI Controller to respond to HCI_Reset!", flush=True)
             print("Troubleshooting Steps:", flush=True)
-            print(f"  1. Verify COM port '{args.port}' is correct (use Device Manager / COM22).", flush=True)
+            print(f"  1. Verify COM port '{args.port}' is correct (use Device Manager / COM121 or COM21).", flush=True)
             print("  2. Ensure no previous background python process is holding the port.", flush=True)
             print("  3. Press the RST button on the ESP32-C6 DevKit board once.\n", flush=True)
             return
@@ -272,7 +272,26 @@ async def run_broadcaster(args):
 
         # Initialize Audio Source & LC3 Encoders after Controller is online
         audio_source = None
-        if args.source == "synth":
+        if args.source == "mp3":
+            try:
+                audio_source = Mp3FolderAudioSource(
+                    folder_path=args.mp3_dir,
+                    num_channels=num_channels,
+                    sample_rate=resolved_sr,
+                    frame_duration_ms=resolved_dur
+                )
+            except Exception as e:
+                print(f"[Notice] Could not load MP3 folder '{args.mp3_dir}' ({e}). Falling back to 'synth' mode...", flush=True)
+                audio_source = LfoSineAudioSource(
+                    num_channels=num_channels,
+                    sample_rate=resolved_sr,
+                    frame_duration_ms=resolved_dur,
+                    amplitude=args.amplitude,
+                    lfo_rate_hz=args.lfo_rate,
+                    freq_min_hz=args.lfo_min,
+                    freq_max_hz=args.lfo_max
+                )
+        elif args.source == "synth":
             audio_source = LfoSineAudioSource(
                 num_channels=num_channels,
                 sample_rate=resolved_sr,
@@ -299,7 +318,7 @@ async def run_broadcaster(args):
 
         encoders = []
         octets_per_channel = (frame_octets // 2) if is_stereo else frame_octets
-        if args.source in ("synth", "device"):
+        if args.source in ("mp3", "synth", "device"):
             frame_us = int(resolved_dur * 1000)
             for ch in range(num_channels):
                 encoders.append(LC3Encoder(frame_duration_us=frame_us, sample_rate_hz=resolved_sr))
@@ -445,7 +464,7 @@ async def run_broadcaster(args):
                 # Check for COM port disconnect or hardware reset
                 if hci_source.terminated.done():
                     is_hardware_disconnected = True
-                    print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+                    print("\n[NOTE] Hardware reset or USB disconnected on Node 21 (COM121). Broadcaster terminated gracefully.", flush=True)
                     break
 
                 target_time = start_time + ((seq_num + 1) * (resolved_dur / 1000.0))
@@ -500,7 +519,7 @@ async def run_broadcaster(args):
                                 pending_pa_frame1 = None
                         except (TransportLostError, serial.SerialException, PermissionError, OSError):
                             is_hardware_disconnected = True
-                            print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+                            print("\n[NOTE] Hardware reset or USB disconnected on Node 21 (COM121). Broadcaster terminated gracefully.", flush=True)
                             break
                         except Exception as e:
                             if seq_num % 100 == 1:
@@ -536,7 +555,7 @@ async def run_broadcaster(args):
                                     hci_sink.on_packet(bytes(per_cmd))
                             except (TransportLostError, serial.SerialException, PermissionError, OSError):
                                 is_hardware_disconnected = True
-                                print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+                                print("\n[NOTE] Hardware reset or USB disconnected on Node 21 (COM121). Broadcaster terminated gracefully.", flush=True)
                                 break
                             except Exception as e:
                                 print(f"\n[ABORT] Serial write failed ({e}). Hardware was likely disconnected or reset.", flush=True)
@@ -616,7 +635,7 @@ async def run_broadcaster(args):
                         done, _ = await asyncio.wait([hci_source.terminated], timeout=sleep_time)
                         if done:
                             is_hardware_disconnected = True
-                            print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+                            print("\n[NOTE] Hardware reset or USB disconnected on Node 21 (COM121). Broadcaster terminated gracefully.", flush=True)
                             break
                     except Exception:
                         await asyncio.sleep(sleep_time)
@@ -625,7 +644,7 @@ async def run_broadcaster(args):
             print("\nBroadcast interrupted by user (Ctrl+C).", flush=True)
         except (TransportLostError, serial.SerialException, PermissionError, OSError):
             is_hardware_disconnected = True
-            print("\n[NOTE] Hardware reset or USB disconnected on Node 22 (COM22). Broadcaster terminated gracefully.", flush=True)
+            print("\n[NOTE] Hardware reset or USB disconnected on Node 21 (COM121). Broadcaster terminated gracefully.", flush=True)
         except Exception as e:
             print(f"\nBroadcast encountered exception: {e}", flush=True)
         finally:
@@ -657,7 +676,7 @@ async def run_broadcaster(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Google Bumble BLE 5.3 Auracast Broadcaster with LC3 Audio Streaming")
-    parser.add_argument("--port", default="COM22", help="HCI Serial COM port (default: COM22)")
+    parser.add_argument("--port", default="COM121", help="HCI Serial COM port (default: COM121)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
     parser.add_argument("--mode", choices=["stereo", "multichannel"], default="stereo",
                         help="Broadcast Mode: 'stereo' (1 BIG, 1 Stereo BIS) or 'multichannel' (1 BIG, 2-6 Mono BIS)")
@@ -686,8 +705,11 @@ def main():
                         help="Print reference table of all supported BAP sampling rates, durations, presets, and context types")
 
     # Audio source configuration
-    parser.add_argument("--source", choices=["synth", "device", "test-pattern"], default="synth",
-                        help="Audio input source: 'synth' (LFO modulated sine), 'device' (Virtual Cable / live mic), or 'test-pattern'")
+    default_mp3_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "mp3"))
+    parser.add_argument("--source", choices=["mp3", "synth", "device", "test-pattern"], default="mp3",
+                        help="Audio input source: 'mp3' (Random tracks from data/mp3, default), 'synth' (LFO modulated sine), 'device' (Virtual Cable / live mic), or 'test-pattern'")
+    parser.add_argument("--mp3-dir", default=default_mp3_dir,
+                        help=f"Directory containing MP3/WAV tracks for 'mp3' source (default: {default_mp3_dir})")
     parser.add_argument("--audio-device", default="CABLE",
                         help="Device name query or index for 'device' source mode (default: 'CABLE')")
     parser.add_argument("--list-audio-devices", action="store_true",

@@ -11,11 +11,11 @@ extern "C" {
 #define NODE_ROLE_SOURCE 1
 
 #ifndef CONFIG_ACTIVE_NODE_ID
-#define CONFIG_ACTIVE_NODE_ID 23
+#define CONFIG_ACTIVE_NODE_ID 21
 #endif
 
 #ifndef CONFIG_ACTIVE_NODE_ROLE
-#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK
+#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SOURCE
 #endif
 
 #ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
@@ -27,11 +27,11 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_ESPNOW_SAMPLE_RATE_HZ
-#define CONFIG_ESPNOW_SAMPLE_RATE_HZ 32000 // Default sample rate (16000, 24000, 32000, 44100, 48000 Hz)
+#define CONFIG_ESPNOW_SAMPLE_RATE_HZ 48000 // Default sample rate (16000, 24000, 32000, 44100, 48000 Hz)
 #endif
 
 #ifndef CONFIG_ESPNOW_FRAME_LEN_OCTETS
-#define CONFIG_ESPNOW_FRAME_LEN_OCTETS 80 // Default LC3 octets per frame (40 - 120 octets)
+#define CONFIG_ESPNOW_FRAME_LEN_OCTETS 120 // Default LC3 octets per frame (120 octets = 128 kbps @ 7.5ms, 96 kbps @ 10ms)
 #endif
 
 #define MAX_LC3_FRAME_OCTETS 120 // Maximum LC3 frame size supported over ESP-NOW (up to 96 kbps @ 10ms)

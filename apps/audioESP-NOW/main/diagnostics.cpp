@@ -63,6 +63,9 @@ void SystemDiagnostics::tick() {
             case AudioNet::NetworkState::STREAMING:
                 m_status_led.setPattern(Hardware::LED_COLOR_GREEN, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
                 break;
+            case AudioNet::NetworkState::BROADCASTING:
+                m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
+                break;
             default:
                 break;
         }
@@ -87,9 +90,11 @@ void SystemDiagnostics::tick() {
         uint32_t fifo_ov = m_espnow_broadcast.getAndResetFifoOverflowCount();
 
         // Approximate CPU load based on node role and active state
-        int cpu_load_pct = (cfg->node_role == NODE_ROLE_SOURCE) ? 18 : 12;
+        int cpu_load_pct = 12;
+        if (cfg->node_role == NODE_ROLE_SOURCE) {
+            cpu_load_pct = m_espnow_broadcast.isUsbStreamActive() ? 3 : 18;
+        }
 
-        // Only SINK triggers Red underrun flash
         if (cfg->node_role == NODE_ROLE_SINK && (dma_udr > 0 || plc_count > 0 || fifo_ud > 0)) {
             m_status_led.triggerUnderrunFlash(200);
         }
@@ -121,12 +126,16 @@ void SystemDiagnostics::tick() {
                  (unsigned long long)master_time_ms);
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
-            ESP_LOGI("[ESPNOW]", "SOURCE | %s CH 1 | %lu total pkts (%lu pkts/s) | Magic 0x%04X",
-                     m_espnow_broadcast.getStateString(), (unsigned long)tx_tot, (unsigned long)tx_pps,
+            ESP_LOGI("[ESPNOW]", "SOURCE | %s [%s] | %lu total pkts (%lu pkts/s) | Magic 0x%04X",
+                     m_espnow_broadcast.getStateString(),
+                     m_espnow_broadcast.isUsbStreamActive() ? "USB Stream" : "Internal Synth",
+                     (unsigned long)tx_tot, (unsigned long)tx_pps,
                      m_espnow_broadcast.getTestMagicWord());
         } else {
-            ESP_LOGI("[ESPNOW]", "SINK | %s CH 1 | %lu total pkts (%lu pkts/s) | RSSI %d dBm | SyncAdj %lu | Magic 0x%04X",
-                     m_espnow_broadcast.getStateString(), (unsigned long)rx_tot, (unsigned long)rx_pps,
+            ESP_LOGI("[ESPNOW]", "SINK | %s [Ch %u] | %lu total pkts (%lu pkts/s) | RSSI %d dBm | SyncAdj %lu | Magic 0x%04X",
+                     m_espnow_broadcast.getStateString(),
+                     m_espnow_broadcast.getTargetChannel(),
+                     (unsigned long)rx_tot, (unsigned long)rx_pps,
                      stream.rssi_dbm, (unsigned long)m_espnow_broadcast.getClockSyncAdjustCount(),
                      m_espnow_broadcast.getTestMagicWord());
         }

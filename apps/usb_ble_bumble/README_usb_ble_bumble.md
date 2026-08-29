@@ -42,7 +42,7 @@ Because native Windows 11 Bluetooth drivers currently lack Host-level APIs for c
 |                                                     │                                                   |
 |                                 H4 Transport (CMD 0x01, ACL 0x02, EVT 0x04, ISO 0x05)                   |
 |                                                     ▼                                                   |
-|                                     PySerial / serial_asyncio (COM22 @ 115200 baud)                     |
+|                                     PySerial / serial_asyncio (COM121 @ 115200 baud)                    |
 +-----------------------------------------------------│---------------------------------------------------+
                                                       │ USB Virtual Serial Port (CH343 / USB-UART)
 +-----------------------------------------------------▼---------------------------------------------------+
@@ -178,7 +178,7 @@ The ESP32-C6-WROOM-1 DevKit on-board addressable RGB LED provides real-time visu
 
 ### Pitfall 4: PySerial DTR/RTS Reset Handling
 * **Problem**: Default serial port opening in Python asserts DTR/RTS, causing an ESP32 hardware reset and emitting ROM bootloader characters.
-* **Solution**: In custom probe scripts, set `dtr=False, rts=False` before opening; in Bumble, configured transport spec `serial:COM22,115200,delay` to allow clean bootloader settling.
+* **Solution**: In custom probe scripts, set `dtr=False, rts=False` before opening; in Bumble, configured transport spec `serial:COM121,115200,delay` to allow clean bootloader settling.
 
 ### Pitfall 5: WS2812 Color Channel Inversion
 * **Problem**: Setting Green illuminated the on-board LED in Red.
@@ -202,7 +202,7 @@ The ESP32-C6-WROOM-1 DevKit on-board addressable RGB LED provides real-time visu
 ### Test 1: HCI Hardware Diagnostic Probe (`test_hci.py`)
 Validates that the ESP32-C6 controller link layer is responsive and compliant with Bluetooth 5.3 specifications:
 ```powershell
-& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\test_hci.py COM22
+& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\test_hci.py COM121
 ```
 
 ### Test 2: BAP / PBP BASE Descriptor Unit Tests (`test_bap_config.py`)
@@ -214,7 +214,7 @@ Validates fool-proof sample rate rounding, presentation delay byte conversions, 
 ### Test 3: Stereo Broadcaster with Custom BAP Parameters
 Validates live LC3 streaming with custom presentation delay (50ms), High-Quality preset (160 kbps), and live context:
 ```powershell
-& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM22 --mode stereo --source synth --sample-rate 44000 --presentation-delay 50.0 --quality-preset high_quality --context live --program-info "Live Stage" --language eng --test-duration 3
+& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM121 --mode stereo --source synth --sample-rate 44000 --presentation-delay 50.0 --quality-preset high_quality --context live --program-info "Live Stage" --language eng --test-duration 3
 ```
 
 ---
@@ -233,27 +233,24 @@ Validates live LC3 streaming with custom presentation delay (50ms), High-Quality
 
 ### Broadcast LFO Sine Wave Test Tone (Stereo)
 ```powershell
-& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM22 --mode stereo --source synth --amplitude 0.25 --lfo-rate 0.2 --lfo-min 220 --lfo-max 880
+& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM121 --mode stereo --source synth --amplitude 0.25 --lfo-rate 0.2 --lfo-min 220 --lfo-max 880
 ```
 
 ### Broadcast Live from VB-Audio Virtual Cable (Custom BAP Metadata)
 ```powershell
-& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM22 --mode stereo --source device --audio-device "CABLE" --quality-preset high_quality --context media --program-info "Living Room Hifi" --language eng
+& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM121 --mode stereo --source device --audio-device "CABLE" --quality-preset high_quality --context media --program-info "Living Room Hifi" --language eng
 ```
 
 ### Broadcast 5.1 Multi-Channel Surround (6 Discrete Streams)
 ```powershell
-& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM22 --mode multichannel --num-bis 6 --source synth
+& "C:\Git_ble_audio\venv_ble_audio\Scripts\python.exe" apps\usb_ble_bumble\bumble_broadcaster.py --port COM121 --mode multichannel --num-bis 6 --source synth
 ```
 
 ### Flashing Firmware to ESP32-C6
 ```powershell
-$env:IDF_TOOLS_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
-$env:IDF_PYTHON_ENV_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env"
-$env:PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts;" + $env:PATH
-& "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\export.ps1"
+. "C:\Espressif\idf-v6.0.2\esp-idf\export.ps1"
 
 Set-Location "c:\Git_ble_audio\apps\usb_ble_bumble"
 idf.py build
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" -m esptool --chip esp32c6 -p COM22 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 4MB --flash_freq 40m 0x0 "build/bootloader/bootloader.bin" 0x8000 "build/partition_table/partition-table.bin" 0x10000 "build/usb_ble_bumble.bin"
+& "C:\Users\stefa\.espressif\python_env\idf6.0_py3.13_env\Scripts\python.exe" -m esptool --chip esp32c6 -p COM21 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 4MB --flash_freq 40m 0x0 "build/bootloader/bootloader.bin" 0x8000 "build/partition_table/partition-table.bin" 0x10000 "build/usb_ble_bumble.bin"
 ```

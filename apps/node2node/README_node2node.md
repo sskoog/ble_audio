@@ -46,8 +46,7 @@ The `node2node` ecosystem implements an **Auracast Broadcast Audio** topology co
 | Node Identifier | Serial Port | Hardware Board & Modules | Active Role | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **`Node20`** | `COM20` | Waveshare ESP32-C6-LCD (1.47" ST7789) | **SINK** (Receiver) | Visual LCD SINK with real-time waveform display & volume gauges. |
-| **`Node21`** | `COM21` | ESP32-C6-WROOM-1 DevKit + Wi-Fi Dashboard | **SOURCE** (Broadcaster) | Hardware Tone Generator, LFO volume oscillator, and Web Dashboard. |
-| **`Node22`** | `COM22` | ESP32-C6-WROOM-1 USB Dongle (HCI UART) | **SOURCE** (Bumble) | Python Bumble HCI broadcaster streaming live PC / synthesized audio. |
+| **`Node21`** | `COM21` / `COM121` | ESP32-C6-WROOM-1 DevKit (COM21: Flash & Telemetry, COM121: Bumble & Audio Ingest) | **SOURCE** (Broadcaster / Bumble) | Hardware Tone Generator, LFO volume oscillator, and Python Bumble HCI broadcaster. |
 | **`Node23`** | `COM23` | Waveshare ESP32-C6-Zero + MAX98357A DAC | **SINK** (Receiver) | Dedicated audio playback node with speaker & 12 dB hardware gain. |
 | **`Node24`** | `COM24` | Waveshare ESP32-C6-Zero + MAX98357A DAC | **SINK** (Receiver) | Multi-speaker secondary audio playback node. |
 
@@ -130,11 +129,9 @@ The project utilizes Espressif's official **`esp_audio_codec`** component (`espr
 
 ## 5. Build, Flash, and Monitor Instructions
 
-### Environment Setup (PowerShell on Windows)
+### Environment Setup (ESP-IDF v6.0.2 in PowerShell)
 ```powershell
-$env:IDF_TOOLS_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
-$env:IDF_PYTHON_ENV_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env"
-$env:PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\riscv32-esp-elf\esp-13.2.0_20230928\riscv32-esp-elf\bin;C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\cmake\3.24.0\bin;C:\Users\stefa\OneDrive\Documents\ESP\.esptools\tools\ninja\1.11.1;C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts;" + $env:PATH
+. "C:\Espressif\idf-v6.0.2\esp-idf\export.ps1"
 ```
 
 ### 1. Build and Flash Audio SINK (Node23 on COM23)
@@ -153,10 +150,10 @@ idf.py build
 python -m esptool --chip esp32c6 -p COM21 -b 460800 --before default_reset --after hard_reset write_flash 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32c6_ble_audio_broadcast.bin
 ```
 
-### 3. Running the Python Bumble Broadcaster (Node22 on COM22)
+### 3. Running the Python Bumble Broadcaster (Node21 on COM121)
 ```powershell
 cd c:\Git_ble_audio
-& venv_ble_audio\Scripts\python.exe apps\usb_ble_bumble\bumble_broadcaster.py --port COM22 --sample-rate 48000
+& venv_ble_audio\Scripts\python.exe apps\usb_ble_bumble\bumble_broadcaster.py --port COM121 --sample-rate 48000
 ```
 
 ---

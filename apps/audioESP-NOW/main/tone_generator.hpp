@@ -6,24 +6,16 @@
 
 namespace Audio {
 
-// Fundamental frequencies for piano black keys from C#2 to Bb5 (Pentatonic Scale)
-static const float BLACK_KEYS[20] = {
-    73.42f, 77.78f, 92.50f, 103.83f, 116.54f, 
-    146.83f, 155.56f, 185.00f, 207.65f, 233.08f, 
-    293.66f, 311.13f, 369.99f, 415.30f, 466.16f, 
-    587.33f, 622.25f, 739.99f, 830.61f, 932.33f
-};
-
 class ToneGenerator {
 public:
     ToneGenerator(uint32_t sample_rate_hz = 32000);
     ~ToneGenerator();
 
     esp_err_t init(uint32_t sample_rate_hz = 32000, 
-                   float nominal_freq_hz = 275.0f, 
-                   float min_freq_hz = 110.0f, 
-                   float max_freq_hz = 440.0f,
-                   float amplitude_pct = 80.0f);
+                   float nominal_freq_hz = 440.0f, 
+                   float min_freq_hz = 220.0f, 
+                   float max_freq_hz = 880.0f,
+                   float amplitude_pct = 50.0f);
 
     size_t generateFrame(int16_t* out_pcm, size_t num_samples);
 
@@ -35,28 +27,25 @@ public:
     float get_gain_dB() const { return m_gain_db; }
     float get_gain_pct() const { return m_gain_pct; }
     float getCurrentFrequency() const { return m_current_freq_hz; }
+    float getModulationRate() const { return m_vfo_mod_rate_hz; }
 
 private:
+    void randomizeModRate();
+
     uint32_t m_sample_rate = 32000;
-    
-    // Fast 32-bit Phase Accumulators
-    uint32_t m_main_phase_acc = 0;
-    uint32_t m_lfo_phase_acc = 0;
-    uint32_t m_lfo_phase_inc = 22817; // 0.17 Hz @ 32 kHz
-    uint32_t m_base_phase_inc = 0;
+    float m_min_freq_hz = 220.0f;
+    float m_max_freq_hz = 880.0f;
+    float m_center_freq_hz = 440.0f;
+    float m_freq_deviation_hz = 110.0f;
+    int16_t m_peak_amplitude = 16384; // 50%
+    float m_gain_db = -6.02f;
+    float m_gain_pct = 50.0f;
 
-    int m_samples_remaining = 0;
+    float m_carrier_phase = 0.0f;
+    float m_vfo_phase = 0.0f;
+    float m_vfo_mod_rate_hz = 0.5f; // Current LFO rate (0.2 to 1.5 Hz)
     float m_current_freq_hz = 440.0f;
-
-    // High-Efficiency Q15 Envelope State (Zero divisions per sample)
-    int32_t m_env_q15 = 0;
-    int32_t m_attack_step_q15 = 68; // 15ms linear attack
-    int32_t m_decay_mult_q15 = 32764; // Exponential decay to -60dB
-    bool m_in_attack = true;
-
-    int16_t m_peak_amplitude = 2011; // 60% (-24.24 dBFS) // Gentle quiet volume scale
-    float m_gain_db = -24.24f;
-    float m_gain_pct = 60.0f;
+    uint32_t m_cycle_count = 0;
 };
 
 } // namespace Audio

@@ -35,3 +35,16 @@ wifi_credentials.c
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Audio data files & copyright-protected media
+data/mp3/*
+!data/mp3/.gitkeep
+*.mp3
+
+# Python caches and environments
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+venv*/
+.venv*/

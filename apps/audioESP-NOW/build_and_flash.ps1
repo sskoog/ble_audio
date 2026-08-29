@@ -18,11 +18,8 @@ Write-Host "==========================================================" -Foregro
 Write-Host " Building & Flashing audioESP-NOW for Role: $Role ($targetPort)" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 1. Environment Setup
-$env:IDF_TOOLS_PATH = "C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
-$env:IDF_PYTHON_ENV_PATH = "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env"
-$env:PATH = "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts;" + $env:PATH
-. "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\export.ps1"
+# 1. Environment Setup (ESP-IDF v6.0.2)
+. "C:\Espressif\idf-v6.0.2\esp-idf\export.ps1"
 
 # 2. Update config.h defines for this role
 $configPath = "c:\Git_ble_audio\apps\audioESP-NOW\main\config.h"
@@ -44,11 +41,11 @@ try {
     Pop-Location
 }
 
-# 4. Check Port & Kill stale monitors
-Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR CommandLine LIKE '%idf_monitor%'" | ForEach-Object { 
+# 4. Check Port & Kill stale monitors / streamers
+Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR CommandLine LIKE '%idf_monitor%' OR CommandLine LIKE '%pc_audio_streamer%'" | ForEach-Object { 
     Stop-Process -Id $_.ProcessId -Force 
 }
-Start-Sleep -Milliseconds 1000
+Start-Sleep -Milliseconds 1500
 
 # 5. Flash Firmware via esptool.py
 $buildDir = "c:\Git_ble_audio\apps\audioESP-NOW\build"
@@ -57,17 +54,17 @@ $partition = "$buildDir\partition_table\partition-table.bin"
 $appBin = "$buildDir\esp32c6_espnow_audio.bin"
 
 Write-Host "Flashing $Role to $targetPort at $Baud baud..." -ForegroundColor Yellow
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" -m esptool `
+& "C:\Users\stefa\.espressif\python_env\idf6.0_py3.13_env\Scripts\python.exe" -m esptool `
     --chip esp32c6 `
     -p $targetPort `
     -b $Baud `
     --connect-attempts 10 `
-    --before default_reset `
-    --after hard_reset `
-    write_flash `
-    --flash_mode dio `
-    --flash_size 8MB `
-    --flash_freq 80m `
+    --before default-reset `
+    --after hard-reset `
+    write-flash `
+    --flash-mode dio `
+    --flash-size 8MB `
+    --flash-freq 80m `
     0x0 $bootloader `
     0x8000 $partition `
     0x10000 $appBin
