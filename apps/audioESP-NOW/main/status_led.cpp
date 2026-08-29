@@ -169,8 +169,8 @@ void StatusLed::updateHardwareLed(uint8_t r, uint8_t g, uint8_t b, uint8_t brigh
         uint32_t scaled_r = (static_cast<uint32_t>(r) * brightness + 127) / 255;
         uint32_t scaled_g = (static_cast<uint32_t>(g) * brightness + 127) / 255;
         uint32_t scaled_b = (static_cast<uint32_t>(b) * brightness + 127) / 255;
-        // Standard RGB order (driver internally converts to GRB based on strip_config)
-        led_strip_set_pixel(m_strip_handle, 0, scaled_r, scaled_g, scaled_b);
+        // Swap red and green parameters to compensate for driver vs onboard WS2812 chip ordering
+        led_strip_set_pixel(m_strip_handle, 0, scaled_g, scaled_r, scaled_b);
         led_strip_refresh(m_strip_handle);
     } else {
         led_strip_clear(m_strip_handle);
@@ -186,9 +186,9 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
         TickType_t flash_until = instance->m_flash_red_until_tick.load(std::memory_order_acquire);
         TickType_t now = xTaskGetTickCount();
         if (flash_until > now) {
-            // Flash soft RED for SINK underrun event
+            // Flash soft RED for SINK underrun event (g=0, r=DEFAULT_LED_BRIGHTNESS, b=0)
             if (instance->m_strip_handle) {
-                led_strip_set_pixel(instance->m_strip_handle, 0, DEFAULT_LED_BRIGHTNESS, 0, 0);
+                led_strip_set_pixel(instance->m_strip_handle, 0, 0, DEFAULT_LED_BRIGHTNESS, 0);
                 led_strip_refresh(instance->m_strip_handle);
             }
             TickType_t remaining = flash_until - now;
