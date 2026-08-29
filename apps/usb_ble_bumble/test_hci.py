@@ -2,8 +2,8 @@ import sys
 import time
 import serial
 
-def probe_hci(port="COM121", baud=115200):
-    print(f"=== Probing ESP32-C6 HCI Controller on {port} ===")
+def probe_hci(port="COM121", baud=2000000):
+    print(f"=== Probing ESP32-C6 HCI Controller on {port} (Baud: {baud}) ===")
     
     # Initialize serial port without asserting RTS/DTR resets
     ser = serial.Serial()

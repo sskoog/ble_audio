@@ -131,9 +131,9 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "   Target: ESP32-C6 | Wi-Fi ESP-NOW | Bluetooth DISABLED ");
     ESP_LOGI(TAG, "=========================================================");
 
-    // Install high-performance UART0 driver for 921600 baud transparent binary ingestion
+    // Install high-performance UART0 driver for 2000000 baud (2 Mbaud) transparent binary ingestion
     uart_config_t uart_config = {
-        .baud_rate = 921600,
+        .baud_rate = 2000000,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,

@@ -59,13 +59,13 @@ For full protocol packet layout, bitfields, and recovery mechanisms, see the [VS
 
 | Node ID | Role | Board Type | Port | Hardware Controller | Default Baud Rate | Primary Function |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM121** | WCH CH343 USB-to-UART | **921,600 baud** | **Real-Time PC Audio Ingestion** (`pc_audio_streamer.py`) & Bumble HCI |
+| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM121** | WCH CH343 USB-to-UART | **2,000,000 baud** | **Real-Time PC Audio Ingestion** (`pc_audio_streamer.py`) & Bumble HCI |
 | **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM21** | Native On-Chip USB CDC / JTAG | **115,200 baud** (460,800 flash) | **Firmware Uploads** (`build_and_flash.ps1`) & **1 Hz Live Telemetry** |
 | **Node 23** | **SINK** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) (18-pin Mini) | **COM23** | Native On-Chip USB CDC / JTAG | **115,200 baud** (460,800 flash) | **Audio Playback** (I2S DAC / Speaker) & Diagnostics |
 
 #### Baud Rate Selection Rationale
 
-* **921,600 baud (Audio Streaming on COM121)**: Dual-frame redundant VSAF streaming at 48 kHz / 7.5 ms sends 266.6 packets/sec (248 bytes/packet). With 10-bit UART framing, this requires a continuous 661.2 kbps wire rate (529.1 kbps payload). 921,600 baud provides ~921.6 kbps capacity, leaving a 29% timing margin to absorb Windows thread jitter with zero buffer bloat.
+* **2,000,000 baud (Audio Streaming & Bumble on COM121)**: Dual-frame redundant VSAF streaming at 48 kHz / 7.5 ms sends 266.6 packets/sec (248 bytes/packet), requiring a 661.2 kbps wire rate for Stereo. At 2.0 Mbaud (exact 40.0 integer divisor from ESP32-C6 80 MHz APB clock, 0.00% error), Stereo consumes only **33.1% bus load**, 3 channels (2.1) consumes **49.6%**, and 4 channels (Quad) consumes **66.1%**, providing massive headroom for multi-channel expansion without packet dropouts.
 * **460,800 baud (Firmware Flashing on COM21 / COM121)**: Flashes a 1.0 MB application binary in ~14–16 seconds via `esptool.py` with 100% hash verification reliability.
 * **115,200 baud (Telemetry & Interactive Console on COM21)**: Standard speed matching the ESP32-C6 ROM bootloader. Used for live 1 Hz diagnostics (`idf.py monitor` / Tera Term) and runtime ASCII commands (`rate`, `dur`, `ch`).
 
@@ -135,7 +135,7 @@ python apps\audioESP-NOW\pc_audio_streamer.py [OPTIONS]
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--port` | `str` | `COM121` | Serial COM port connected to the SOURCE node (e.g. `COM121` or `COM21`). |
-| `--baud` | `int` | `921600` | Serial transmission baud rate. |
+| `--baud` | `int` | `2000000` | Serial transmission baud rate (default: `2000000` / 2 Mbaud). |
 | `--source` | `choice` | `mp3` | Audio input source: `mp3`, `wasapi`, `synth`, or `device`. |
 | `--mp3-dir` | `str` | `data/mp3` | Directory containing `.mp3`, `.wav`, or `.flac` audio files for the playlist. |
 | `--sample-rate` | `int` | `48000` | Audio sampling frequency in Hz: `8000`, `16000`, `24000`, `32000`, `44100`, `48000`. |

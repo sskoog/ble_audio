@@ -677,7 +677,7 @@ async def run_broadcaster(args):
 def main():
     parser = argparse.ArgumentParser(description="Google Bumble BLE 5.3 Auracast Broadcaster with LC3 Audio Streaming")
     parser.add_argument("--port", default="COM121", help="HCI Serial COM port (default: COM121)")
-    parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
+    parser.add_argument("--baud", type=int, default=2000000, help="Baud rate (default: 2000000)")
     parser.add_argument("--mode", choices=["stereo", "multichannel"], default="stereo",
                         help="Broadcast Mode: 'stereo' (1 BIG, 1 Stereo BIS) or 'multichannel' (1 BIG, 2-6 Mono BIS)")
     parser.add_argument("--num-bis", type=int, default=5, choices=range(2, 7),

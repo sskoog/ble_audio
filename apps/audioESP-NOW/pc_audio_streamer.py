@@ -399,7 +399,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Real-Time PC Audio Streamer for audioESP-NOW (VSAF Protocol)")
     parser.add_argument("--port", type=str, default="COM121", help="Serial port of Node 21 SOURCE (default: COM121, or 'auto')")
-    parser.add_argument("--baud", type=int, default=921600, help="Serial baud rate (default: 921600)")
+    parser.add_argument("--baud", type=int, default=2000000, help="Serial baud rate (default: 2000000)")
     parser.add_argument("--sample-rate", type=int, default=48000, choices=[8000, 16000, 24000, 32000, 44100, 48000],
                         help="Target VSAF sample rate in Hz (default: 48000)")
     parser.add_argument("--duration", type=float, default=7.5, choices=[7.5, 10.0],

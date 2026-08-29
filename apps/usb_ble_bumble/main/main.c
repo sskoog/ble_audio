@@ -16,7 +16,7 @@
 #include "status_led.h"
 
 #define HCI_UART_PORT           UART_NUM_0
-#define HCI_UART_BAUDRATE       115200
+#define HCI_UART_BAUDRATE       2000000
 #define HCI_UART_BUF_SIZE       2048
 
 #define HCI_H4_CMD              0x01
