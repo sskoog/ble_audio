@@ -55,12 +55,19 @@ For full protocol packet layout, bitfields, and recovery mechanisms, see the [VS
 
 ## 3. Target Hardware & Pinout
 
-### Tested Hardware Nodes
+### Tested Hardware Nodes & COM-Port Layout
 
-| Node ID | Role | Board Type | Serial COM Port | Primary Function |
-| :--- | :--- | :--- | :--- | :--- |
-| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | `COM21` (Flash & Telemetry) / `COM121` (Audio Ingest) | Transmitter / USB Broadcaster |
-| **Node 23** | **SINK** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) (18-pin Mini) | `COM23` (Flash & Logs) | Receiver / I2S DAC Speaker |
+| Node ID | Role | Board Type | Port | Hardware Controller | Default Baud Rate | Primary Function |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM121** | WCH CH343 USB-to-UART | **921,600 baud** | **Real-Time PC Audio Ingestion** (`pc_audio_streamer.py`) & Bumble HCI |
+| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM21** | Native On-Chip USB CDC / JTAG | **115,200 baud** (460,800 flash) | **Firmware Uploads** (`build_and_flash.ps1`) & **1 Hz Live Telemetry** |
+| **Node 23** | **SINK** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) (18-pin Mini) | **COM23** | Native On-Chip USB CDC / JTAG | **115,200 baud** (460,800 flash) | **Audio Playback** (I2S DAC / Speaker) & Diagnostics |
+
+#### Baud Rate Selection Rationale
+
+* **921,600 baud (Audio Streaming on COM121)**: Dual-frame redundant VSAF streaming at 48 kHz / 7.5 ms sends 266.6 packets/sec (248 bytes/packet). With 10-bit UART framing, this requires a continuous 661.2 kbps wire rate (529.1 kbps payload). 921,600 baud provides ~921.6 kbps capacity, leaving a 29% timing margin to absorb Windows thread jitter with zero buffer bloat.
+* **460,800 baud (Firmware Flashing on COM21 / COM121)**: Flashes a 1.0 MB application binary in ~14–16 seconds via `esptool.py` with 100% hash verification reliability.
+* **115,200 baud (Telemetry & Interactive Console on COM21)**: Standard speed matching the ESP32-C6 ROM bootloader. Used for live 1 Hz diagnostics (`idf.py monitor` / Tera Term) and runtime ASCII commands (`rate`, `dur`, `ch`).
 
 ### I2S DAC Wiring (SINK Node)
 
