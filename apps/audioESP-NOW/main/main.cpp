@@ -4,6 +4,7 @@
 #include "tone_generator.hpp"
 #include "i2s_audio.hpp"
 #include "status_led.hpp"
+#include "button.hpp"
 #include "diagnostics.hpp"
 
 #include "esp_log.h"
@@ -22,11 +23,43 @@
 static const char* TAG = "MAIN";
 
 static Hardware::StatusLed*        s_status_led = nullptr;
+static Hardware::Button*           s_user_button = nullptr;
 static Hardware::I2sAudioDriver*    s_i2s_dac = nullptr;
 static Codec::Lc3CodecEngine       s_lc3_codec;
 static Audio::ToneGenerator        s_tone_gen;
 static AudioNet::EspNowAudioBroadcast* s_espnow_broadcast = nullptr;
 static Diagnostics::SystemDiagnostics* s_diagnostics = nullptr;
+
+static void on_user_button_pressed(void* user_data) {
+    if (!s_espnow_broadcast) return;
+
+    const system_config_t* cfg = get_system_config();
+    AudioNet::NetworkState current_state = s_espnow_broadcast->getState();
+
+    ESP_LOGI(TAG, ">>> USER BUTTON TRIGGERED! Current State: %s (Role: %s) <<<",
+             s_espnow_broadcast->getStateString(),
+             (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK");
+
+    if (cfg->node_role == NODE_ROLE_SOURCE) {
+        if (current_state == AudioNet::NetworkState::IDLE) {
+            ESP_LOGI(TAG, "SOURCE: Transitioning from IDLE -> BROADCASTING (Resuming audio broadcast)");
+            s_espnow_broadcast->transitionTo(AudioNet::NetworkState::BROADCASTING);
+        } else {
+            ESP_LOGI(TAG, "SOURCE: Transitioning from %s -> IDLE (Stopping audio broadcast)",
+                     s_espnow_broadcast->getStateString());
+            s_espnow_broadcast->transitionTo(AudioNet::NetworkState::IDLE);
+        }
+    } else { // SINK
+        if (current_state == AudioNet::NetworkState::IDLE) {
+            ESP_LOGI(TAG, "SINK: Transitioning from IDLE -> SCANNING (Activating audio receiver)");
+            s_espnow_broadcast->transitionTo(AudioNet::NetworkState::SCANNING);
+        } else {
+            ESP_LOGI(TAG, "SINK: Transitioning from %s -> IDLE (Muting audio and entering IDLE)",
+                     s_espnow_broadcast->getStateString());
+            s_espnow_broadcast->transitionTo(AudioNet::NetworkState::IDLE);
+        }
+    }
+}
 
 static void handle_ascii_command(const char* line) {
     if (!line || strlen(line) == 0) return;
@@ -192,6 +225,9 @@ extern "C" void app_main(void) {
     s_status_led = &Hardware::getStatusLed();
     s_status_led->init(cfg->status_led_gpio);
     s_status_led->setSystemState(Hardware::SystemState::IDLE);
+
+    s_user_button = new Hardware::Button(cfg->user_button_gpio, true, 150);
+    s_user_button->init(on_user_button_pressed, nullptr);
 
     if (cfg->node_role == NODE_ROLE_SINK) {
         s_i2s_dac = new Hardware::I2sAudioDriver(cfg->i2s_bclk_gpio, cfg->i2s_ws_gpio, cfg->i2s_dout_gpio, -1, 0);

@@ -6,6 +6,7 @@ idf_component_register(
         "tone_generator.cpp"
         "i2s_audio.cpp"
         "status_led.cpp"
+        "button.cpp"
         "espnow_audio_broadcast.cpp"
         "diagnostics.cpp"
     INCLUDE_DIRS 

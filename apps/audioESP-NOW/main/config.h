@@ -46,6 +46,7 @@ typedef struct {
     int      i2s_dout_gpio;
     int      status_led_gpio;
     int      status_led_num;
+    int      user_button_gpio; // GP9 (BOOT button)
     bool     has_display;
     uint8_t  default_channel;
 } system_config_t;

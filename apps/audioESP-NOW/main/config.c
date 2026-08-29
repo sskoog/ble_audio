@@ -10,6 +10,7 @@ static system_config_t s_active_config = {
     .i2s_dout_gpio = -1,
     .status_led_gpio = 8,  // GP8 (WS2812 RGB)
     .status_led_num = 1,
+    .user_button_gpio = 9, // GP9 (BOOT button)
     .has_display = false,
     .default_channel = 0
 };
@@ -23,6 +24,7 @@ static system_config_t s_active_config = {
     .i2s_dout_gpio = 1,    // GP1 (DIN / pin5)
     .status_led_gpio = 8,  // GP8 (WS2812 RGB)
     .status_led_num = 1,
+    .user_button_gpio = 9, // GP9 (BOOT button)
     .has_display = false,
     .default_channel = 1   // Channel 1 (Right)
 };
@@ -36,6 +38,7 @@ static system_config_t s_active_config = {
     .i2s_dout_gpio = 1,    // GP1 (DIN / pin5)
     .status_led_gpio = 8,  // GP8 (WS2812 RGB)
     .status_led_num = 1,
+    .user_button_gpio = 9, // GP9 (BOOT button)
     .has_display = false,
     .default_channel = 0   // Channel 0 (Left)
 };
