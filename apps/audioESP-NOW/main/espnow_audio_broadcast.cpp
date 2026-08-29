@@ -117,7 +117,7 @@ esp_err_t EspNowAudioBroadcast::init(uint8_t node_role) {
     m_telemetry.frame_duration_us = 10000;
     m_frame_duration_us = 10000;
     m_telemetry.channels = 1;
-    m_target_channel = 0;
+    m_target_channel = get_system_config()->default_channel;
     m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
     m_telemetry.bitrate_kbps = (m_octets_per_frame * 8) / 10;
     m_active_magic = VSAF_DEFAULT_MAGIC;

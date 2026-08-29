@@ -7,15 +7,31 @@ param(
     [string]$Port = "",
 
     [Parameter(Mandatory=$false)]
+    [int]$NodeId = 0,
+
+    [Parameter(Mandatory=$false)]
     [int]$Baud = 460800
 )
 
 $targetPort = if ($Port -ne "") { $Port } elseif ($Role -eq "SOURCE") { "COM21" } else { "COM23" }
-$nodeId = if ($Role -eq "SOURCE") { 21 } else { 23 }
+
+if ($NodeId -eq 0) {
+    if ($targetPort -eq "COM24") {
+        $NodeId = 24
+    } elseif ($targetPort -eq "COM23") {
+        $NodeId = 23
+    } elseif ($targetPort -eq "COM21" -or $targetPort -eq "COM121") {
+        $NodeId = 21
+    } elseif ($Role -eq "SOURCE") {
+        $NodeId = 21
+    } else {
+        $NodeId = 23
+    }
+}
 $nodeRole = if ($Role -eq "SOURCE") { "NODE_ROLE_SOURCE" } else { "NODE_ROLE_SINK" }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host " Building & Flashing audioESP-NOW for Role: $Role ($targetPort)" -ForegroundColor Cyan
+Write-Host " Building & Flashing audioESP-NOW for Role: $Role (Node $NodeId on $targetPort)" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 # 1. Environment Setup (ESP-IDF v6.0.2)

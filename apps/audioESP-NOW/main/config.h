@@ -11,11 +11,11 @@ extern "C" {
 #define NODE_ROLE_SOURCE 1
 
 #ifndef CONFIG_ACTIVE_NODE_ID
-#define CONFIG_ACTIVE_NODE_ID 21
+#define CONFIG_ACTIVE_NODE_ID 23
 #endif
 
 #ifndef CONFIG_ACTIVE_NODE_ROLE
-#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SOURCE
+#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK
 #endif
 
 #ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
@@ -47,6 +47,7 @@ typedef struct {
     int      status_led_gpio;
     int      status_led_num;
     bool     has_display;
+    uint8_t  default_channel;
 } system_config_t;
 
 const system_config_t* get_system_config(void);

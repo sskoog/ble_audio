@@ -10,19 +10,34 @@ static system_config_t s_active_config = {
     .i2s_dout_gpio = -1,
     .status_led_gpio = 8,  // GP8 (WS2812 RGB)
     .status_led_num = 1,
-    .has_display = false
+    .has_display = false,
+    .default_channel = 0
 };
-#else
+#elif CONFIG_ACTIVE_NODE_ID == 24
+static system_config_t s_active_config = {
+    .node_id = 24,
+    .node_role = NODE_ROLE_SINK,
+    .device_name = "ESP32-C6-24",
+    .i2s_bclk_gpio = 2,    // GP2 (BCLK / pin6)
+    .i2s_ws_gpio = 3,      // GP3 (LRCLK / LRC / pin7)
+    .i2s_dout_gpio = 1,    // GP1 (DIN / pin5)
+    .status_led_gpio = 8,  // GP8 (WS2812 RGB)
+    .status_led_num = 1,
+    .has_display = false,
+    .default_channel = 1   // Channel 1 (Right)
+};
+#else // Node 23 (Default SINK)
 static system_config_t s_active_config = {
     .node_id = 23,
     .node_role = NODE_ROLE_SINK,
     .device_name = "ESP32-C6-23",
-    .i2s_bclk_gpio = 1,    // GP1 (BCLK)
-    .i2s_ws_gpio = 2,      // GP2 (LRCLK / WS)
-    .i2s_dout_gpio = 3,    // GP3 (DIN / DOUT)
+    .i2s_bclk_gpio = 2,    // GP2 (BCLK / pin6)
+    .i2s_ws_gpio = 3,      // GP3 (LRCLK / LRC / pin7)
+    .i2s_dout_gpio = 1,    // GP1 (DIN / pin5)
     .status_led_gpio = 8,  // GP8 (WS2812 RGB)
     .status_led_num = 1,
-    .has_display = false
+    .has_display = false,
+    .default_channel = 0   // Channel 0 (Left)
 };
 #endif
 
