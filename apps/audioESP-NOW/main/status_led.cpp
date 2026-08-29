@@ -151,8 +151,8 @@ void StatusLed::updateHardwareLed(bool is_on) {
         uint32_t scaled_r = (static_cast<uint32_t>(m_r) * m_brightness + 127) / 255;
         uint32_t scaled_g = (static_cast<uint32_t>(m_g) * m_brightness + 127) / 255;
         uint32_t scaled_b = (static_cast<uint32_t>(m_b) * m_brightness + 127) / 255;
-        // Hardware die order compensation (ESP32-C6 WS2812 maps first byte to Green, second to Red)
-        led_strip_set_pixel(m_strip_handle, 0, scaled_g, scaled_r, scaled_b);
+        // Standard RGB order (driver internally converts to GRB based on strip_config)
+        led_strip_set_pixel(m_strip_handle, 0, scaled_r, scaled_g, scaled_b);
         led_strip_refresh(m_strip_handle);
     } else {
         led_strip_clear(m_strip_handle);

@@ -349,6 +349,7 @@ void EspNowAudioBroadcast::runSourceLoop() {
             if (m_tone_gen) {
                 m_tone_gen->generateFrame(pcm_buffer, samples_to_gen);
             }
+            // Encode single LC3 frame (takes ~4.5ms of 10.0ms slot = 45% CPU load)
             m_lc3_codec.encodeFrame(pcm_buffer, samples_to_gen, curr_lc3, sizeof(curr_lc3), &encoded_bytes);
             m_audio_meter.pushFramePcm(pcm_buffer, samples_to_gen);
 
@@ -356,7 +357,7 @@ void EspNowAudioBroadcast::runSourceLoop() {
             if (drop_val > 0) {
                 m_simulated_drop_count.store(0, std::memory_order_relaxed);
                 ESP_LOGW(TAG, "SOURCE: [TEST] Deliberately dropping packet Seq #%u to test SINK prev_frame recovery", seq);
-                seq++;
+                seq += 2;
                 memcpy(prev_lc3, curr_lc3, current_len);
                 continue;
             }
@@ -364,29 +365,26 @@ void EspNowAudioBroadcast::runSourceLoop() {
             uint8_t pkt_buf[VSAF_HEADER_LEN + 2 * MAX_LC3_FRAME_OCTETS];
             auto* hdr = reinterpret_cast<EspNowAudioHeader*>(pkt_buf);
             hdr->magic = m_active_magic;
-            hdr->seq = seq++;
             uint8_t dur_bit = (active_dur_us == 7500) ? 1 : 0;
+            uint32_t pts = static_cast<uint32_t>(esp_timer_get_time());
+            size_t pkt_len = VSAF_HEADER_LEN + 2 * current_len;
+
+            // Packet 1: Channel 0 (Left - Node 23)
+            hdr->seq = seq;
             hdr->cfg = (0 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
-            hdr->pts_us = static_cast<uint32_t>(esp_timer_get_time());
+            hdr->pts_us = pts;
             memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3, current_len);
             memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3, current_len);
-
-            size_t pkt_len = VSAF_HEADER_LEN + 2 * current_len;
             esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
-            memcpy(prev_lc3, curr_lc3, current_len);
 
-            // Channel 1 (Right) - Synthesize complementary stereo audio for Right SINK (Node 24)
-            for (size_t s = 0; s < samples_to_gen; ++s) {
-                pcm_buffer_ch1[s] = static_cast<int16_t>(pcm_buffer[s] * 0.9f);
-            }
-            m_lc3_codec.encodeFrame(pcm_buffer_ch1, samples_to_gen, curr_lc3_ch1, sizeof(curr_lc3_ch1), &encoded_bytes);
-            hdr->seq = seq++;
+            // Packet 2: Channel 1 (Right - Node 24)
+            hdr->seq = seq;
             hdr->cfg = (1 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
-            memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3_ch1, current_len);
-            memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3_ch1, current_len);
+            hdr->pts_us = pts;
             esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
-            memcpy(prev_lc3_ch1, curr_lc3_ch1, current_len);
 
+            seq++;
+            memcpy(prev_lc3, curr_lc3, current_len);
             m_tx_packets_total.fetch_add(2, std::memory_order_relaxed);
             m_tx_packets_sec.fetch_add(2, std::memory_order_relaxed);
         }
