@@ -36,40 +36,7 @@ void SystemDiagnostics::tick() {
 
     const system_config_t* cfg = get_system_config();
 
-    if (cfg->node_role == NODE_ROLE_SOURCE) {
-        const auto& stream = m_espnow_broadcast.getStreamTelemetry();
-        bool is_broadcasting = (m_espnow_broadcast.getState() == AudioNet::NetworkState::BROADCASTING) && !stream.is_muted;
-
-        if (is_broadcasting) {
-            m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
-        } else {
-            m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_SLOW);
-        }
-    } else { // SINK
-        AudioNet::NetworkState state = m_espnow_broadcast.getState();
-        switch (state) {
-            case AudioNet::NetworkState::OFF:
-                m_status_led.off();
-                break;
-            case AudioNet::NetworkState::IDLE:
-                m_status_led.setPattern(Hardware::LED_COLOR_TEAL, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_SLOW);
-                break;
-            case AudioNet::NetworkState::SCANNING:
-                m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_SLOW);
-                break;
-            case AudioNet::NetworkState::PREFILL:
-                m_status_led.setPattern(Hardware::LED_COLOR_TEAL, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
-                break;
-            case AudioNet::NetworkState::STREAMING:
-                m_status_led.setPattern(Hardware::LED_COLOR_GREEN, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
-                break;
-            case AudioNet::NetworkState::BROADCASTING:
-                m_status_led.setPattern(Hardware::LED_COLOR_BLUE, Hardware::DEFAULT_LED_BRIGHTNESS, Hardware::BLINK_FAST);
-                break;
-            default:
-                break;
-        }
-    }
+    // SystemState and LED patterns are driven directly by EspNowAudioBroadcast state machine transitions
 
     if ((m_loop_count % 10) == 0) { // 1 Hz periodic telemetry printout
         const auto& stream = m_espnow_broadcast.getStreamTelemetry();
