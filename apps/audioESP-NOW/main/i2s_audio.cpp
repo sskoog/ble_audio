@@ -86,14 +86,20 @@ void I2sAudioDriver::setHardwareGain(Max98357Gain gain) {
     }
 }
 
-esp_err_t I2sAudioDriver::init(uint32_t sample_rate, i2s_data_bit_width_t bits_per_sample, i2s_slot_mode_t slot_mode) {
+esp_err_t I2sAudioDriver::init(uint32_t sample_rate, uint32_t frame_duration_us, i2s_data_bit_width_t bits_per_sample, i2s_slot_mode_t slot_mode) {
     // Configure MAX98357A GAIN pin (GP0 on Waveshare Zero): Default to 3 dB (Lowest Volume)
     setHardwareGain(Max98357Gain::GAIN_3DB);
 
-    // Dual-Descriptor DMA Configuration (2 x Max Frame Capacity = 20ms @ 48 kHz, supports 16-48 kHz)
+    m_sample_rate = sample_rate;
+    m_frame_duration_us = (frame_duration_us == 7500) ? 7500 : 10000;
+
+    uint32_t frame_samples = (m_sample_rate * m_frame_duration_us) / 1000000;
+    if (frame_samples < 60) frame_samples = 60;
+
+    // Dual-Descriptor DMA Configuration: Exactly 1 frame per descriptor
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 2; // Exactly 2 descriptors (Dual-descriptor ping-pong)
-    chan_cfg.dma_frame_num = 480; // 480 frames per descriptor = 10 ms @ 48 kHz (supports 160, 240, 320, 441, 480)
+    chan_cfg.dma_frame_num = frame_samples; // EXACTLY 1 frame per descriptor (80 @ 8k, 160 @ 16k, 240 @ 24k, 320 @ 32k, 480 @ 48k)
     chan_cfg.auto_clear = true;
 
     esp_err_t ret = i2s_new_channel(&chan_cfg, &m_tx_handle, nullptr);
@@ -145,35 +151,85 @@ esp_err_t I2sAudioDriver::init(uint32_t sample_rate, i2s_data_bit_width_t bits_p
         return ret;
     }
 
-    m_sample_rate = sample_rate;
     m_is_running = false; // Gated / off until dual descriptors are pre-filled
 
-    ESP_LOGI(TAG, "I2S Philips Master Initialized: Fs=%lu Hz, Slot=16-bit MSB-First Stereo, GAIN=3dB (Default Lowest)",
-             (unsigned long)sample_rate);
+    ESP_LOGI(TAG, "I2S Philips Master Initialized: Fs=%lu Hz, Frame=%lu samples (%.1f ms), GAIN=3dB",
+             (unsigned long)sample_rate, (unsigned long)frame_samples, m_frame_duration_us / 1000.0f);
     return ESP_OK;
 }
 
-esp_err_t I2sAudioDriver::reconfigureSampleRate(uint32_t sample_rate) {
-    if (!m_tx_handle) return ESP_ERR_INVALID_STATE;
-    if (m_sample_rate == sample_rate) return ESP_OK;
+esp_err_t I2sAudioDriver::reconfigureSampleRate(uint32_t sample_rate, uint32_t frame_duration_us) {
+    if (sample_rate == 0) return ESP_ERR_INVALID_ARG;
+    if (frame_duration_us == 0) frame_duration_us = 10000;
+    if (m_sample_rate == sample_rate && m_frame_duration_us == frame_duration_us && m_tx_handle) return ESP_OK;
 
-    bool was_running = m_is_running;
-    if (was_running) {
-        stop();
+    uint32_t frame_samples = (sample_rate * frame_duration_us) / 1000000;
+    if (frame_samples < 60) frame_samples = 60;
+
+    stop();
+
+    if (m_tx_handle) {
+        i2s_del_channel(m_tx_handle);
+        m_tx_handle = nullptr;
     }
 
-    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
-    esp_err_t ret = i2s_channel_reconfig_std_clock(m_tx_handle, &clk_cfg);
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    chan_cfg.dma_desc_num = 2;
+    chan_cfg.dma_frame_num = frame_samples;
+    chan_cfg.auto_clear = true;
+
+    esp_err_t ret = i2s_new_channel(&chan_cfg, &m_tx_handle, nullptr);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to re-create I2S TX channel: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    i2s_event_callbacks_t cbs = {
+        .on_recv = nullptr,
+        .on_recv_q_ovf = nullptr,
+        .on_sent = i2s_dma_tx_done_cb,
+        .on_send_q_ovf = nullptr,
+    };
+    i2s_channel_register_event_callback(m_tx_handle, &cbs, this);
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
+        .slot_cfg = {
+            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT,
+            .slot_mode = I2S_SLOT_MODE_STEREO,
+            .slot_mask = I2S_STD_SLOT_BOTH,
+            .ws_width = 16,
+            .ws_pol = false,
+            .bit_shift = true,
+            .left_align = true,
+            .big_endian = false,
+            .bit_order_lsb = false,
+        },
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = static_cast<gpio_num_t>(m_bclk_pin),
+            .ws = static_cast<gpio_num_t>(m_ws_pin),
+            .dout = static_cast<gpio_num_t>(m_dout_pin),
+            .din = static_cast<gpio_num_t>(m_din_pin),
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+
+    ret = i2s_channel_init_std_mode(m_tx_handle, &std_cfg);
     if (ret == ESP_OK) {
         m_sample_rate = sample_rate;
-        ESP_LOGI(TAG, "I2S Sample Rate reconfigured to %lu Hz", (unsigned long)sample_rate);
+        m_frame_duration_us = frame_duration_us;
+        ESP_LOGI(TAG, "I2S DMA & Clock reconfigured: Fs=%lu Hz, Frame=%lu samples (%.1f ms DMA buffer)",
+                 (unsigned long)sample_rate, (unsigned long)frame_samples, frame_duration_us / 1000.0f);
     } else {
-        ESP_LOGE(TAG, "Failed to reconfigure I2S sample rate to %lu Hz: %s", (unsigned long)sample_rate, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to re-init I2S std mode: %s", esp_err_to_name(ret));
     }
 
-    if (was_running) {
-        start();
-    }
     return ret;
 }
 

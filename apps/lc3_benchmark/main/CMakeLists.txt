@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "lc3_benchmark_runner.cpp"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_partition
+        spi_flash
+        esp_timer
+        esp_wifi
+        nvs_flash
+        esp_netif
+        driver
+        espressif__esp_audio_codec
+        liblc3
+)

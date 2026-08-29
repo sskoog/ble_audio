@@ -67,9 +67,9 @@ extern "C" {
 /* =====================================================================
  *             VCO / VFO AUDIO TEST TONE GENERATOR CONFIG
  * ===================================================================== */
-#define VCO_NOMINAL_FREQ_HZ             440.0f
-#define VCO_MIN_FREQ_HZ                 220.0f
-#define VCO_MAX_FREQ_HZ                 880.0f
+#define VCO_NOMINAL_FREQ_HZ             220.0f
+#define VCO_MIN_FREQ_HZ                 110.0f
+#define VCO_MAX_FREQ_HZ                 440.0f
 #define VCO_AMPLITUDE_PERCENT           30.0f
 #define VCO_PEAK_AMPLITUDE_INT16        ((int16_t)(32767.0f * (VCO_AMPLITUDE_PERCENT / 100.0f))) /* ~9830 */
 #define VFO_MIN_MOD_RATE_HZ             0.5f

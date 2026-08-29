@@ -1,6 +1,6 @@
 # ESP-IDF Build artifacts
-build/
-**/build/
+build*/
+**/build*/
 
 # ESP-IDF component manager & lockfiles
 managed_components/
@@ -40,6 +40,7 @@ Thumbs.db
 data/mp3/*
 !data/mp3/.gitkeep
 *.mp3
+*.aup3
 
 # Python caches and environments
 __pycache__/

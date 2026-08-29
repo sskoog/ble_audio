@@ -12,9 +12,9 @@ public:
     ~ToneGenerator();
 
     esp_err_t init(uint32_t sample_rate_hz = 32000, 
-                   float nominal_freq_hz = 440.0f, 
-                   float min_freq_hz = 220.0f, 
-                   float max_freq_hz = 880.0f,
+                   float nominal_freq_hz = 220.0f, 
+                   float min_freq_hz = 110.0f, 
+                   float max_freq_hz = 440.0f,
                    float amplitude_pct = 50.0f);
 
     size_t generateFrame(int16_t* out_pcm, size_t num_samples);
@@ -33,9 +33,9 @@ private:
     void randomizeModRate();
 
     uint32_t m_sample_rate = 32000;
-    float m_min_freq_hz = 220.0f;
-    float m_max_freq_hz = 880.0f;
-    float m_center_freq_hz = 440.0f;
+    float m_min_freq_hz = 110.0f;
+    float m_max_freq_hz = 440.0f;
+    float m_center_freq_hz = 220.0f;
     float m_freq_deviation_hz = 110.0f;
     int16_t m_peak_amplitude = 16384; // 50%
     float m_gain_db = -6.02f;

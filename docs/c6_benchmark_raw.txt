@@ -1,0 +1,131 @@
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  26543     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  27583     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  28587     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  29591     -   |
+I (30484) LC3_BENCH:   ->  7.5ms: Avg = 5.94 ms, P95 = 6.53 ms, CPU = 79.2%
+I (30485) LC3_BENCH: Testing clip: SR = 32000 Hz, Samples = 320000, Offset = 0x1C2B50
+I (30489) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 32000 Hz, 1-ch, 10.0 ms duration, 60 octets/frame (48 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  30595     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  31599     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  32639     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  33643     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  34647     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  35651     -   |
+I (36129) LC3_BENCH:   -> 10.0ms: Avg = 5.45 ms, P95 = 6.17 ms, CPU = 54.5%
+I (36130) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 32000 Hz, 1-ch, 7.5 ms duration, 45 octets/frame (48 kbps)
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  36655     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  37694     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  38698     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  39702     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  40706     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  41710     -   |
+I (42801) LC3_BENCH:   ->  7.5ms: Avg = 4.85 ms, P95 = 5.37 ms, CPU = 64.7%
+I (42802) LC3_BENCH: Testing clip: SR = 24000 Hz, Samples = 240000, Offset = 0x25EF50
+I (42806) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 24000 Hz, 1-ch, 10.0 ms duration, 45 octets/frame (36 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  42749     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  43753     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  44757     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  45761     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  46765     -   |
+I (47930) LC3_BENCH:   -> 10.0ms: Avg = 4.96 ms, P95 = 5.57 ms, CPU = 49.6%
+I (47931) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 24000 Hz, 1-ch, 7.5 ms duration, 35 octets/frame (37 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  47805     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  48809     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  49813     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  50817     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  51821     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  52861     -   |
+I (53821) LC3_BENCH:   ->  7.5ms: Avg = 4.29 ms, P95 = 4.83 ms, CPU = 57.2%
+I (53822) LC3_BENCH: Testing clip: SR = 16000 Hz, Samples = 160000, Offset = 0x2D4250
+I (53826) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 16000 Hz, 1-ch, 10.0 ms duration, 30 octets/frame (24 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  53865     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  54869     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  55873     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  56877     -   |
+I (57709) LC3_BENCH:   -> 10.0ms: Avg = 3.77 ms, P95 = 4.36 ms, CPU = 37.7%
+I (57710) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 16000 Hz, 1-ch, 7.5 ms duration, 23 octets/frame (24 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  57917     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  58921     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  59925     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  60929     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  61933     -   |
+I (62457) LC3_BENCH:   ->  7.5ms: Avg = 3.46 ms, P95 = 4.01 ms, CPU = 46.2%
+I (62458) LC3_BENCH: Testing clip: SR = 8000 Hz, Samples = 80000, Offset = 0x322450
+I (62461) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 8000 Hz, 1-ch, 10.0 ms duration, 20 octets/frame (16 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  62972     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  63976     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  64980     -   |
+I (65502) LC3_BENCH:   -> 10.0ms: Avg = 2.95 ms, P95 = 3.54 ms, CPU = 29.5%
+I (65503) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 8000 Hz, 1-ch, 7.5 ms duration, 20 octets/frame (21 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  65984     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  66988     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  68027     -   |
+I (69246) LC3_BENCH:   ->  7.5ms: Avg = 2.73 ms, P95 = 3.33 ms, CPU = 36.5%
+I (69247) LC3_BENCH: >>> RUNNING 3 PROJECT REFERENCE ENCODING LEVELS
+I (69249) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 48000 Hz, 1-ch, 7.5 ms duration, 120 octets/frame (128 kbps)
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  69031     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  70035     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  71039     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  72043     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  73083     -   |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  74087     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  75091     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  76095     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  77099     -   |
+I (78089) LC3_BENCH:   [REF HIGH]   48.0 kHz | 7.5 ms | 120 B (128 kbps) -> Avg: 6.43 ms, P95: 6.98 ms, CPU: 85.8%
+I (78091) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 32000 Hz, 1-ch, 10.0 ms duration, 80 octets/frame (64 kbps)
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  78139     -   |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  79143     -   |
+| 100  30  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  80147     -   |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  81151     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  82155     -   |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  83195     -   |
+I (83826) LC3_BENCH:   [REF MEDIUM] 32.0 kHz | 10.0 ms | 80 B (64 kbps)  -> Avg: 5.55 ms, P95: 6.31 ms, CPU: 55.5%
+I (83828) ESP_LC3: Espressif Fixed-Point LC3 Encoder Initialized: 16000 Hz, 1-ch, 10.0 ms duration, 40 octets/frame (32 kbps)
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  84199     -   |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  85203     -   |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  86207     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+| 100  31  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  87211     -   |
+I (87833) LC3_BENCH:   [REF LOW]    16.0 kHz | 10.0 ms | 40 B (32 kbps)  -> Avg: 3.89 ms, P95: 4.53 ms, CPU: 38.9%
++======================================================================================================================+
+|                             ESP32-C6 HARDWARE LC3 ENCODER BENCHMARK RESULTS (10-SECOND REAL MUSIC)                   |
++======================================================================================================================+

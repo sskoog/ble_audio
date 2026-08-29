@@ -110,6 +110,15 @@ uint32_t Lc3CodecEngine::getBitrateKbps() const {
     return (static_cast<uint32_t>(m_octets_per_frame) * 8 * 1000000ULL) / (m_frame_duration_us * 1000ULL);
 }
 
+size_t Lc3CodecEngine::getEncoderRequiredPcmSamples() const {
+    if (!m_enc_handle) return 0;
+    int in_sz = 0, out_sz = 0;
+    if (esp_lc3_enc_get_frame_size(m_enc_handle, &in_sz, &out_sz) == ESP_AUDIO_ERR_OK && in_sz > 0) {
+        return static_cast<size_t>(in_sz) / sizeof(int16_t);
+    }
+    return Codec::calculateRequiredPcmSamples(m_sample_rate, m_frame_duration_us);
+}
+
 esp_err_t Lc3CodecEngine::encodeFrame(const int16_t* pcm_in, size_t pcm_samples, uint8_t* out_lc3_buf, size_t max_out_bytes, size_t* actual_out_bytes) {
     if (!m_encoder_ready || !m_enc_handle || !pcm_in || !out_lc3_buf || !actual_out_bytes) {
         return ESP_ERR_INVALID_ARG;

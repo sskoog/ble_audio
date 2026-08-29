@@ -23,11 +23,12 @@ public:
     I2sAudioDriver(int bclk_pin, int ws_pin, int dout_pin, int din_pin = -1, int gain_pin = 0);
     ~I2sAudioDriver();
 
-    esp_err_t init(uint32_t sample_rate = 32000, i2s_data_bit_width_t bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT, i2s_slot_mode_t slot_mode = I2S_SLOT_MODE_STEREO);
+    esp_err_t init(uint32_t sample_rate = 32000, uint32_t frame_duration_us = 10000, i2s_data_bit_width_t bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT, i2s_slot_mode_t slot_mode = I2S_SLOT_MODE_STEREO);
     
-    // Dynamic sample rate reconfiguration
-    esp_err_t reconfigureSampleRate(uint32_t sample_rate);
+    // Dynamic sample rate & DMA frame size reconfiguration
+    esp_err_t reconfigureSampleRate(uint32_t sample_rate, uint32_t frame_duration_us = 10000);
     uint32_t getSampleRate() const { return m_sample_rate; }
+    uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
 
     // Hardware gain control (3, 6, 9, 12 dB)
     void setHardwareGain(Max98357Gain gain);
@@ -57,6 +58,7 @@ public:
 
     uint32_t getAndResetUnderrunCount() { return m_underrun_count.exchange(0, std::memory_order_relaxed); }
     uint32_t getUnderrunCount() const { return m_underrun_count.load(std::memory_order_relaxed); }
+    void resetUnderrunCount() { m_underrun_count.store(0, std::memory_order_relaxed); }
 
 private:
     int m_bclk_pin;
@@ -70,6 +72,7 @@ private:
     SemaphoreHandle_t m_dma_free_sem = nullptr;
     bool m_is_running = false;
     uint32_t m_sample_rate = 32000;
+    uint32_t m_frame_duration_us = 10000;
     std::atomic<uint32_t> m_underrun_count{0};
 };
 

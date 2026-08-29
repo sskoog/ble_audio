@@ -16,7 +16,7 @@ static bool s_sine_table_initialized = false;
 
 ToneGenerator::ToneGenerator(uint32_t sample_rate_hz)
     : m_sample_rate(sample_rate_hz) {
-    init(sample_rate_hz, 440.0f, 220.0f, 880.0f, 50.0f);
+    init(sample_rate_hz, 220.0f, 110.0f, 440.0f, 50.0f);
 }
 
 ToneGenerator::~ToneGenerator() {}

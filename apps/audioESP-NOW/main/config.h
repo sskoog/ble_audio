@@ -11,11 +11,11 @@ extern "C" {
 #define NODE_ROLE_SOURCE 1
 
 #ifndef CONFIG_ACTIVE_NODE_ID
-#define CONFIG_ACTIVE_NODE_ID 23
+#define CONFIG_ACTIVE_NODE_ID 21
 #endif
 
 #ifndef CONFIG_ACTIVE_NODE_ROLE
-#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK
+#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SOURCE
 #endif
 
 #ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
@@ -49,6 +49,7 @@ typedef struct {
     int      user_button_gpio; // GP9 (BOOT button)
     bool     has_display;
     uint8_t  default_channel;
+    int8_t   max98357a_gain_db;
 } system_config_t;
 
 const system_config_t* get_system_config(void);

@@ -12,7 +12,8 @@ static system_config_t s_active_config = {
     .status_led_num = 1,
     .user_button_gpio = 9, // GP9 (BOOT button)
     .has_display = false,
-    .default_channel = 0
+    .default_channel = 0,
+    .max98357a_gain_db = 0
 };
 #elif CONFIG_ACTIVE_NODE_ID == 24
 static system_config_t s_active_config = {
@@ -26,7 +27,8 @@ static system_config_t s_active_config = {
     .status_led_num = 1,
     .user_button_gpio = 9, // GP9 (BOOT button)
     .has_display = false,
-    .default_channel = 1   // Channel 1 (Right)
+    .default_channel = 1,  // Channel 1 (Right)
+    .max98357a_gain_db = 3
 };
 #else // Node 23 (Default SINK)
 static system_config_t s_active_config = {
@@ -40,7 +42,8 @@ static system_config_t s_active_config = {
     .status_led_num = 1,
     .user_button_gpio = 9, // GP9 (BOOT button)
     .has_display = false,
-    .default_channel = 0   // Channel 0 (Left)
+    .default_channel = 0,  // Channel 0 (Left)
+    .max98357a_gain_db = 3
 };
 #endif
 

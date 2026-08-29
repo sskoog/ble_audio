@@ -214,13 +214,13 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
 
         if (mode == LedPatternMode::OFF || max_brightness == 0) {
             instance->updateHardwareLed(0, 0, 0, 0);
-            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
         if (mode == LedPatternMode::SOLID) {
             instance->updateHardwareLed(r, g, b, max_brightness);
-            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -237,7 +237,7 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
             
             uint8_t current_brightness = static_cast<uint8_t>(max_brightness * q1 + 0.5f);
             instance->updateHardwareLed(r, g, b, current_brightness);
-            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(UPDATE_INTERVAL_MS));
+            vTaskDelay(pdMS_TO_TICKS(UPDATE_INTERVAL_MS));
             continue;
         }
 
@@ -245,12 +245,12 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
         if (mode == LedPatternMode::BLINK) {
             if (duty == 0) {
                 instance->updateHardwareLed(0, 0, 0, 0);
-                vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+                vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
             if (duty >= 255) {
                 instance->updateHardwareLed(r, g, b, max_brightness);
-                vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+                vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
 
@@ -265,7 +265,7 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
             } else {
                 instance->updateHardwareLed(0, 0, 0, 0);
             }
-            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(UPDATE_INTERVAL_MS));
+            vTaskDelay(pdMS_TO_TICKS(UPDATE_INTERVAL_MS));
             continue;
         }
     }

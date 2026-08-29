@@ -170,6 +170,52 @@ private:
     int16_t m_peak_int16;
 };
 
+template<typename T, size_t Capacity = 10>
+class SpscDurationRingBuffer {
+public:
+    void push(T value) {
+        size_t head = m_head.load(std::memory_order_relaxed);
+        m_buffer[head] = value;
+        m_head.store((head + 1) % Capacity, std::memory_order_release);
+        size_t count = m_count.load(std::memory_order_relaxed);
+        if (count < Capacity) {
+            m_count.store(count + 1, std::memory_order_relaxed);
+        }
+    }
+
+    void getStats(float& out_avg_ms, float& out_peak_ms, bool& out_has_data) const {
+        size_t count = m_count.load(std::memory_order_acquire);
+        if (count == 0) {
+            out_avg_ms = 0.0f;
+            out_peak_ms = 0.0f;
+            out_has_data = false;
+            return;
+        }
+
+        uint32_t peak_us = 0;
+        uint64_t sum_us = 0;
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t val = m_buffer[i];
+            if (val > peak_us) peak_us = val;
+            sum_us += val;
+        }
+
+        out_avg_ms = (static_cast<float>(sum_us) / static_cast<float>(count)) / 1000.0f;
+        out_peak_ms = static_cast<float>(peak_us) / 1000.0f;
+        out_has_data = true;
+    }
+
+    void reset() {
+        m_head.store(0, std::memory_order_relaxed);
+        m_count.store(0, std::memory_order_relaxed);
+    }
+
+private:
+    T m_buffer[Capacity] = {0};
+    std::atomic<size_t> m_head{0};
+    std::atomic<size_t> m_count{0};
+};
+
 class EspNowAudioBroadcast {
 public:
     EspNowAudioBroadcast(Codec::Lc3CodecEngine& lc3_codec,
@@ -198,11 +244,15 @@ public:
     void processUsbVsafPacket(const uint8_t* data, size_t len);
     bool isUsbStreamActive() const { return m_usb_stream_active.load(std::memory_order_relaxed); }
 
-    void onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len);
+    void onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len, int8_t rssi = -127, uint8_t rate = 0);
     void transitionTo(NetworkState new_state);
 
     NetworkState getState() const { return m_state; }
     const char* getStateString() const;
+    const char* getActiveCodecName() const;
+    const char* getWifiPhyRateString() const;
+    int8_t getLastRssi() const { return m_last_rx_rssi.load(std::memory_order_relaxed); }
+    bool hasLocalAudioOutput() const { return (m_i2s_dac != nullptr && m_node_role == NODE_ROLE_SINK); }
     const StreamTelemetry& getStreamTelemetry() const { return m_telemetry; }
 
     int16_t getAudioFrameRMS_int16() { return m_audio_meter.getAudioFrameRMS_int16(); }
@@ -224,9 +274,13 @@ public:
     uint32_t getAndResetFifoUnderrunCount() { return m_fifo_underrun.exchange(0, std::memory_order_relaxed); }
 
     uint32_t getAndResetDmaUnderrunCount() { return m_i2s_dac ? m_i2s_dac->getAndResetUnderrunCount() : 0; }
+    uint32_t getDmaUnderrunCount() const { return m_i2s_dac ? m_i2s_dac->getUnderrunCount() : 0; }
     uint8_t getHardwareGainDb() const { return m_i2s_dac ? m_i2s_dac->getHardwareGainDb() : 0; }
     void setHardwareGain(Hardware::Max98357Gain gain) { if (m_i2s_dac) m_i2s_dac->setHardwareGain(gain); }
     uint32_t getAndResetPlcCount() { return m_lc3_codec.getAndResetPlcCount(); }
+
+    void resetStreamingCounters();
+    void resetErrorCounters();
 
     void setPrefillThresholdFrames(uint32_t frames) { m_prefill_threshold_frames = frames; }
     uint32_t getPrefillThresholdFrames() const { return m_prefill_threshold_frames; }
@@ -235,8 +289,12 @@ public:
 
     // Time Synchronization & Diagnostics Getters
     uint64_t getMasterTimeMs() const;
+    bool isMasterTimeValid() const;
     uint32_t getClockSyncAdjustCount() const { return m_clock_sync_micro_adjust_count.load(std::memory_order_relaxed); }
     uint32_t getPrevFrameRecoveryCount() const { return m_prev_frame_recoveries.load(std::memory_order_relaxed); }
+    void getCodecDurationStats(float& out_avg_ms, float& out_peak_ms, bool& out_has_data) const {
+        m_codec_duration_ring_buffer.getStats(out_avg_ms, out_peak_ms, out_has_data);
+    }
 
     // Test Hooks
     void setTestMagicWord(uint16_t magic) { m_active_magic = magic; }
@@ -260,6 +318,7 @@ private:
     NetworkState               m_state = NetworkState::OFF;
     StreamTelemetry            m_telemetry;
     AudioLevelMeter            m_audio_meter;
+    SpscDurationRingBuffer<uint32_t, 10> m_codec_duration_ring_buffer;
 
     bool                       m_wifi_initialized = false;
     bool                       m_audio_task_running = false;
@@ -271,6 +330,7 @@ private:
 
     uint16_t                   m_active_magic = VSAF_DEFAULT_MAGIC;
     int64_t                    m_master_time_offset_us = 0;
+    std::atomic<int64_t>       m_last_sync_time_us{0};
     std::atomic<uint32_t>      m_clock_sync_micro_adjust_count{0};
     std::atomic<uint32_t>      m_prev_frame_recoveries{0};
     std::atomic<uint32_t>      m_simulated_drop_count{0};
@@ -285,6 +345,8 @@ private:
     std::atomic<uint32_t>      m_rx_packets_sec{0};
     std::atomic<uint32_t>      m_fifo_overflow{0};
     std::atomic<uint32_t>      m_fifo_underrun{0};
+    std::atomic<int8_t>        m_last_rx_rssi{-127};
+    std::atomic<uint8_t>       m_last_rx_rate{0};
 };
 
 } // namespace AudioNet

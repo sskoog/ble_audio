@@ -573,3 +573,32 @@ The table below summarizes the bandwidth, packet size, transmission cadence, and
 3. **Single-PDU DLE Compatibility**:
    - In Auracast Periodic Advertising and ISO BIS, all frames must fit inside the 251-byte Bluetooth 5.0 LE Data Length Extension (DLE) maximum PDU.
    - Even at the highest quality (120 octets/ch Stereo = 240 bytes), the packet fits within a single non-fragmented 251-byte PDU.
+
+
+## Defining three reference encoding levels
+
+| Level | Sample Rate | Frame Duration | Bytes per Packet | Bitrate | Detail |
+|---|---|---|---|---|---|
+| **High** | **48 kHz** | **7.5 ms** | **120 bytes** | **128 kbps** | High-quality, transparent audio with a low algorithmic delay of 11.5 ms. Fully transparent for the vast majority of music. |
+| **Medium** | **32 kHz** | **10 ms** | **80 bytes** | **64 kbps** | Standard target for excellent fidelity in constrained bandwidth scenarios. Sounds comparable to or better than a 160–192 kbps MP3. |
+| **Low** | **16 kHz** | **10 ms** | **40 bytes** | **32 kbps** | Highly efficient and typically reserved for voice applications or low-bitrate environments. |
+
+### Measured Hardware Performance: ESP32-C6 (160 MHz Single-Core RISC-V)
+
+| Level | Codec Engine | Frame Time (Avg) | P95 Peak | Single-Core CPU Load (%) | Real-time Headroom | Single-Core Streaming Viability |
+|---|---|---|---|---|---|---|
+| **High** (48k / 7.5ms / 120B) | Fixed-Point | **6.43 ms** | 6.98 ms | **85.8%** | +1.07 ms (14.2%) | **High Risk** (Packet drops during RF transmit) |
+| **Medium** (32k / 10ms / 80B) | Fixed-Point | **5.55 ms** | 6.31 ms | **55.5%** | +4.45 ms (44.5%) | **Optimal & Stable (Recommended Standard)** |
+| **Low** (16k / 10ms / 40B) | Fixed-Point | **3.89 ms** | 4.53 ms | **38.9%** | +6.11 ms (61.1%) | **Ultra-Low Overhead** |
+
+### Measured Hardware Performance: ESP32-WROOM-32 (240 MHz Dual-Core Xtensa LX6)
+
+| Level | Codec Engine | Frame Time (Avg) | P95 Peak | Single-Core CPU Load (%) | Real-time Headroom | Viability & Core Allocation |
+|---|---|---|---|---|---|---|
+| **High** (48k / 7.5ms / 120B) | Fixed-Point | **7.36 ms** | 7.76 ms | **98.2%** | +0.14 ms (1.8%) | Starvation risk on single core |
+| **High** (48k / 7.5ms / 120B) | **Float (Hardware FPU)** | **6.00 ms** | 6.45 ms | **80.0%** | +1.50 ms (20.0%) | **Viable** (Dedicated Core 1 recommended) |
+| **Medium** (32k / 10ms / 80B) | Fixed-Point | **6.34 ms** | 6.78 ms | **63.4%** | +3.66 ms (36.6%) | Viable |
+| **Medium** (32k / 10ms / 80B) | **Float (Hardware FPU)** | **5.46 ms** | 5.90 ms | **54.6%** | +4.54 ms (45.4%) | **Optimal (Comfortable Headroom)** |
+| **Low** (16k / 10ms / 40B) | Fixed-Point | **4.47 ms** | 4.83 ms | **44.7%** | +5.53 ms (55.3%) | Optimal |
+| **Low** (16k / 10ms / 40B) | **Float (Hardware FPU)** | **4.11 ms** | 4.47 ms | **41.1%** | +5.89 ms (58.9%) | **Ultra-Low Overhead** |
+

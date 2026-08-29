@@ -1,0 +1,67 @@
+|                             ESP32-C6 HARDWARE LC3 ENCODER BENCHMARK RESULTS (10-SECOND REAL MUSIC)                   |
++======================================================================================================================+
+|  Sample Rate | Frame Dur | Frame Octets |  Bitrate  | Total Frames | Min (ms) | Avg (ms) | P95 (ms) | Max (ms) |  CPU %  |  RT Factor |
++--------------+-----------+--------------+-----------+--------------+----------+----------+----------+----------+---------+------------+
+|   48.0 kHz  | 10.0 ms  |    80 B/fr   |  64 kbps |    1000 fr   |   6.26   |   7.03   |   7.68   |  15.40   |   70.3% |    1.42x   |
+|   48.0 kHz  |  7.5 ms  |    60 B/fr   |  64 kbps |    1333 fr   |   5.28   |   6.00   |   6.56   |  12.50   |   80.0% |    1.25x   |
+|   44.1 kHz  | 10.0 ms  |    80 B/fr   |  64 kbps |     918 fr   |   6.32   |   7.04   |   7.73   |  14.98   |   70.4% |    1.42x   |
+|   44.1 kHz  |  7.5 ms  |    60 B/fr   |  64 kbps |    1225 fr   |   5.30   |   6.02   |   6.58   |  12.44   |   80.3% |    1.25x   |
+|   32.0 kHz  | 10.0 ms  |    60 B/fr   |  48 kbps |    1000 fr   |   4.73   |   5.56   |   6.17   |  12.14   |   55.6% |    1.80x   |
+|   32.0 kHz  |  7.5 ms  |    45 B/fr   |  48 kbps |    1333 fr   |   4.20   |   4.89   |   5.42   |  11.45   |   65.2% |    1.53x   |
+|   24.0 kHz  | 10.0 ms  |    45 B/fr   |  36 kbps |    1000 fr   |   4.38   |   5.06   |   5.68   |  10.61   |   50.6% |    1.98x   |
+|   24.0 kHz  |  7.5 ms  |    35 B/fr   |  37 kbps |    1333 fr   |   3.68   |   4.34   |   4.88   |  10.53   |   57.8% |    1.73x   |
+|   16.0 kHz  | 10.0 ms  |    30 B/fr   |  24 kbps |    1000 fr   |   3.32   |   3.92   |   4.50   |   8.92   |   39.2% |    2.55x   |
+|   16.0 kHz  |  7.5 ms  |    23 B/fr   |  24 kbps |    1333 fr   |   2.94   |   3.53   |   4.08   |   7.53   |   47.1% |    2.12x   |
+|    8.0 kHz  | 10.0 ms  |    20 B/fr   |  16 kbps |    1000 fr   |   2.57   |   3.05   |   3.61   |   6.22   |   30.5% |    3.28x   |
+|    8.0 kHz  |  7.5 ms  |    20 B/fr   |  21 kbps |    1333 fr   |   2.45   |   2.93   |   3.47   |   7.59   |   39.1% |    2.56x   |
++======================================================================================================================+
+
+| 96  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  71041     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  72043     -   |
+|  4  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  73081     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  74083     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  75085     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  76087     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  77089     -   |
+|  4  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  78127     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  79129     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  80131     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  81133     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  82135     -   |
+|  4  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  83173     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  84175     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  85177     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  86179     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  87181     -   |
+|  4  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  88219     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  89221     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  90223     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  91225     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  92227     -   |
+|  4  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  93265     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  94267     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  95269     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  96271     -   |
++======================================================== ESP32-C6-21 [SOURCE] ========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  97273     -   |
+|  4  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  98311     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  |  99313     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  | 100315     -   |
+|  1  32  160 | IDLE  |  -   01 24M |   -     off   off   -      -      -     -     -    -     -   -    -    -     -  | 101317     -   |

@@ -72,9 +72,11 @@ public:
     uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
     uint16_t getOctetsPerFrame() const { return m_octets_per_frame; }
     uint32_t getBitrateKbps() const;
+    size_t   getEncoderRequiredPcmSamples() const;
     void incrementPlcCount() { m_plc_count.fetch_add(1, std::memory_order_relaxed); }
     uint32_t getAndResetPlcCount() { return m_plc_count.exchange(0, std::memory_order_relaxed); }
     uint32_t getPlcCount() const { return m_plc_count.load(std::memory_order_relaxed); }
+    void resetPlcCount() { m_plc_count.store(0, std::memory_order_relaxed); }
 
 private:
     void* m_enc_handle = nullptr;

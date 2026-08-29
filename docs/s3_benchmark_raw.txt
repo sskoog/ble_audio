@@ -1,0 +1,60 @@
+[0;32mI (98) esp_image: segment 0: paddr=00010020 vaddr=3c09002[0;32mI (17988) LC3_BENCH:   [FIXP] 24000 Hz | 10.0 ms |  45 B ( 36 kbps) -> Avg:  3.74 ms | P95:  4.02 ms | CPU:  37.4%[0m
+[0;32mI (20248) LC3_BENCH:   [FIXP] 24000 Hz |  7.5 ms |  35 B ( 37 kbps) -> Avg:  3.34 ms | P95:  3.55 ms | CPU:  44.5%[0m
+[0;32mI (21848) LC3_BENCH:   [FIXP] 16000 Hz | 10.0 ms |  30 B ( 24 kbps) -> Avg:  3.15 ms | P95:  3.42 ms | CPU:  31.5%[0m
+[0;32mI (23848) LC3_BENCH:   [FIXP] 16000 Hz |  7.5 ms |  23 B ( 24 kbps) -> Avg:  2.96 ms | P95:  3.16 ms | CPU:  39.5%[0m
+[0;32mI (25228) LC3_BENCH:   [FIXP]  8000 Hz | 10.0 ms |  20 B ( 16 kbps) -> Avg:  2.70 ms | P95:  2.96 ms | CPU:  27.0%[0m
+[0;32mI (27008) LC3_BENCH:   [FIXP]  8000 Hz |  7.5 ms |  20 B ( 21 kbps) -> Avg:  2.63 ms | P95:  2.82 ms | CPU:  35.1%[0m
+[0;32mI (29448) LC3_BENCH:   [FIXP] 48000 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  4.81 ms | P95:  5.14 ms | CPU:  48.1%[0m
+[0;32mI (32338) LC3_BENCH:   [FIXP] 48000 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  4.28 ms | P95:  4.53 ms | CPU:  57.1%[0m
+[0;32mI (34578) LC3_BENCH:   [FIXP] 44100 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  4.79 ms | P95:  5.16 ms | CPU:  47.9%[0m
+[0;32mI (37228) LC3_BENCH:   [FIXP] 44100 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  4.27 ms | P95:  4.55 ms | CPU:  56.9%[0m
+[0;32mI (39358) LC3_BENCH:   [FIXP] 32000 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  4.19 ms | P95:  4.53 ms | CPU:  41.9%[0m
+[0;32mI (41908) LC3_BENCH:   [FIXP] 32000 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  3.77 ms | P95:  4.01 ms | CPU:  50.2%[0m
+[0;32mI (43838) LC3_BENCH:   [FIXP] 24000 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  3.79 ms | P95:  4.09 ms | CPU:  37.9%[0m
+[0;32mI (46158) LC3_BENCH:   [FIXP] 24000 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  3.44 ms | P95:  3.66 ms | CPU:  45.8%[0m
+[0;32mI (48648) LC3_BENCH:   [FIXP] 48000 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  4.89 ms | P95:  5.24 ms | CPU:  48.9%[0m
+[0;32mI (51548) LC3_BENCH:   [FIXP] 48000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  4.30 ms | P95:  4.56 ms | CPU:  57.3%[0m
+[0;32mI (53828) LC3_BENCH:   [FIXP] 44100 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  4.88 ms | P95:  5.25 ms | CPU:  48.8%[0m
+[0;32mI (56488) LC3_BENCH:   [FIXP] 44100 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  4.28 ms | P95:  4.56 ms | CPU:  57.1%[0m
+[0;32mI (58638) LC3_BENCH:   [FIXP] 32000 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  4.23 ms | P95:  4.56 ms | CPU:  42.3%[0m
+[0;32mI (61208) LC3_BENCH:   [FIXP] 32000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  3.81 ms | P95:  4.06 ms | CPU:  50.8%[0m
+[0;32mI (63148) LC3_BENCH:   [FIXP] 24000 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  3.82 ms | P95:  4.13 ms | CPU:  38.2%[0m
+[0;32mI (65498) LC3_BENCH:   [FIXP] 24000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  3.48 ms | P95:  3.70 ms | CPU:  46.4%[0m
+[0;32mI (68398) LC3_BENCH:   [FIXP] 48000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  4.30 ms | P95:  4.55 ms | CPU:  57.3%[0m
+[0;32mI (70468) LC3_BENCH:   [FIXP] 32000 Hz | 10.0 ms |  80 B ( 64 kbps) -> Avg:  4.07 ms | P95:  4.40 ms | CPU:  40.7%[0m
+[0;32mI (72078) LC3_BENCH:   [FIXP] 16000 Hz | 10.0 ms |  40 B ( 32 kbps) -> Avg:  3.17 ms | P95:  3.44 ms | CPU:  31.7%[0m
+[0;32mI (72088) LC3_BENCH: >>> RUNNING SERIES B: FLOATING-POINT LC3 (Google liblc3 + Hardware FPU)[0m
+[0;32mI (73848) LC3_BENCH:   [FLT_FPU] 48000 Hz | 10.0 ms |  80 B ( 64 kbps) -> Avg:  3.48 ms | P95:  3.75 ms | CPU:  34.8%[0m
+[0;32mI (75948) LC3_BENCH:   [FLT_FPU] 48000 Hz |  7.5 ms |  60 B ( 63 kbps) -> Avg:  3.11 ms | P95:  3.29 ms | CPU:  41.5%[0m
+[0;31mE (75958) LC3_BENCH: Failed to setup liblc3 encoder[0m
+[0;31mE (75968) LC3_BENCH: Failed to setup liblc3 encoder[0m
+[0;32mI (77528) LC3_BENCH:   [FLT_FPU] 32000 Hz | 10.0 ms |  60 B ( 48 kbps) -> Avg:  3.08 ms | P95:  3.31 ms | CPU:  30.8%[0m
+[0;32mI (79468) LC3_BENCH:   [FLT_FPU] 32000 Hz |  7.5 ms |  45 B ( 48 kbps) -> Avg:  2.86 ms | P95:  3.03 ms | CPU:  38.1%[0m
+[0;32mI (80958) LC3_BENCH:   [FLT_FPU] 24000 Hz | 10.0 ms |  45 B ( 36 kbps) -> Avg:  2.93 ms | P95:  3.14 ms | CPU:  29.3%[0m
+[0;32mI (82808) LC3_BENCH:   [FLT_FPU] 24000 Hz |  7.5 ms |  35 B ( 37 kbps) -> Avg:  2.73 ms | P95:  2.89 ms | CPU:  36.5%[0m
+[0;32mI (84178) LC3_BENCH:   [FLT_FPU] 16000 Hz | 10.0 ms |  30 B ( 24 kbps) -> Avg:  2.70 ms | P95:  2.90 ms | CPU:  27.0%[0m
+[0;32mI (85918) LC3_BENCH:   [FLT_FPU] 16000 Hz |  7.5 ms |  23 B ( 24 kbps) -> Avg:  2.57 ms | P95:  2.73 ms | CPU:  34.3%[0m
+[0;32mI (87178) LC3_BENCH:   [FLT_FPU]  8000 Hz | 10.0 ms |  20 B ( 16 kbps) -> Avg:  2.47 ms | P95:  2.68 ms | CPU:  24.7%[0m
+[0;32mI (88808) LC3_BENCH:   [FLT_FPU]  8000 Hz |  7.5 ms |  20 B ( 21 kbps) -> Avg:  2.41 ms | P95:  2.58 ms | CPU:  32.1%[0m
+[0;32mI (90608) LC3_BENCH:   [FLT_FPU] 48000 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  3.54 ms | P95:  3.80 ms | CPU:  35.4%[0m
+[0;32mI (92758) LC3_BENCH:   [FLT_FPU] 48000 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  3.18 ms | P95:  3.37 ms | CPU:  42.4%[0m
+[0;31mE (92768) LC3_BENCH: Failed to setup liblc3 encoder[0m
+[0;31mE (92778) LC3_BENCH: Failed to setup liblc3 encoder[0m
+[0;32mI (94378) LC3_BENCH:   [FLT_FPU] 32000 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  3.15 ms | P95:  3.39 ms | CPU:  31.5%[0m
+[0;32mI (96368) LC3_BENCH:   [FLT_FPU] 32000 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  2.95 ms | P95:  3.12 ms | CPU:  39.3%[0m
+[0;32mI (97898) LC3_BENCH:   [FLT_FPU] 24000 Hz | 10.0 ms | 100 B ( 80 kbps) -> Avg:  3.00 ms | P95:  3.21 ms | CPU:  30.0%[0m
+[0;32mI (99818) LC3_BENCH:   [FLT_FPU] 24000 Hz |  7.5 ms | 100 B (106 kbps) -> Avg:  2.84 ms | P95:  3.00 ms | CPU:  37.8%[0m
+[0;32mI (101608) LC3_BENCH:   [FLT_FPU] 48000 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  3.52 ms | P95:  3.78 ms | CPU:  35.2%[0m
+[0;32mI (103768) LC3_BENCH:   [FLT_FPU] 48000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  3.20 ms | P95:  3.39 ms | CPU:  42.7%[0m
+[0;31mE (103778) LC3_BENCH: Failed to setup liblc3 encoder[0m
+[0;31mE (103788) LC3_BENCH: Failed to setup liblc3 encoder[0m
+[0;32mI (105408) LC3_BENCH:   [FLT_FPU] 32000 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  3.18 ms | P95:  3.42 ms | CPU:  31.8%[0m
+[0;32mI (107418) LC3_BENCH:   [FLT_FPU] 32000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  2.98 ms | P95:  3.16 ms | CPU:  39.7%[0m
+[0;32mI (108958) LC3_BENCH:   [FLT_FPU] 24000 Hz | 10.0 ms | 120 B ( 96 kbps) -> Avg:  3.02 ms | P95:  3.23 ms | CPU:  30.2%[0m
+[0;32mI (110898) LC3_BENCH:   [FLT_FPU] 24000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  2.87 ms | P95:  3.03 ms | CPU:  38.2%[0m
+[0;32mI (113058) LC3_BENCH:   [FLT_FPU] 48000 Hz |  7.5 ms | 120 B (127 kbps) -> Avg:  3.20 ms | P95:  3.39 ms | CPU:  42.7%[0m
+[0;32mI (114638) LC3_BENCH:   [FLT_FPU] 32000 Hz | 10.0 ms |  80 B ( 64 kbps) -> Avg:  3.10 ms | P95:  3.33 ms | CPU:  31.0%[0m
+[0;32mI (116018) LC3_BENCH:   [FLT_FPU] 16000 Hz | 10.0 ms |  40 B ( 32 kbps) -> Avg:  2.72 ms | P95:  2.92 ms | CPU:  27.2%[0m
++======================================================================================================================================+
+|                                  ESP32-WROOM-32 HARDWARE LC3 ENCODER BENCHMARK RESULTS (240 MHz, SINGLE CORE)                        |
++======================================================================================================================================+

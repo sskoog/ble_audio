@@ -43,7 +43,7 @@ extern "C" void app_main(void)
         // --- Audio SOURCE (Node21) ---
         ESP_LOGI(TAG, "Configuring Node as Audio SOURCE (VCO Tone Generator + Broadcaster + Web Dashboard)...");
         
-        // 440 Hz VCO modulated 220-880 Hz by 0.5-2.0 Hz VFO @ 30% amplitude
+        // 220 Hz VCO modulated 110-440 Hz by 0.5-2.0 Hz VFO @ 30% amplitude
         tone_gen.init(AUDIO_SAMPLE_RATE_HZ, VCO_NOMINAL_FREQ_HZ, VCO_MIN_FREQ_HZ, VCO_MAX_FREQ_HZ, VCO_AMPLITUDE_PERCENT);
         
         static Bluetooth::BleAudioBroadcast ble_broadcast(lc3_codec, &tone_gen, nullptr);

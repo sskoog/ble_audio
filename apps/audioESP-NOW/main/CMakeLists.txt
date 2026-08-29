@@ -9,6 +9,7 @@ idf_component_register(
         "button.cpp"
         "espnow_audio_broadcast.cpp"
         "diagnostics.cpp"
+        "lc3_benchmark.cpp"
     INCLUDE_DIRS 
         "."
     REQUIRES 
@@ -30,6 +31,8 @@ idf_component_register(
         lwip
         espressif__esp_audio_codec
         vfs
+        esp_partition
+        spi_flash
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
