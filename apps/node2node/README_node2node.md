@@ -17,7 +17,7 @@ The `node2node` ecosystem implements an **Auracast Broadcast Audio** topology co
 ```
                                   +------------------------------------------------------+
                                   |                     AUDIO SOURCE                     |
-                                  |    Node21 (ESP32-C6 DevKit) or Node22 (Bumble PC)   |
+                                  |               Node21 (ESP32-C6 DevKit)               |
                                   +------------------------------------------------------+
                                             |                                |
                 Extended Advertising Train  |                                |  GATT Volume Control Service

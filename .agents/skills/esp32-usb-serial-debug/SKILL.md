@@ -14,8 +14,11 @@ This skill provides comprehensive operating procedures, automated PowerShell scr
 
 | Node Identifier | Board Description | Target Hardware | Default Port | Role |
 | :--- | :--- | :--- | :--- | :--- |
-| **Node20** | Waveshare ESP32-C6-LCD-1.47 | ST7789 LCD + WS2812B + MAX98357A I2S DAC | **COM20** | Audio SINK (Receiver + LCD) |
-| **Node21** | ESP32-C6-WROOM-1 DevKit | WS2812B RGB LED + VCO/VFO Tone Generator | **COM21** | Audio SOURCE (Broadcaster) |
+| **Node20** | Waveshare ESP32-C6-LCD-1.47 | ST7789 LCD + WS2812B | **COM20** | Audio SINK (Receiver + LCD) |
+| **Node21** | ESP32-C6-WROOM-1 DevKit | WS2812B RGB LED | **COM21** & **COM121** | Audio SOURCE (Broadcaster) |
+| **Node22** | Waveshare ESP32-C6-Zero | WS2812B RGB LED | **COM22** & **COM122** | ?? |
+| **Node23** | Waveshare ESP32-C6-Zero | WS2812B RGB LED + MAX98357A I2S DAC | **COM23** | Audio SINK (Receiver) |
+| **Node24** | Waveshare ESP32-C6-Zero | WS2812B RGB LED + MAX98357A I2S DAC | **COM24** | Audio SINK (Receiver) |
 
 ---
 

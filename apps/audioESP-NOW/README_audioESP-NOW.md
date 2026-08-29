@@ -73,14 +73,17 @@ For full protocol packet layout, bitfields, and recovery mechanisms, see the [VS
 
 The SINK firmware outputs standard digital audio over I2S to external DAC modules (e.g. **MAX98357A** Class-D Mono Amp or **PCM5102A** Stereo DAC):
 
-| Signal | ESP32-C6-WROOM-1 (Node 21) | ESP32-C6-Zero (Node 23) | MAX98357A / PCM5102A Pin |
+| Signal | ESP32-C6-WROOM-1 (Node 21) | ESP32-C6-Zero (Node 23 & 24) | MAX98357A / PCM5102A Pin |
 | :--- | :--- | :--- | :--- |
-| **BCLK** (Bit Clock) | GPIO 20 | GPIO 21 | `BCLK` |
-| **WS / LRCK** (Word Select) | GPIO 21 | GPIO 22 | `LRC` / `WS` |
-| **DOUT** (Data Out) | GPIO 22 | GPIO 23 | `DIN` |
-| **GND** | GND | GND | `GND` |
-| **VCC** | 5V / 3.3V | 5V / 3.3V | `VIN` (5V recommended for MAX98357A) |
+| **V+** | - | 5V (pin1) | `Vin` |
+| **GND** | - | GND (pin2) | `GND` |
+| **SD** | - | 3.3V (pin3) | `SD` (Shut Down) |
+| **GAIN** | - | GPIO 0 (pin4) | `GAIN` |
+| **DIN** | - | GPIO 1 (pin5) | `DIN` |
+| **BCLK** | - | GPIO 2 (pin6) | `BCLK` |
+| **LRC** | - | GPIO 3 (pin7) | `LRC` |
 | **WS2812 RGB LED** | GPIO 8 | GPIO 8 | Onboard status indicator |
+
 
 ---
 
