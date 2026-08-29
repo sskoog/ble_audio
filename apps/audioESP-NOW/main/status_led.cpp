@@ -82,32 +82,47 @@ void StatusLed::setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
 }
 
 void StatusLed::setBlink(BlinkConfig blink) {
-    setBlink(blink.duty_cycle, blink.blink_freq);
+    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        m_duty_cycle = blink.duty_cycle;
+        m_blink_freq = (blink.blink_freq < 0.05f) ? 0.05f : (blink.blink_freq > 10.0f ? 10.0f : blink.blink_freq);
+        m_mode = blink.mode;
+        xSemaphoreGive(m_mutex);
+    }
 }
 
 void StatusLed::setBlink(uint8_t duty_cycle, float blink_freq_hz) {
-    if (blink_freq_hz < 0.1f) blink_freq_hz = 0.1f;
+    if (blink_freq_hz < 0.05f) blink_freq_hz = 0.05f;
     if (blink_freq_hz > 10.0f) blink_freq_hz = 10.0f;
 
     if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         m_duty_cycle = duty_cycle;
         m_blink_freq = blink_freq_hz;
+        m_mode = LedPatternMode::BLINK;
+        xSemaphoreGive(m_mutex);
+    }
+}
+
+void StatusLed::setPulse(float pulse_freq_hz, uint8_t max_brightness) {
+    if (pulse_freq_hz < 0.05f) pulse_freq_hz = 0.05f;
+    if (pulse_freq_hz > 10.0f) pulse_freq_hz = 10.0f;
+
+    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        m_blink_freq = pulse_freq_hz;
+        m_brightness = max_brightness;
+        m_mode = LedPatternMode::PULSE;
         xSemaphoreGive(m_mutex);
     }
 }
 
 void StatusLed::setPattern(RgbColor color, uint8_t brightness, BlinkConfig blink) {
     if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        if (m_r != color.r || m_g != color.g || m_b != color.b ||
-            m_brightness != brightness || m_duty_cycle != blink.duty_cycle ||
-            m_blink_freq != blink.blink_freq) {
-            m_r = color.r;
-            m_g = color.g;
-            m_b = color.b;
-            m_brightness = brightness;
-            m_duty_cycle = blink.duty_cycle;
-            m_blink_freq = (blink.blink_freq < 0.1f) ? 0.1f : (blink.blink_freq > 10.0f ? 10.0f : blink.blink_freq);
-        }
+        m_r = color.r;
+        m_g = color.g;
+        m_b = color.b;
+        m_brightness = brightness;
+        m_duty_cycle = blink.duty_cycle;
+        m_blink_freq = (blink.blink_freq < 0.05f) ? 0.05f : (blink.blink_freq > 10.0f ? 10.0f : blink.blink_freq);
+        m_mode = blink.mode;
         xSemaphoreGive(m_mutex);
     }
 }
@@ -116,7 +131,10 @@ void StatusLed::setSystemState(SystemState state) {
     m_current_state = state;
     switch (state) {
         case SystemState::IDLE:
-            setPattern(LED_COLOR_GREEN, DEFAULT_LED_BRIGHTNESS, BLINK_SLOW);
+            setPattern(LED_COLOR_GREEN, DEFAULT_LED_BRIGHTNESS, PULSE_SLOW);
+            break;
+        case SystemState::SCANNING:
+            setPattern(LED_COLOR_BLUE, DEFAULT_LED_BRIGHTNESS, PULSE_SLOW);
             break;
         case SystemState::BROADCASTING:
             setPattern(LED_COLOR_BLUE, DEFAULT_LED_BRIGHTNESS, BLINK_FAST);
@@ -144,13 +162,13 @@ void StatusLed::triggerUnderrunFlashFromISR(uint32_t duration_ms) {
     m_flash_red_until_tick.store(now + pdMS_TO_TICKS(duration_ms), std::memory_order_release);
 }
 
-void StatusLed::updateHardwareLed(bool is_on) {
+void StatusLed::updateHardwareLed(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
     if (!m_strip_handle) return;
 
-    if (is_on && m_brightness > 0) {
-        uint32_t scaled_r = (static_cast<uint32_t>(m_r) * m_brightness + 127) / 255;
-        uint32_t scaled_g = (static_cast<uint32_t>(m_g) * m_brightness + 127) / 255;
-        uint32_t scaled_b = (static_cast<uint32_t>(m_b) * m_brightness + 127) / 255;
+    if (brightness > 0) {
+        uint32_t scaled_r = (static_cast<uint32_t>(r) * brightness + 127) / 255;
+        uint32_t scaled_g = (static_cast<uint32_t>(g) * brightness + 127) / 255;
+        uint32_t scaled_b = (static_cast<uint32_t>(b) * brightness + 127) / 255;
         // Standard RGB order (driver internally converts to GRB based on strip_config)
         led_strip_set_pixel(m_strip_handle, 0, scaled_r, scaled_g, scaled_b);
         led_strip_refresh(m_strip_handle);
@@ -161,14 +179,16 @@ void StatusLed::updateHardwareLed(bool is_on) {
 
 void StatusLed::ledTaskRoutine(void* pvParameters) {
     auto* instance = static_cast<StatusLed*>(pvParameters);
+    constexpr uint32_t UPDATE_INTERVAL_MS = 25; // 40 Hz smooth update cadence
+    TickType_t last_wake_time = xTaskGetTickCount();
 
     while (instance->m_running) {
         TickType_t flash_until = instance->m_flash_red_until_tick.load(std::memory_order_acquire);
         TickType_t now = xTaskGetTickCount();
         if (flash_until > now) {
-            // Flash soft RED for SINK underrun event (GRB: G=0, R=scaled, B=0)
+            // Flash soft RED for SINK underrun event
             if (instance->m_strip_handle) {
-                led_strip_set_pixel(instance->m_strip_handle, 0, 0, DEFAULT_LED_BRIGHTNESS, 0);
+                led_strip_set_pixel(instance->m_strip_handle, 0, DEFAULT_LED_BRIGHTNESS, 0, 0);
                 led_strip_refresh(instance->m_strip_handle);
             }
             TickType_t remaining = flash_until - now;
@@ -177,41 +197,75 @@ void StatusLed::ledTaskRoutine(void* pvParameters) {
             continue;
         }
 
-        uint8_t duty = instance->m_duty_cycle;
-        float freq = instance->m_blink_freq;
+        uint8_t r = 0, g = 0, b = 0, max_brightness = 0, duty = 0;
+        float freq = 1.0f;
+        LedPatternMode mode = LedPatternMode::BLINK;
 
-        if (duty == 0) {
-            instance->updateHardwareLed(false);
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        if (xSemaphoreTake(instance->m_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            r = instance->m_r;
+            g = instance->m_g;
+            b = instance->m_b;
+            max_brightness = instance->m_brightness;
+            duty = instance->m_duty_cycle;
+            freq = instance->m_blink_freq;
+            mode = instance->m_mode;
+            xSemaphoreGive(instance->m_mutex);
+        }
+
+        if (mode == LedPatternMode::OFF || max_brightness == 0) {
+            instance->updateHardwareLed(0, 0, 0, 0);
+            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
             continue;
         }
 
-        if (duty >= 255) {
-            instance->updateHardwareLed(true);
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        if (mode == LedPatternMode::SOLID) {
+            instance->updateHardwareLed(r, g, b, max_brightness);
+            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
             continue;
         }
 
-        // Calculate ON and OFF durations based on frequency and duty cycle (0 - 255)
-        float period_ms = 1000.0f / freq;
-        if (period_ms < 50.0f) period_ms = 50.0f;
-        if (period_ms > 10000.0f) period_ms = 10000.0f;
-
-        float on_fraction = static_cast<float>(duty) / 255.0f;
-        uint32_t on_ms = static_cast<uint32_t>(period_ms * on_fraction + 0.5f);
-        if (on_ms < 10) on_ms = 10;
-        if (on_ms > static_cast<uint32_t>(period_ms - 10)) on_ms = static_cast<uint32_t>(period_ms - 10);
-        uint32_t off_ms = static_cast<uint32_t>(period_ms) - on_ms;
-
-        // Turn ON
-        instance->updateHardwareLed(true);
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(on_ms)) != 0) {
+        if (mode == LedPatternMode::PULSE) {
+            if (freq < 0.05f) freq = 0.05f;
+            float period_ms = 1000.0f / freq;
+            uint32_t now_ms = pdTICKS_TO_MS(xTaskGetTickCount());
+            float t = fmodf(static_cast<float>(now_ms), period_ms) / period_ms; // 0.0 .. 1.0
+            
+            // Triangle wave from 0 to 1 and back to 0
+            float l1 = (t < 0.5f) ? (2.0f * t) : (2.0f - 2.0f * t);
+            // Quadratic curve: q1 = l1 * l1
+            float q1 = l1 * l1;
+            
+            uint8_t current_brightness = static_cast<uint8_t>(max_brightness * q1 + 0.5f);
+            instance->updateHardwareLed(r, g, b, current_brightness);
+            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(UPDATE_INTERVAL_MS));
             continue;
         }
 
-        // Turn OFF
-        instance->updateHardwareLed(false);
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(off_ms)) != 0) {
+        // BLINK mode
+        if (mode == LedPatternMode::BLINK) {
+            if (duty == 0) {
+                instance->updateHardwareLed(0, 0, 0, 0);
+                vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+                continue;
+            }
+            if (duty >= 255) {
+                instance->updateHardwareLed(r, g, b, max_brightness);
+                vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+                continue;
+            }
+
+            float period_ms = 1000.0f / freq;
+            if (period_ms < 50.0f) period_ms = 50.0f;
+            uint32_t now_ms = pdTICKS_TO_MS(xTaskGetTickCount());
+            float t = fmodf(static_cast<float>(now_ms), period_ms) / period_ms;
+            float on_fraction = static_cast<float>(duty) / 255.0f;
+
+            if (t < on_fraction) {
+                instance->updateHardwareLed(r, g, b, max_brightness);
+            } else {
+                instance->updateHardwareLed(0, 0, 0, 0);
+            }
+            vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(UPDATE_INTERVAL_MS));
             continue;
         }
     }

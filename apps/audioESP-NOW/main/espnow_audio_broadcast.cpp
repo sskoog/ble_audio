@@ -1,5 +1,6 @@
 #include "espnow_audio_broadcast.hpp"
 #include "config.h"
+#include "status_led.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
@@ -637,6 +638,7 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
             clear_rx_fifo();
             m_has_last_rx_seq = false;
             m_audio_meter.pushSilence();
+            Hardware::getStatusLed().off();
             break;
         }
 
@@ -650,6 +652,7 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
             clear_rx_fifo();
             m_has_last_rx_seq = false;
             m_audio_meter.pushSilence();
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::IDLE);
             break;
         }
 
@@ -663,6 +666,7 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
             clear_rx_fifo();
             m_has_last_rx_seq = false;
             m_audio_meter.pushSilence();
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::SCANNING);
             break;
         }
 
@@ -677,6 +681,7 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
             if (m_i2s_dac) {
                 m_i2s_dac->start();
             }
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::STREAMING);
             break;
         }
 
@@ -684,6 +689,7 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
             if (!m_wifi_initialized) {
                 enableWifiEspNow();
             }
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING);
             break;
         }
 

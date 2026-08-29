@@ -36,29 +36,42 @@ inline constexpr uint8_t DEFAULT_LED_BRIGHTNESS = 64;
 inline constexpr uint8_t DEFAULT_LED_DUTY_CYCLE = 48; 
 
 // =====================================================================
-//                   BLINK PATTERN CONSTANTS
+//                   PATTERN MODES & CONSTANTS
 // =====================================================================
-struct BlinkConfig {
-    uint8_t duty_cycle; // 0 to 255 (0 = OFF, 255 = SOLID ON, 48 = ~19% pulse)
-    float   blink_freq; // 0.1 Hz to 10.0 Hz
-
-    constexpr BlinkConfig(uint8_t duty = DEFAULT_LED_DUTY_CYCLE, float freq = 1.0f)
-        : duty_cycle(duty), blink_freq(freq) {}
+enum class LedPatternMode {
+    OFF,
+    SOLID,
+    BLINK,
+    PULSE
 };
 
-inline constexpr BlinkConfig BLINK_SLOW{DEFAULT_LED_DUTY_CYCLE, 1.0f}; // 1.0 Hz
-inline constexpr BlinkConfig BLINK_FAST{DEFAULT_LED_DUTY_CYCLE, 2.5f}; // 2.5 Hz fast pulse
-inline constexpr BlinkConfig BLINK_SOLID{255, 1.0f};
-inline constexpr BlinkConfig BLINK_OFF{0, 1.0f};
+struct BlinkConfig {
+    uint8_t duty_cycle; // 0 to 255 (0 = OFF, 255 = SOLID ON, 48 = ~19% pulse)
+    float   blink_freq; // Frequency in Hz (0.05 Hz to 10.0 Hz)
+    LedPatternMode mode = LedPatternMode::BLINK;
+
+    constexpr BlinkConfig(uint8_t duty = DEFAULT_LED_DUTY_CYCLE, float freq = 1.0f, LedPatternMode m = LedPatternMode::BLINK)
+        : duty_cycle(duty), blink_freq(freq), mode(m) {}
+};
+
+inline constexpr BlinkConfig BLINK_SLOW{DEFAULT_LED_DUTY_CYCLE, 1.0f, LedPatternMode::BLINK}; // 1.0 Hz
+inline constexpr BlinkConfig BLINK_FAST{DEFAULT_LED_DUTY_CYCLE, 2.5f, LedPatternMode::BLINK}; // 2.5 Hz fast pulse
+inline constexpr BlinkConfig BLINK_SOLID{255, 1.0f, LedPatternMode::SOLID};
+inline constexpr BlinkConfig BLINK_OFF{0, 1.0f, LedPatternMode::OFF};
+
+// Quadratic Pulse Modes (fades 0 -> max -> 0 smoothly)
+inline constexpr BlinkConfig PULSE_SLOW{255, 0.25f, LedPatternMode::PULSE}; // 0.25 Hz (4.0s period)
+inline constexpr BlinkConfig PULSE_FAST{255, 1.0f,  LedPatternMode::PULSE}; // 1.0 Hz  (1.0s period)
 
 // =====================================================================
 //                       SYSTEM STATES
 // =====================================================================
 enum class SystemState {
-    IDLE,           // BLINK_SLOW, GREEN @ 20% brightness
-    BROADCASTING,   // BLINK_FAST, BLUE  @ 20% brightness
-    STREAMING,      // BLINK_FAST, TEAL  @ 20% brightness
-    BT_SYNC         // BLINK_SLOW, TEAL  @ 20% brightness
+    IDLE,           // PULSE_SLOW, GREEN @ DEFAULT_LED_BRIGHTNESS
+    SCANNING,       // PULSE_SLOW, BLUE  @ DEFAULT_LED_BRIGHTNESS
+    BROADCASTING,   // BLINK_FAST, BLUE  @ DEFAULT_LED_BRIGHTNESS
+    STREAMING,      // BLINK_FAST, TEAL  @ DEFAULT_LED_BRIGHTNESS
+    BT_SYNC         // BLINK_SLOW, TEAL  @ DEFAULT_LED_BRIGHTNESS
 };
 
 // =====================================================================
@@ -79,6 +92,7 @@ public:
     // Sets blinking parameters
     void setBlink(BlinkConfig blink);
     void setBlink(uint8_t duty_cycle, float blink_freq_hz);
+    void setPulse(float pulse_freq_hz = 0.25f, uint8_t max_brightness = DEFAULT_LED_BRIGHTNESS);
 
     // Configures combined pattern
     void setPattern(RgbColor color, uint8_t brightness, BlinkConfig blink);
@@ -95,7 +109,7 @@ public:
 
 private:
     static void ledTaskRoutine(void* pvParameters);
-    void updateHardwareLed(bool is_on);
+    void updateHardwareLed(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness);
 
     int m_gpio_num = 8;
     led_strip_handle_t m_strip_handle = nullptr;
@@ -109,6 +123,7 @@ private:
     uint8_t m_brightness = DEFAULT_LED_BRIGHTNESS;
     uint8_t m_duty_cycle = DEFAULT_LED_DUTY_CYCLE;
     float   m_blink_freq = 2.0f;
+    LedPatternMode m_mode = LedPatternMode::BLINK;
     SystemState m_current_state = SystemState::BROADCASTING;
     std::atomic<TickType_t> m_flash_red_until_tick{0};
 };

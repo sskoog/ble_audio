@@ -189,7 +189,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Booting Node: %s (Role: %s, ID: %u)",
              cfg->device_name, (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK", cfg->node_id);
 
-    s_status_led = new Hardware::StatusLed();
+    s_status_led = &Hardware::getStatusLed();
     s_status_led->init(cfg->status_led_gpio);
     s_status_led->setSystemState(Hardware::SystemState::IDLE);
 
