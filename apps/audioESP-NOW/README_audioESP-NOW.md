@@ -57,11 +57,12 @@ For full protocol packet layout, bitfields, and recovery mechanisms, see the [VS
 
 ### Tested Hardware Nodes & COM-Port Layout
 
-| Node ID | Role | Board Type | Port | Hardware Controller | Default Baud Rate | Primary Function |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM121** | WCH CH343 USB-to-UART | **2,000,000 baud** | **Real-Time PC Audio Ingestion** (`pc_audio_streamer.py`) & Bumble HCI |
-| **Node 21** | **SOURCE** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM21** | Native On-Chip USB CDC / JTAG | **115,200 baud** (460,800 flash) | **Firmware Uploads** (`build_and_flash.ps1`) & **1 Hz Live Telemetry** |
-| **Node 23** | **SINK** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) (18-pin Mini) | **COM23** | Native On-Chip USB CDC / JTAG | **115,200 baud** (460,800 flash) | **Audio Playback** (I2S DAC / Speaker) & Diagnostics |
+| Node ID | Role | Board Type | Port | Baud Rate | Primary Function |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Node 16** | **SOURCE** | [ESP32-S3-XIAO](https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html) | **COM16** | **115,200 baud** (2 Mbaud stream) | **High-Fidelity LC3 Broadcaster** & Bumble HCI |
+| **Node 21** | **SINK** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY) (32-pin DevKit) | **COM21** | **115,200 baud** (460,800 flash) | **Audio Playback** (I2S DAC / Speaker) & Diagnostics |
+| **Node 23** | **SINK** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) (18-pin Mini) | **COM23** | **115,200 baud** (460,800 flash) | **Audio Playback** (I2S DAC / Speaker) & Diagnostics |
+| **Node 24** | **SINK** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) (18-pin Mini) | **COM24** | **115,200 baud** (460,800 flash) | **Audio Playback** (I2S DAC / Speaker) & Diagnostics |
 
 #### Baud Rate Selection Rationale
 
@@ -90,18 +91,22 @@ The SINK firmware outputs standard digital audio over I2S to external DAC module
 ## 4. Prerequisites & Dependencies
 
 ### Hardware Requirements
-1. At least two ESP32-C6 development boards (or ESP32-S3 boards).
+1. At least two ESP32's: One as SOURCE and one as SINK.
+  * SINK nodes runs LC3 decoding, which is less compute-heavy than encoding. ESP32-C6 are used as SINKs in this project. About 2.0 ms is required for an ESP32-C6 to decode one 48 kHz, 120 B LC3-frame using ESP-IDF's fixed-point `esp_lc3`.
+  * SOURCE nodes need to do real-time LC3 encoding, which is compute-heavy for embedded system. The low-performance ESP32's, e.g. (C6 and ESP32-WROOM-32) are NOT powerful enough to run real-time LC3 encoding for more than one single medium-quality channel at a time! The C6 and ESP32-WROOM-32 needs ca 7 ms to encode a single frame of 48 kHz 128 kbps, which is far too slow for both 7.5 and 10 ms frame duration! See benchmark at [lc3_encoder_cross_soc_benchmark.md](../../docs/lc3_encoder_cross_soc_benchmark.md). ESP32-S3 requires only 3.2 ms to encode the same frame, using hardware floating point support and `liblc3`. ESP32 with hardware floating point support (FPU) are strongly recommended as SOURCE nodes; ESP32-S3, ESP32-S31 and possibly single-core ESP32-S2 for stereo audio.
 2. At least one I2S DAC module (e.g., MAX98357A 3.2W Class-D amplifier module).
 3. USB cables connecting the nodes to the Windows host PC.
 
 ### Software Requirements
-1. **ESP-IDF v6.0.2 or newer** installed and configured in your environment (`C:\Espressif\idf-v6.0.2\esp-idf`).
-2. **Python 3.10+** (64-bit).
-3. **FFmpeg** installed and accessible in the system `PATH` (used by the PC streamer for real-time MP3 decoding):
+1. **ESP-IDF v6.0.2 or newer** installed and configured in your environment.
+   * ESP-IDF library `esp_lc3` for fixed-point LC3 encoding/decoding.
+2. **[https://github.com/google/liblc3](https://github.com/google/liblc3)** (for high-performance LC3 encoding/decoding on PC and ESP32's with FPU/vector extensions).
+3. **Python 3.10+** (64-bit).
+4. **FFmpeg** installed and accessible in the system `PATH` (used by the PC streamer for real-time MP3 decoding):
    ```powershell
    winget install ffmpeg
    ```
-4. **Python Dependencies** (installed in project virtual environment `venv_ble_audio`):
+5. **Python Dependencies** (installed in project virtual environment `venv_ble_audio`):
    ```powershell
    pip install numpy scipy pyserial sounddevice
    ```

@@ -13,9 +13,7 @@
 #include "esp_idf_version.h"
 #include "nvs_flash.h"
 #include "driver/uart.h"
-#include "driver/uart_vfs.h"
 #include "driver/usb_serial_jtag.h"
-#include "driver/usb_serial_jtag_vfs.h"
 #include "soc/usb_serial_jtag_struct.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -97,17 +95,24 @@ static uint32_t get_next_sample_rate(uint32_t current_sr) {
 }
 
 #include "hal/usb_serial_jtag_ll.h"
+#include "freertos/semphr.h"
+
+static SemaphoreHandle_t s_console_mutex = nullptr;
 
 static void print_console(const char* fmt, ...) {
-    char buf[256];
+    if (!s_console_mutex) {
+        s_console_mutex = xSemaphoreCreateMutex();
+    }
+    if (s_console_mutex) {
+        xSemaphoreTake(s_console_mutex, portMAX_DELAY);
+    }
     va_list args;
     va_start(args, fmt);
-    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    vprintf(fmt, args);
     va_end(args);
-
-    if (len > 0) {
-        fwrite(buf, 1, len, stdout);
-        fflush(stdout);
+    fflush(stdout);
+    if (s_console_mutex) {
+        xSemaphoreGive(s_console_mutex);
     }
 }
 
@@ -217,6 +222,25 @@ static void handle_ascii_command(const char* raw_line) {
             print_console("[OK] Streaming error counters cleared\n");
             ESP_LOGW(TAG, "Streaming error counters (DMA UDR, FIFO UDR, PREV REC, PLC) cleared.");
         }
+    } else if (strcasecmp(line, "mono") == 0 || strncasecmp(line, "mode mono", 9) == 0) {
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->setStereo(false);
+            print_console("[OK] SOURCE Audio Mode set to MONO (1 LC3 encode -> Ch0 & Ch1 duplicated)\n");
+            ESP_LOGW(TAG, "SOURCE Audio Mode set to MONO");
+        }
+    } else if (strcasecmp(line, "stereo") == 0 || strncasecmp(line, "mode stereo", 11) == 0) {
+        if (s_espnow_broadcast) {
+            s_espnow_broadcast->setStereo(true);
+            print_console("[OK] SOURCE Audio Mode set to STEREO (2 distinct LC3 encodes for Ch0 & Ch1)\n");
+            ESP_LOGW(TAG, "SOURCE Audio Mode set to STEREO");
+        }
+    } else if (strcasecmp(line, "mode") == 0 || strcasecmp(line, "ch_mode") == 0) {
+        if (s_espnow_broadcast) {
+            bool new_st = !s_espnow_broadcast->isStereo();
+            s_espnow_broadcast->setStereo(new_st);
+            print_console("[OK] Toggled SOURCE Audio Mode to: %s\n", new_st ? "STEREO (2 encodes)" : "MONO (1 encode duplicated)");
+            ESP_LOGW(TAG, "Toggled SOURCE Audio Mode to: %s", new_st ? "STEREO" : "MONO");
+        }
     } else if (strcasecmp(line, "bench") == 0 || strcasecmp(line, "test") == 0 || strcasecmp(line, "benchmark") == 0) {
         if (s_bench_suite) {
             print_console("[OK] Starting LC3 Hardware Benchmark Suite...\n");
@@ -227,6 +251,9 @@ static void handle_ascii_command(const char* raw_line) {
         print_console("\n================ AVAILABLE CONSOLE COMMANDS ================\n"
                       "  start / play        : Start audio broadcast (BROADCASTING)\n"
                       "  stop / idle         : Stop audio broadcast (IDLE)\n"
+                      "  mono                : Set Mono mode (1 encode -> duplicated to Ch0 & Ch1)\n"
+                      "  stereo              : Set Stereo mode (2 separate encodes for Ch0 & Ch1)\n"
+                      "  mode / ch_mode      : Toggle Mono <-> Stereo mode\n"
                       "  sr <hz> / rate <hz> : Set Sample Rate (48k, 32k, 24k, 16k, 8k)\n"
                       "  sr / rate           : Cycle to next supported sample rate\n"
                       "  dur <10|7.5>        : Set Frame Duration (10.0 ms or 7.5 ms)\n"
@@ -259,21 +286,25 @@ static void console_task_routine(void* pvParameters) {
     size_t ring_len = 0;
     static constexpr size_t VSAF_PKT_SIZE = sizeof(AudioNet::EspNowAudioPacket); // 248 bytes
 
-    // Install high-speed UART0 driver (COM121) @ 2,000,000 baud with 4KB buffer
+    // Install UART0 driver (115200 standard baud on S3, 2MBaud on C6 Node 21)
+    int uart_baud = 115200;
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+    uart_baud = 2000000;
+#endif
+
     uart_config_t uart_cfg = {
-        .baud_rate = 2000000,
+        .baud_rate = uart_baud,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .rx_flow_ctrl_thresh = 0,
         .source_clk = UART_SCLK_DEFAULT,
-        .flags = { .allow_pd = 0 },
     };
     uart_param_config(UART_NUM_0, &uart_cfg);
     uart_driver_install(UART_NUM_0, 4096, 512, 0, NULL, 0);
 
-    print_console("\n[CONSOLE READY] Active on COM121 (2MBaud UART) & COM21 (USB-JTAG). Binary VSAF & CLI enabled.\n");
+    print_console("\n[CONSOLE READY] CLI & Binary VSAF input active on USB-Serial and UART0 (%d baud).\n", uart_baud);
 
     auto process_incoming_byte = [&](uint8_t byte) {
         if (ring_len < sizeof(ring_buf)) {
@@ -360,8 +391,10 @@ static void console_task_routine(void* pvParameters) {
 }
 
 extern "C" void app_main(void) {
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
     // Disable automatic hardware chip reset triggered by USB CDC line state (DTR/RTS) changes on connect/disconnect
     USB_SERIAL_JTAG.chip_rst.usb_uart_chip_rst_dis = 1;
+#endif
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -382,7 +415,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ret);
 
     s_status_led = &Hardware::getStatusLed();
-    s_status_led->init(cfg->status_led_gpio);
+    s_status_led->init(cfg->status_led_gpio, cfg->status_led_num, (cfg->status_led_gpio == 21));
     s_status_led->setSystemState(Hardware::SystemState::IDLE);
 
     s_user_button = new Hardware::Button(cfg->user_button_gpio, true, 150);
@@ -415,8 +448,13 @@ extern "C" void app_main(void) {
 
     s_espnow_broadcast->startAudioTask();
 
+#if SOC_CPU_CORES_NUM > 1
+    xTaskCreatePinnedToCore(diagnostics_task_routine, "diagnostics", 4096, nullptr, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(console_task_routine, "console", 4096, nullptr, 2, nullptr, 0);
+#else
     xTaskCreate(diagnostics_task_routine, "diagnostics", 4096, nullptr, 2, nullptr);
     xTaskCreate(console_task_routine, "console", 4096, nullptr, 2, nullptr);
+#endif
 
     ESP_LOGI(TAG, "audioESP-NOW node initialized and running. Type 'bench' to run benchmark.");
 }

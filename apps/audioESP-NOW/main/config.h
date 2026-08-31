@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sdkconfig.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -11,11 +12,19 @@ extern "C" {
 #define NODE_ROLE_SOURCE 1
 
 #ifndef CONFIG_ACTIVE_NODE_ID
-#define CONFIG_ACTIVE_NODE_ID 21
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define CONFIG_ACTIVE_NODE_ID 16
+#else
+#define CONFIG_ACTIVE_NODE_ID 23
+#endif
 #endif
 
 #ifndef CONFIG_ACTIVE_NODE_ROLE
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
 #define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SOURCE
+#else
+#define CONFIG_ACTIVE_NODE_ROLE NODE_ROLE_SINK
+#endif
 #endif
 
 #ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
@@ -23,7 +32,7 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES
-#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES 5 // Consecutive missing frames / PLC before falling back from STREAMING to SCANNING (5 = 50ms)
+#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES 20 // Consecutive missing frames / PLC before falling back from STREAMING to SCANNING (20 = 200ms)
 #endif
 
 #ifndef CONFIG_ESPNOW_SAMPLE_RATE_HZ

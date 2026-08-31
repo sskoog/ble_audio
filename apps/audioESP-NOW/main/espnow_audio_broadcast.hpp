@@ -277,6 +277,7 @@ public:
     uint32_t getDmaUnderrunCount() const { return m_i2s_dac ? m_i2s_dac->getUnderrunCount() : 0; }
     uint8_t getHardwareGainDb() const { return m_i2s_dac ? m_i2s_dac->getHardwareGainDb() : 0; }
     void setHardwareGain(Hardware::Max98357Gain gain) { if (m_i2s_dac) m_i2s_dac->setHardwareGain(gain); }
+    uint32_t getPlcCount() const { return m_lc3_codec.getPlcCount(); }
     uint32_t getAndResetPlcCount() { return m_lc3_codec.getAndResetPlcCount(); }
 
     void resetStreamingCounters();
@@ -296,6 +297,10 @@ public:
         m_codec_duration_ring_buffer.getStats(out_avg_ms, out_peak_ms, out_has_data);
     }
 
+    // Stereo / Mono Broadcast Mode (SOURCE node)
+    void setStereo(bool stereo) { m_is_stereo.store(stereo, std::memory_order_relaxed); }
+    bool isStereo() const { return m_is_stereo.load(std::memory_order_relaxed); }
+
     // Test Hooks
     void setTestMagicWord(uint16_t magic) { m_active_magic = magic; }
     uint16_t getTestMagicWord() const { return m_active_magic; }
@@ -306,8 +311,10 @@ private:
     void runSourceLoop();
     void runSinkLoop();
 
-    Codec::Lc3CodecEngine&     m_lc3_codec;
-    Audio::ToneGenerator*      m_tone_gen;
+    Codec::Lc3CodecEngine&     m_lc3_codec;    // Primary encoder (Left / Mono) or SINK decoder
+    Codec::Lc3CodecEngine      m_lc3_codec_r;  // Secondary encoder (Right Channel for Stereo)
+    Audio::ToneGenerator*      m_tone_gen;     // Primary tone generator (Left / Mono)
+    Audio::ToneGenerator       m_tone_gen_r;   // Secondary tone generator (Right Channel for Stereo)
     Hardware::I2sAudioDriver*  m_i2s_dac;
 
     uint8_t                    m_node_role;
@@ -335,7 +342,8 @@ private:
     std::atomic<uint32_t>      m_prev_frame_recoveries{0};
     std::atomic<uint32_t>      m_simulated_drop_count{0};
 
-    // USB Stream Ingest State (SOURCE node)
+    // Broadcast Mode & Ingest State (SOURCE node)
+    std::atomic<bool>          m_is_stereo{false};
     std::atomic<bool>          m_usb_stream_active{false};
     std::atomic<int64_t>       m_last_usb_packet_time_us{0};
 

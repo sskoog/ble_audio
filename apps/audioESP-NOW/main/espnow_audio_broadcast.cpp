@@ -133,9 +133,11 @@ esp_err_t EspNowAudioBroadcast::init(uint8_t node_role) {
 
     if (m_node_role == NODE_ROLE_SOURCE) {
         m_lc3_codec.initEncoder(m_telemetry.sample_rate, 1, m_frame_duration_us, m_octets_per_frame);
+        m_lc3_codec_r.initEncoder(m_telemetry.sample_rate, 1, m_frame_duration_us, m_octets_per_frame);
         if (m_tone_gen) {
             m_tone_gen->setSampleRate(m_telemetry.sample_rate);
         }
+        m_tone_gen_r.init(m_telemetry.sample_rate, 440.0f, 220.0f, 880.0f, 50.0f);
     } else { // SINK
         m_lc3_codec.initDecoder(m_telemetry.sample_rate, 1, m_frame_duration_us, m_octets_per_frame);
         if (m_i2s_dac) {
@@ -202,9 +204,11 @@ esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t
         // If running, runSourceLoop detects the change synchronously at the frame boundary.
         if (!m_audio_task_running) {
             m_lc3_codec.reconfigureEncoder(sample_rate_hz, frame_len_octets, m_frame_duration_us);
+            m_lc3_codec_r.reconfigureEncoder(sample_rate_hz, frame_len_octets, m_frame_duration_us);
             if (m_tone_gen) {
                 m_tone_gen->setSampleRate(sample_rate_hz);
             }
+            m_tone_gen_r.setSampleRate(sample_rate_hz);
         }
     } else {
         m_lc3_codec.reconfigureDecoder(sample_rate_hz, frame_len_octets, m_frame_duration_us);
@@ -243,6 +247,7 @@ void EspNowAudioBroadcast::processUsbVsafPacket(const uint8_t* data, size_t len)
     // Check if transitioning to USB active mode
     if (!m_usb_stream_active.load(std::memory_order_relaxed)) {
         ESP_LOGI(TAG, "SOURCE: Detected USB PC Audio Stream! Suspending internal tone generator...");
+        Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING_STREAM);
     }
     m_usb_stream_active.store(true, std::memory_order_relaxed);
     m_last_usb_packet_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
@@ -281,6 +286,11 @@ esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
     esp_wifi_config_11b_rate(WIFI_IF_STA, true);
     esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_24M);
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(36)); // +9 dBm (36 * 0.25 dBm) for ultra-low thermal dissipation
+    int8_t actual_tx_power = 0;
+    if (esp_wifi_get_max_tx_power(&actual_tx_power) == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi TX Power set to +%.2f dBm (raw: %d)", actual_tx_power * 0.25f, actual_tx_power);
+    }
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
 
@@ -306,7 +316,11 @@ esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
 
 esp_err_t EspNowAudioBroadcast::startAudioTask() {
     m_audio_task_running = true;
+#if SOC_CPU_CORES_NUM > 1
+    xTaskCreatePinnedToCore(audioTaskRoutine, "espnow_audio", 8192, this, 3, &s_audio_task_handle, 1);
+#else
     xTaskCreate(audioTaskRoutine, "espnow_audio", 8192, this, 3, &s_audio_task_handle);
+#endif
     return ESP_OK;
 }
 
@@ -321,15 +335,21 @@ void EspNowAudioBroadcast::audioTaskRoutine(void* pvParameters) {
 }
 
 void EspNowAudioBroadcast::runSourceLoop() {
-    static int16_t pcm_buffer[MAX_PCM_FRAME_SAMPLES] = {0};
-    static uint8_t curr_lc3[MAX_LC3_FRAME_OCTETS] = {0};
-    static uint8_t prev_lc3[MAX_LC3_FRAME_OCTETS] = {0};
-    size_t encoded_bytes = 0;
+    static int16_t pcm_buffer_l[MAX_PCM_FRAME_SAMPLES] = {0};
+    static int16_t pcm_buffer_r[MAX_PCM_FRAME_SAMPLES] = {0};
+    static uint8_t curr_lc3_l[MAX_LC3_FRAME_OCTETS] = {0};
+    static uint8_t prev_lc3_l[MAX_LC3_FRAME_OCTETS] = {0};
+    static uint8_t curr_lc3_r[MAX_LC3_FRAME_OCTETS] = {0};
+    static uint8_t prev_lc3_r[MAX_LC3_FRAME_OCTETS] = {0};
+    size_t encoded_bytes_l = 0;
+    size_t encoded_bytes_r = 0;
     uint8_t seq = 0;
+    int64_t next_frame_target_us = esp_timer_get_time();
 
     while (m_audio_task_running) {
         if (m_state != NetworkState::BROADCASTING) {
             vTaskDelay(pdMS_TO_TICKS(50));
+            next_frame_target_us = esp_timer_get_time();
             continue;
         }
 
@@ -345,6 +365,7 @@ void EspNowAudioBroadcast::runSourceLoop() {
             if (now_usb_us - last_usb_us > 250000) { // 250 ms timeout
                 m_usb_stream_active.store(false, std::memory_order_relaxed);
                 ESP_LOGW(TAG, "SOURCE: USB stream timed out (>250ms). Resuming internal tone generator...");
+                Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING_TONE);
             } else {
                 // USB Stream active: suspend internal encoder loop
                 vTaskDelay(pdMS_TO_TICKS(5));
@@ -352,6 +373,7 @@ void EspNowAudioBroadcast::runSourceLoop() {
             }
         }
 
+        bool is_stereo = m_is_stereo.load(std::memory_order_relaxed);
         uint32_t current_sr = m_telemetry.sample_rate;
         uint16_t current_len = m_octets_per_frame;
 
@@ -364,25 +386,52 @@ void EspNowAudioBroadcast::runSourceLoop() {
             }
         }
 
+        if (is_stereo) {
+            if (m_lc3_codec_r.getSampleRate() != current_sr ||
+                m_lc3_codec_r.getFrameDurationUs() != active_dur_us ||
+                m_lc3_codec_r.getOctetsPerFrame() != current_len) {
+                m_lc3_codec_r.reconfigureEncoder(current_sr, current_len, active_dur_us);
+                m_tone_gen_r.setSampleRate(current_sr);
+            }
+        }
+
         size_t samples_to_gen = Codec::calculateRequiredPcmSamples(current_sr, active_dur_us);
 
-        // Channel 0 (Left)
-        if (m_tone_gen) {
-            m_tone_gen->generateFrame(pcm_buffer, samples_to_gen);
-        }
-        // Encode single LC3 frame with precise microsecond timing
         int64_t enc_start_us = esp_timer_get_time();
-        m_lc3_codec.encodeFrame(pcm_buffer, samples_to_gen, curr_lc3, sizeof(curr_lc3), &encoded_bytes);
+
+        if (!is_stereo) {
+            // ================= MONO MODE =================
+            // 1. Generate single mono tone
+            if (m_tone_gen) {
+                m_tone_gen->generateFrame(pcm_buffer_l, samples_to_gen);
+            }
+            // 2. Encode single LC3 frame
+            m_lc3_codec.encodeFrame(pcm_buffer_l, samples_to_gen, curr_lc3_l, sizeof(curr_lc3_l), &encoded_bytes_l);
+            m_audio_meter.pushFramePcm(pcm_buffer_l, samples_to_gen);
+        } else {
+            // ================= STEREO MODE =================
+            // 1. Generate Left (Channel 0, 220Hz nominal) and Right (Channel 1, 440Hz nominal) tones
+            if (m_tone_gen) {
+                m_tone_gen->generateFrame(pcm_buffer_l, samples_to_gen);
+            }
+            m_tone_gen_r.generateFrame(pcm_buffer_r, samples_to_gen);
+
+            // 2. Encode two individual LC3 frames
+            m_lc3_codec.encodeFrame(pcm_buffer_l, samples_to_gen, curr_lc3_l, sizeof(curr_lc3_l), &encoded_bytes_l);
+            m_lc3_codec_r.encodeFrame(pcm_buffer_r, samples_to_gen, curr_lc3_r, sizeof(curr_lc3_r), &encoded_bytes_r);
+            m_audio_meter.pushFramePcm(pcm_buffer_l, samples_to_gen);
+        }
+
         int64_t enc_dur_us = esp_timer_get_time() - enc_start_us;
         m_codec_duration_ring_buffer.push(static_cast<uint32_t>(enc_dur_us));
-        m_audio_meter.pushFramePcm(pcm_buffer, samples_to_gen);
 
         uint32_t drop_val = m_simulated_drop_count.load(std::memory_order_relaxed);
         if (drop_val > 0) {
             m_simulated_drop_count.store(0, std::memory_order_relaxed);
             ESP_LOGW(TAG, "SOURCE: [TEST] Deliberately dropping packet Seq #%u to test SINK prev_frame recovery", seq);
             seq += 2;
-            memcpy(prev_lc3, curr_lc3, current_len);
+            memcpy(prev_lc3_l, curr_lc3_l, current_len);
+            if (is_stereo) memcpy(prev_lc3_r, curr_lc3_r, current_len);
         } else {
             uint8_t pkt_buf[VSAF_HEADER_LEN + 2 * MAX_LC3_FRAME_OCTETS];
             auto* hdr = reinterpret_cast<EspNowAudioHeader*>(pkt_buf);
@@ -395,34 +444,56 @@ void EspNowAudioBroadcast::runSourceLoop() {
             hdr->seq = seq;
             hdr->cfg = (0 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
             hdr->pts_us = pts;
-            memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3, current_len);
-            memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3, current_len);
+            memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3_l, current_len);
+            memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3_l, current_len);
             esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
 
             // Packet 2: Channel 1 (Right - Node 24)
             hdr->seq = seq;
             hdr->cfg = (1 & 0x07) | (sampleRateToCode(current_sr) << 3) | (dur_bit << 6) | (0 << 7);
             hdr->pts_us = pts;
+            if (!is_stereo) {
+                // Mono: duplicate Ch0 payload into Ch1
+                memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3_l, current_len);
+                memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3_l, current_len);
+            } else {
+                // Stereo: use distinct Right channel payload
+                memcpy(pkt_buf + VSAF_HEADER_LEN, curr_lc3_r, current_len);
+                memcpy(pkt_buf + VSAF_HEADER_LEN + current_len, prev_lc3_r, current_len);
+            }
             esp_now_send(s_broadcast_mac, pkt_buf, pkt_len);
 
             seq++;
-            memcpy(prev_lc3, curr_lc3, current_len);
+            memcpy(prev_lc3_l, curr_lc3_l, current_len);
+            if (is_stereo) {
+                memcpy(prev_lc3_r, curr_lc3_r, current_len);
+            }
             m_tx_packets_total.fetch_add(2, std::memory_order_relaxed);
             m_tx_packets_sec.fetch_add(2, std::memory_order_relaxed);
         }
 
-        // Pacing with guaranteed FreeRTOS yield (forces Priority 3 audioTask to block and let all tasks run)
-        uint32_t active_dur = m_frame_duration_us;
-        if (active_dur == 0) active_dur = 10000;
-        uint32_t frame_period_ms = active_dur / 1000;
-        if (frame_period_ms == 0) frame_period_ms = 10;
-        TickType_t period_ticks = pdMS_TO_TICKS(frame_period_ms);
-        TickType_t elapsed_ticks = xTaskGetTickCount() - start_tick;
+        // ================= HIGH-PRECISION DRIFT-FREE PACING =================
+        next_frame_target_us += active_dur_us;
+        int64_t now_us = esp_timer_get_time();
+        int64_t wait_us = next_frame_target_us - now_us;
 
-        if (elapsed_ticks < period_ticks) {
-            vTaskDelay(period_ticks - elapsed_ticks);
-        } else {
-            vTaskDelay(1); // Always yield at least 1 tick (1 ms) so lower-priority tasks (LED, Button, Diag) run!
+        // If behind schedule by more than 2 frames, resynchronize to avoid burst catch-up
+        if (wait_us < -static_cast<int64_t>(2 * active_dur_us)) {
+            next_frame_target_us = now_us;
+            wait_us = 0;
+        }
+
+        if (wait_us > 2000) {
+            // FreeRTOS sleep for the coarse duration (yielding CPU to other tasks)
+            uint32_t sleep_ms = static_cast<uint32_t>((wait_us - 1500) / 1000);
+            if (sleep_ms > 0) {
+                vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+            }
+        }
+
+        // High-precision hardware timer spin for the remaining sub-millisecond portion
+        while (esp_timer_get_time() < next_frame_target_us) {
+            esp_rom_delay_us(50);
         }
     }
 }
@@ -643,7 +714,7 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
                 m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
                 m_rx_packets_sec.fetch_add(1, std::memory_order_relaxed);
                 m_prev_frame_recoveries.fetch_add(1, std::memory_order_relaxed);
-                ESP_LOGI(TAG, "SINK: [PLC-RECOVERY] Successfully recovered dropped packet Seq #%u (PTS: %lu us, Dur: %.1fms) from prev_frame!",
+                ESP_LOGD(TAG, "SINK: [PLC-RECOVERY] Successfully recovered dropped packet Seq #%u (PTS: %lu us, Dur: %.1fms) from prev_frame!",
                          expected, (unsigned long)pts_prev, pkt_dur_us / 1000.0f);
             }
         }
@@ -766,7 +837,11 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
             if (!m_wifi_initialized) {
                 enableWifiEspNow();
             }
-            Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING);
+            if (m_usb_stream_active.load(std::memory_order_relaxed)) {
+                Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING_STREAM);
+            } else {
+                Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING_TONE);
+            }
             break;
         }
 
@@ -789,7 +864,10 @@ const char* EspNowAudioBroadcast::getStateString() const {
 
 const char* EspNowAudioBroadcast::getActiveCodecName() const {
     if (m_node_role == NODE_ROLE_SOURCE) {
-        return (m_state == NetworkState::BROADCASTING) ? "LC3" : " - ";
+        if (m_state == NetworkState::BROADCASTING) {
+            return m_is_stereo.load(std::memory_order_relaxed) ? "L3S" : "LC3";
+        }
+        return " - ";
     } else {
         return (m_state == NetworkState::STREAMING || m_state == NetworkState::PREFILL) ? "LC3" : " - ";
     }

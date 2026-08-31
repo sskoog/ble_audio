@@ -5,6 +5,8 @@
 **Document ID**: `BENCH-CROSS-SOC-LC3-001`  
 **Test Material**: 16-bit Mono PCM Music Clip across 6 sample rates (from *Alan Walker - Monster*)  
 **RF / Wi-Fi State**: Radio Disabled during benchmark (`esp_wifi_stop()`) to isolate pure CPU compute  
+**Benchmark Suite Source**: [`apps/lc3_benchmark/`](../apps/lc3_benchmark/) (See [Section 7](#7-benchmark-source-code--reproducibility-references))  
+
 
 ---
 
@@ -137,3 +139,37 @@ The table below provides a direct empirical comparison across all three microcon
 3. **ESP32-C6 (Ultra-Low Power / Single-Chip Solution)**:
    - Best standard profile is **MEDIUM (32 kHz / 10 ms / 80 B)** at **5.55 ms (55.5% CPU load)**, providing a generous 44.5% headroom for Wi-Fi radio transmissions.
    - The HIGH profile (85.8% load on 7.5 ms cadence) leaves insufficient headroom on a single core during active RF traffic.
+
+---
+
+## 7. Additional benchmarks
+Single-point recordings during development of audioESP-NOW firmware.
+| Board | Role | Setup | Codec | LC3 settings | CPU-load | Codec Time (Avg) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ESP32-S3 | SOURCE | 200 pkts/s | esp_audio_codec (fixp) | 48 kHz 120B mono | 70% / 35% tot | 5.5 ms |
+| ESP32-S3 | SOURCE | 200 pkts/s | liblc3 (fpu) | 48 kHz 120B mono | 54% / 27% tot | 3.8 ms |
+
+
+
+---
+
+## 8. Benchmark Source Code & Reproducibility References
+
+All benchmark test runners, audio codec engines, automation scripts, and plotting generators are located within this repository:
+
+### 7.1 Firmware Source Code
+* **Standalone Benchmark Application**: [`apps/lc3_benchmark/main/main.cpp`](../apps/lc3_benchmark/main/main.cpp)
+* **LC3 Benchmark Runner Engine**: [`apps/lc3_benchmark/main/lc3_benchmark_runner.cpp`](../apps/lc3_benchmark/main/lc3_benchmark_runner.cpp) / [`lc3_benchmark_runner.hpp`](../apps/lc3_benchmark/main/lc3_benchmark_runner.hpp)
+* **Integrated Interactive Benchmark (audioESP-NOW)**: [`apps/audioESP-NOW/main/lc3_benchmark.cpp`](../apps/audioESP-NOW/main/lc3_benchmark.cpp) / [`lc3_benchmark.hpp`](../apps/audioESP-NOW/main/lc3_benchmark.hpp)
+
+### 7.2 Codec Components
+* **Floating-Point Engine (`liblc3` with Hardware FPU)**: [`components/liblc3/`](../components/liblc3)
+* **Fixed-Point Engine Wrapper (`esp_audio_codec`)**: [`apps/audioESP-NOW/main/lc3_codec.cpp`](../apps/audioESP-NOW/main/lc3_codec.cpp) / [`lc3_codec.hpp`](../apps/audioESP-NOW/main/lc3_codec.hpp)
+
+### 7.3 Test Automation & Analysis Scripts
+* **ESP32-S3 Automation & Flash Runner**: [`tools/run_s3_benchmark.py`](../tools/run_s3_benchmark.py) / [`tools/flash_s3_node.py`](../tools/flash_s3_node.py)
+* **ESP32-C6 Automation Runner**: [`tools/run_c6_benchmark.py`](../tools/run_c6_benchmark.py)
+* **ESP32-WROOM-32 Automation Runner**: [`tools/run_wroom32_benchmark.py`](../tools/run_wroom32_benchmark.py)
+* **Multi-Node Visualization Plot Generator**: [`tools/generate_all_nodes_plots.py`](../tools/generate_all_nodes_plots.py)
+* **Audio Test Clip Packer**: [`tools/pack_benchmark_clips.py`](../tools/pack_benchmark_clips.py)
+

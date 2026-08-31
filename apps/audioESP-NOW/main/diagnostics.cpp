@@ -63,9 +63,14 @@ void SystemDiagnostics::tick() {
         }
 
         uint32_t cpu_freq_mhz = 160;
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32)
+        cpu_freq_mhz = 240;
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+        cpu_freq_mhz = 160;
+#endif
 
         uint32_t dma_udr = m_espnow_broadcast.getDmaUnderrunCount();
-        uint32_t plc_count = m_espnow_broadcast.getAndResetPlcCount();
+        uint32_t plc_count = m_espnow_broadcast.getPlcCount();
         uint32_t fifo_ud = m_espnow_broadcast.getFifoUnderrunCount();
         uint32_t prev_rec = m_espnow_broadcast.getPrevFrameRecoveryCount();
 
@@ -81,10 +86,12 @@ void SystemDiagnostics::tick() {
         if (task_count > 0) {
             TaskStatus_t* task_status_array = static_cast<TaskStatus_t*>(pvPortMalloc(task_count * sizeof(TaskStatus_t)));
             if (task_status_array) {
-                uint32_t total_runtime = 0;
-                UBaseType_t num_tasks = uxTaskGetSystemState(task_status_array, task_count, &total_runtime);
+                uint32_t total_runtime_dummy = 0;
+                UBaseType_t num_tasks = uxTaskGetSystemState(task_status_array, task_count, &total_runtime_dummy);
+                uint32_t total_tasks_runtime = 0;
                 uint32_t idle_runtime = 0;
                 for (UBaseType_t i = 0; i < num_tasks; ++i) {
+                    total_tasks_runtime += task_status_array[i].ulRunTimeCounter;
                     if (strncmp(task_status_array[i].pcTaskName, "IDLE", 4) == 0) {
                         idle_runtime += task_status_array[i].ulRunTimeCounter;
                     }
@@ -92,7 +99,7 @@ void SystemDiagnostics::tick() {
                 vPortFree(task_status_array);
 
                 if (m_has_prev_runtime) {
-                    uint32_t delta_total = total_runtime - m_last_total_runtime;
+                    uint32_t delta_total = total_tasks_runtime - m_last_total_runtime;
                     uint32_t delta_idle = idle_runtime - m_last_idle_runtime;
                     if (delta_total > 0 && delta_idle <= delta_total) {
                         uint32_t active_time = delta_total - delta_idle;
@@ -104,7 +111,7 @@ void SystemDiagnostics::tick() {
                 } else {
                     m_has_prev_runtime = true;
                 }
-                m_last_total_runtime = total_runtime;
+                m_last_total_runtime = total_tasks_runtime;
                 m_last_idle_runtime = idle_runtime;
             }
         }
@@ -289,7 +296,7 @@ void SystemDiagnostics::tick() {
 
         char audio_block[96];
         snprintf(audio_block, sizeof(audio_block),
-                 "  %-3.3s  %5.5s %5.5s  %4.4s   %3.3s   %5.5s %5.5s  %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %4.4s %4.4s ",
+                 "  %-3.3s  %5.5s %5.5s  %4.4s  %3.3s %5.5s %5.5s  %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %4.4s %4.4s ",
                  enc_str, rms_str, peak_str, sr_str, pd_str, codec_avg_str, codec_pk_str, gain_sw_str, gain_hw_str,
                  pkts_str, plc_str, dma_udr_str, fifo_udr_str, prev_rec_str);
 
@@ -304,8 +311,8 @@ void SystemDiagnostics::tick() {
 
         if ((m_header_counter % 5) == 0) {
             printf("%s\n", border_line);
-            printf("|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD     CODEC ms    AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |\n");
-            printf("|  %%  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms    Avg   Pk     SW  HW   1/s  1/s  UDR   UDR   REC |  Local  Master |\n");
+            printf("|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD    CODEC ms   AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |\n");
+            printf("|  %%  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master |\n");
         }
         printf("%s\n", row4_buf);
         fflush(stdout);

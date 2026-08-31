@@ -81,6 +81,8 @@ public:
 private:
     void* m_enc_handle = nullptr;
     void* m_dec_handle = nullptr;
+    void* m_google_encoder = nullptr;
+    void* m_google_enc_mem = nullptr;
     uint32_t m_sample_rate = AUDIO_SAMPLE_RATE_HZ;
     uint8_t  m_channels = AUDIO_CHANNELS_NUM;
     uint32_t m_frame_duration_us = AUDIO_FRAME_DURATION_US;

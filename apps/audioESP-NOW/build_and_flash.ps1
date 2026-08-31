@@ -10,20 +10,33 @@ param(
     [int]$NodeId = 0,
 
     [Parameter(Mandatory=$false)]
+    [string]$Chip = "",
+
+    [Parameter(Mandatory=$false)]
     [int]$Baud = 460800
 )
 
-$targetPort = if ($Port -ne "") { $Port } elseif ($Role -eq "SOURCE") { "COM21" } else { "COM23" }
+$targetPort = if ($Port -ne "") { $Port } elseif ($Role -eq "SOURCE") { "COM16" } else { "COM23" }
+
+if ($Chip -eq "") {
+    if ($targetPort -eq "COM16" -or $Role -eq "SOURCE") {
+        $Chip = "esp32s3"
+    } else {
+        $Chip = "esp32c6"
+    }
+}
 
 if ($NodeId -eq 0) {
-    if ($targetPort -eq "COM24") {
+    if ($targetPort -eq "COM16") {
+        $NodeId = 16
+    } elseif ($targetPort -eq "COM24") {
         $NodeId = 24
     } elseif ($targetPort -eq "COM23") {
         $NodeId = 23
     } elseif ($targetPort -eq "COM21" -or $targetPort -eq "COM121") {
         $NodeId = 21
     } elseif ($Role -eq "SOURCE") {
-        $NodeId = 21
+        $NodeId = 16
     } else {
         $NodeId = 23
     }
@@ -31,24 +44,36 @@ if ($NodeId -eq 0) {
 $nodeRole = if ($Role -eq "SOURCE") { "NODE_ROLE_SOURCE" } else { "NODE_ROLE_SINK" }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host " Building & Flashing audioESP-NOW for Role: $Role (Node $NodeId on $targetPort)" -ForegroundColor Cyan
+Write-Host " Building & Flashing audioESP-NOW for Role: $Role (Chip: $Chip, Node $NodeId on $targetPort)" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 1. Environment Setup (ESP-IDF v6.0.2)
-. "C:\Espressif\idf-v6.0.2\esp-idf\export.ps1"
+# 1. Environment Setup (ESP-IDF v5.2 with full Xtensa & RISC-V support)
+$env:IDF_TOOLS_PATH="C:\Users\stefa\.espressif"
+$env:IDF_PYTHON_ENV_PATH="C:\Users\stefa\.espressif\python_env\idf5.2_py3.13_env"
+$env:PATH="C:\Users\stefa\.espressif\python_env\idf5.2_py3.13_env\Scripts;" + $env:PATH
+. "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\export.ps1"
 
-# 2. Update config.h defines for this role
-$configPath = "c:\Git_ble_audio\apps\audioESP-NOW\main\config.h"
-$configContent = Get-Content $configPath -Raw
-$configContent = $configContent -replace '#define CONFIG_ACTIVE_NODE_ID \d+', "#define CONFIG_ACTIVE_NODE_ID $nodeId"
-$configContent = $configContent -replace '#define CONFIG_ACTIVE_NODE_ROLE \w+', "#define CONFIG_ACTIVE_NODE_ROLE $nodeRole"
-Set-Content -Path $configPath -Value $configContent -NoNewline
+# 2. Select target build dir and sdkconfig
+$appDir = "c:\Git_ble_audio\apps\audioESP-NOW"
+if ($Chip -eq "esp32s3") {
+    $buildDir = "$appDir\build_s3"
+    if (Test-Path "$appDir\sdkconfig.s3") {
+        Copy-Item "$appDir\sdkconfig.s3" "$appDir\sdkconfig" -Force
+    }
+    $flashSize = "4MB"
+} else {
+    $buildDir = "$appDir\build_c6"
+    if (Test-Path "$appDir\sdkconfig.c6") {
+        Copy-Item "$appDir\sdkconfig.c6" "$appDir\sdkconfig" -Force
+    }
+    $flashSize = "8MB"
+}
 
 # 3. Build firmware
-Push-Location "c:\Git_ble_audio\apps\audioESP-NOW"
+Push-Location $appDir
 try {
-    Write-Host "Compiling firmware for $Role..." -ForegroundColor Yellow
-    idf.py build
+    Write-Host "Compiling firmware for $Role ($Chip)..." -ForegroundColor Yellow
+    & idf.py -B "$buildDir" -D "IDF_TARGET=$Chip" build
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Build failed with exit code $LASTEXITCODE"
         exit $LASTEXITCODE
@@ -64,23 +89,22 @@ Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR Co
 Start-Sleep -Milliseconds 1500
 
 # 5. Flash Firmware via esptool.py
-$buildDir = "c:\Git_ble_audio\apps\audioESP-NOW\build"
 $bootloader = "$buildDir\bootloader\bootloader.bin"
 $partition = "$buildDir\partition_table\partition-table.bin"
-$appBin = "$buildDir\esp32c6_espnow_audio.bin"
+$appBin = "$buildDir\esp32_espnow_audio.bin"
 
 Write-Host "Flashing $Role to $targetPort at $Baud baud..." -ForegroundColor Yellow
-& "C:\Users\stefa\.espressif\python_env\idf6.0_py3.13_env\Scripts\python.exe" -m esptool `
-    --chip esp32c6 `
+python -m esptool `
+    --chip $Chip `
     -p $targetPort `
     -b $Baud `
     --connect-attempts 10 `
-    --before default-reset `
-    --after hard-reset `
-    write-flash `
-    --flash-mode dio `
-    --flash-size 8MB `
-    --flash-freq 80m `
+    --before default_reset `
+    --after hard_reset `
+    write_flash `
+    --flash_mode dio `
+    --flash_size $flashSize `
+    --flash_freq 80m `
     0x0 $bootloader `
     0x8000 $partition `
     0x10000 $appBin
@@ -91,3 +115,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Successfully flashed $Role to $targetPort!" -ForegroundColor Green
+
