@@ -47,11 +47,25 @@ Write-Host "==========================================================" -Foregro
 Write-Host " Building & Flashing audioESP-NOW for Role: $Role (Chip: $Chip, Node $NodeId on $targetPort)" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 1. Environment Setup (ESP-IDF v5.2 with full Xtensa & RISC-V support)
-$env:IDF_TOOLS_PATH="C:\Users\stefa\.espressif"
-$env:IDF_PYTHON_ENV_PATH="C:\Users\stefa\.espressif\python_env\idf5.2_py3.13_env"
-$env:PATH="C:\Users\stefa\.espressif\python_env\idf5.2_py3.13_env\Scripts;" + $env:PATH
-. "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\export.ps1"
+# 1. Environment Setup (ESP-IDF v6.0.2 with full Xtensa & RISC-V support)
+if (Test-Path "C:\Users\stefa\OneDrive\Documents\ESP\.esptools") {
+    $env:IDF_TOOLS_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
+} else {
+    $env:IDF_TOOLS_PATH="C:\Users\stefa\.espressif"
+}
+
+if (Test-Path "$env:IDF_TOOLS_PATH\python_env\idf6.0_py3.13_env") {
+    $env:IDF_PYTHON_ENV_PATH="$env:IDF_TOOLS_PATH\python_env\idf6.0_py3.13_env"
+} else {
+    $env:IDF_PYTHON_ENV_PATH="$env:IDF_TOOLS_PATH\python_env\idf6.0_py3.11_env"
+}
+$env:PATH="$env:IDF_PYTHON_ENV_PATH\Scripts;" + $env:PATH
+
+if (Test-Path "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\esp-idf\export.ps1") {
+    . "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\esp-idf\export.ps1"
+} else {
+    . "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\export.ps1"
+}
 
 # 2. Select target build dir and sdkconfig
 $appDir = "c:\Git_ble_audio\apps\audioESP-NOW"

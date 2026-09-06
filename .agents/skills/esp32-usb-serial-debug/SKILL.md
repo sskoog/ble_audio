@@ -1,7 +1,7 @@
 ---
 name: esp32-usb-serial-debug
 description: >-
-  Procedures, scripts, and commands for flashing (uploading firmware) and debugging ESP32/ESP32-C6/ESP32-S3 devices via USB Virtual Serial Port (USB Serial JTAG / UART) on Windows PowerShell. Includes port locking mitigation, lingering process termination, programmatic USB CDC resets, interactive test simulation, and timeout management.
+  Procedures, scripts, and commands for flashing (uploading firmware) and debugging ESP32/ESP32-C6/ESP32-S3 devices via USB Virtual Serial Port (USB Serial JTAG / UART) on Windows PowerShell using ESP-IDF v6.0.2. Includes port locking mitigation, lingering process termination, programmatic USB CDC resets, interactive test simulation, and timeout management.
 ---
 
 # ESP32 USB Virtual Serial Flashing & Debugging Skill
@@ -14,23 +14,39 @@ This skill provides comprehensive operating procedures, automated PowerShell scr
 
 | Node Identifier | Board Description | Target Hardware | Default Port | Role |
 | :--- | :--- | :--- | :--- | :--- |
+| **Node16** | Seeed Studio XIAO ESP32-S3 | ESP32-S3 (Xtensa LX7 + FPU) | **COM16** | Audio SOURCE (Stereo/Mono Broadcaster) |
 | **Node20** | Waveshare ESP32-C6-LCD-1.47 | ST7789 LCD + WS2812B | **COM20** | Audio SINK (Receiver + LCD) |
-| **Node21** | ESP32-C6-WROOM-1 DevKit | WS2812B RGB LED | **COM21** & **COM121** | Audio SOURCE (Broadcaster) |
-| **Node22** | Waveshare ESP32-C6-Zero | WS2812B RGB LED | **COM22** & **COM122** | ?? |
-| **Node23** | Waveshare ESP32-C6-Zero | WS2812B RGB LED + MAX98357A I2S DAC | **COM23** | Audio SINK (Receiver) |
-| **Node24** | Waveshare ESP32-C6-Zero | WS2812B RGB LED + MAX98357A I2S DAC | **COM24** | Audio SINK (Receiver) |
+| **Node21** | ESP32-C6-WROOM-1 DevKit | WS2812B RGB LED | **COM21** & **COM121** | Audio SOURCE / USB Host Bridge |
+| **Node23** | Waveshare ESP32-C6-Zero | WS2812B RGB LED + MAX98357A I2S DAC | **COM23** | Audio SINK Left (Ch 0) |
+| **Node24** | Waveshare ESP32-C6-Zero | WS2812B RGB LED + MAX98357A I2S DAC | **COM24** | Audio SINK Right (Ch 1) |
+| **Node25** | Heemol ESP32-C6 Mini | ESP32-C6 (RISC-V) | **COM25** | Audio SINK / Test Node |
+| **Node26** | Heemol ESP32-C6 Mini | ESP32-C6 (RISC-V) | **COM26** | Audio SINK / Test Node |
 
 ---
 
-## 1. Environment Setup
+## 1. Environment Setup (ESP-IDF v6.0.2)
 
-Always export the ESP-IDF environment variables in PowerShell before invoking `idf.py` or `esptool.py`:
+Always export the ESP-IDF v6.0.2 environment variables in PowerShell before invoking `idf.py` or `esptool.py`:
 
 ```powershell
-$env:IDF_TOOLS_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
-$env:IDF_PYTHON_ENV_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env"
-$env:PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts;" + $env:PATH
-& "C:\Users\stefa\OneDrive\Documents\ESP\v5.2\esp-idf\export.ps1"
+if (Test-Path "C:\Users\stefa\OneDrive\Documents\ESP\.esptools") {
+    $env:IDF_TOOLS_PATH="C:\Users\stefa\OneDrive\Documents\ESP\.esptools"
+} else {
+    $env:IDF_TOOLS_PATH="C:\Users\stefa\.espressif"
+}
+
+if (Test-Path "$env:IDF_TOOLS_PATH\python_env\idf6.0_py3.13_env") {
+    $env:IDF_PYTHON_ENV_PATH="$env:IDF_TOOLS_PATH\python_env\idf6.0_py3.13_env"
+} else {
+    $env:IDF_PYTHON_ENV_PATH="$env:IDF_TOOLS_PATH\python_env\idf6.0_py3.11_env"
+}
+$env:PATH="$env:IDF_PYTHON_ENV_PATH\Scripts;" + $env:PATH
+
+if (Test-Path "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\esp-idf\export.ps1") {
+    . "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\esp-idf\export.ps1"
+} else {
+    . "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\export.ps1"
+}
 ```
 
 ---
@@ -41,91 +57,55 @@ Before attempting to flash, ensure no background serial monitors or active Pytho
 
 ### A. List Active COM Ports with Descriptions
 ```powershell
-& "C:\Users\stefa\OneDrive\Documents\ESP\.esptools\python_env\idf5.2_py3.11_env\Scripts\python.exe" -c "import serial.tools.list_ports; print('\n'.join([p.device + ' - ' + p.description for p in serial.tools.list_ports.comports()]))"
-```
-Or run the helper:
-```powershell
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/list_esp_ports.ps1
+python -c "import serial.tools.list_ports; print('\n'.join([p.device + ' - ' + p.description for p in serial.tools.list_ports.comports()]))"
 ```
 
 ### B. Terminate Lingering Serial Tasks & Locked Handles
-On Windows, pySerial handles can get locked in lingering background processes. Clear them before flashing or initiating new logs:
+On Windows, pySerial handles can get locked in lingering background processes. Clear them before flashing:
 
 ```powershell
-# Targeted shutdown of lingering serial monitor processes (prevents killing toolchains/compilers):
-Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR CommandLine LIKE '%idf_monitor%'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR CommandLine LIKE '%idf_monitor%' OR CommandLine LIKE '%test_audio_matrix%' OR CommandLine LIKE '%pc_audio_streamer%'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
 ### C. Handle USB Re-Enumeration Delay
 When the onboard USB Serial JTAG / USB CDC controller resets during flashing, Windows unbinds and re-binds the virtual COM port.
 - Allow **3 seconds** after reset before attempting to reopen serial connections.
-- Always use `--before default_reset` and `--connect-attempts 10` in `esptool.py`.
+- Always use `--before default_reset`, `--after hard_reset`, and `--connect-attempts 10` in `esptool.py`.
 
 ---
 
 ## 3. Firmware Flashing Procedure
 
-### Method A: Automated Flashing Script with Port Pre-check (Recommended)
-The [flash_node.ps1](file:///c:/Git_ble_audio/.agents/skills/esp32-usb-serial-debug/scripts/flash_node.ps1) script verifies port availability, terminates lingering monitor locks if needed, checks build artifacts, and executes `esptool.py` with 10 connect attempts and automatic retries:
-
+### Method A: Automated Build and Flash
+Use the app-specific script:
 ```powershell
-# Flash node2node to Node20 (COM20)
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/flash_node.ps1 -Port COM20 -App node2node
+# Flash SOURCE (Node 16 / S3)
+powershell -ExecutionPolicy Bypass -File apps\audioESP-NOW\build_and_flash.ps1 -Role SOURCE -Port COM16
 
-# Flash node2node to Node21 (COM21)
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/flash_node.ps1 -Port COM21 -App node2node
+# Flash SINK Left (Node 23 / C6)
+powershell -ExecutionPolicy Bypass -File apps\audioESP-NOW\build_and_flash.ps1 -Role SINK -Port COM23 -NodeId 23
+
+# Flash SINK Right (Node 24 / C6)
+powershell -ExecutionPolicy Bypass -File apps\audioESP-NOW\build_and_flash.ps1 -Role SINK -Port COM24 -NodeId 24
 ```
 
-### Method B: Fast Multi-Binary Flashing
+### Method B: Fast Multi-Binary Flashing with esptool
 ```powershell
-# For node2node on COM20
-python -m esptool --chip esp32c6 -p COM20 -b 460800 --connect-attempts 10 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 apps\node2node\build\bootloader\bootloader.bin 0x8000 apps\node2node\build\partition_table\partition-table.bin 0x10000 apps\node2node\build\esp32c6_ble_audio_broadcast.bin
+# For ESP32-C6 on COM23
+python -m esptool --chip esp32c6 -p COM23 -b 460800 --connect-attempts 10 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m 0x0 apps\audioESP-NOW\build_c6\bootloader\bootloader.bin 0x8000 apps\audioESP-NOW\build_c6\partition_table\partition-table.bin 0x10000 apps\audioESP-NOW\build_c6\esp32_espnow_audio.bin
 ```
 
 ---
 
 ## 4. Programmatic Node Reset (USB CDC / Serial JTAG)
 
-Native USB CDC ports on ESP32-C6 / ESP32-S3 disconnect and re-enumerate upon reset. To reset safely without crashing serial handles:
+Native USB CDC ports on ESP32-C6 / ESP32-S3 disconnect and re-enumerate upon reset. To reset safely:
 1. Toggle DTR / RTS lines.
-2. Close the port handle immediately before Windows tears down the endpoint.
-3. Poll until Windows re-enumerates the COM port (allowing 3 seconds).
-
-Execute via helper script:
-```powershell
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/reset_node.ps1 -Port COM20
-```
+2. Close the port handle immediately.
+3. Wait 3 seconds for Windows to re-enumerate the COM port.
 
 ---
 
-## 5. Interactive Simulation & Automated Testing
+## 5. Reading Serial Logs & Telemetry
 
-Instead of requiring physical interaction, send commands over the open serial connection (e.g. `p\n` to simulate button clicks, frequency adjustments, or mode switches) to automate verification tests:
-
-```powershell
-# Send command 'p' to COM20 and capture response for 5 seconds
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/send_serial_cmd.ps1 -Port COM20 -Command "p" -ListenSeconds 5
-```
-
----
-
-## 6. Reading Serial Logs & Telemetry
-
-### Safe Non-Blocking Telemetry Capture
-The [read_serial.ps1](file:///c:/Git_ble_audio/.agents/skills/esp32-usb-serial-debug/scripts/read_serial.ps1) script handles port locking, configurable timeouts, and always closes the port in a `finally` block so subagents or flashing tools are never locked out:
-
-```powershell
-# Read telemetry from COM20 for 10 seconds (with 1500ms line timeout and auto-retry)
-powershell -ExecutionPolicy Bypass -File .agents/skills/esp32-usb-serial-debug/scripts/read_serial.ps1 -Port COM20 -DurationSeconds 10
-```
-
----
-
-## 7. Troubleshooting Matrix
-
-| Issue | Root Cause | Resolution |
-| :--- | :--- | :--- |
-| **`PermissionError(13, 'Access is denied')`** | COM port held open by stale Python process, subagent, or monitor | Run `Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%device monitor%' OR CommandLine LIKE '%idf_monitor%'" \| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }` |
-| **`Failed to connect to ESP32: No serial data received`** | Board in deep sleep or missed bootloader window | Ensure `--connect-attempts 10` is used. If persistent, hold `BOOT` button during plugin. |
-| **USB CDC Port Disappears after Reset** | Windows USB re-enumeration takes 1–3 seconds | Allow a 3-second sleep after hard reset before issuing read/write commands. |
-| **Garbage characters on monitor** | Baud rate mismatch | Default baud rate for boot & logs on ESP32-C6 USB Serial JTAG is **115200**. |
+Open the port at 115200 baud with a safe timeout and ensure the port is closed cleanly in a `try...finally` block.

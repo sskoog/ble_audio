@@ -6,7 +6,7 @@ The Bluetooth stack is completely disabled in firmware, freeing 100% of the radi
 
 ---
 
-## 1. Key Features
+## Key Features
 
 - **Ultra-Low Latency**: End-to-end latency of 15–20 ms from PC audio generation to physical speaker output.
 - **LC3 Compression**: Fixed-point psychoacoustic LC3 encoding (Google `liblc3`) providing studio-grade audio quality at low bitrates (64–96 kbps per channel).
@@ -21,7 +21,7 @@ The Bluetooth stack is completely disabled in firmware, freeing 100% of the radi
 
 ---
 
-## 2. System Architecture
+## System Architecture
 
 ```mermaid
 flowchart TD
@@ -53,7 +53,7 @@ For full protocol packet layout, bitfields, and recovery mechanisms, see the [VS
 
 ---
 
-## 3. Target Hardware & Pinout
+## Target Hardware & Pinout
 
 ### Tested Hardware Nodes & COM-Port Layout
 
@@ -88,7 +88,36 @@ The SINK firmware outputs standard digital audio over I2S to external DAC module
 
 ---
 
-## 4. Prerequisites & Dependencies
+
+## Audio Architecture & VSAF Protocol
+
+### Packet Structure (VSAF Dual-Frame Redundancy)
+ESP-NOW audio packets use the VSAF container format:
+- **8-Byte Header**:
+  - `magic` (2B): `0x1337`
+  - `seq` (2B): Monotonically incrementing 16-bit sequence number
+  - `cfg` (1B): Bitfield (Bit 0: Redundancy present, Bit 1: Stereo mode, Bits 2-3: Channel index, Bits 4-7: Reserved)
+  - `pts_us` (3B): Presentation timestamp in microseconds modulo 2^24
+- **Payload**:
+  - Primary Frame (Frame N, e.g., 120 bytes)
+  - Redundant Frame (Frame N-1, e.g., 120 bytes)
+
+### Supported Audio Configurations
+- **Sample Rates**: 48.0 kHz, 32.0 kHz, 24.0 kHz, 16.0 kHz, 8.0 kHz
+- **Frame Cadence**: 10.0 ms (Default) and 7.5 ms
+- **Bitrates / Frame Sizes**:
+  - 10.0 ms @ 120 octets = 96 kbps per channel
+  - 7.5 ms @ 120 octets = 128 kbps per channel
+- **Channel Modes**:
+  - **Mono Mode**: Single LC3 encode; packet duplicated into two VSAF packets for Ch 0 and Ch 1.
+  - **Stereo Mode**: Two distinct LC3 encodes; sent as independent VSAF packets for Ch 0 and Ch 1.
+
+### Critical Timing Requirement
+Audio broadcasting MUST use absolute microsecond hardware timer pacing (`esp_timer_get_time()`) instead of relative delays (`vTaskDelayUntil` / `vTaskDelay`) to eliminate clock drift and frame creep.
+
+---
+
+## Prerequisites & Dependencies
 
 ### Hardware Requirements
 1. At least two ESP32's: One as SOURCE and one as SINK.
@@ -177,7 +206,7 @@ Streams 6 discrete audio channels at 32 kHz, 10.0 ms frame duration:
 
 ---
 
-## 7. Interactive Serial Console Commands
+## Interactive Serial Console Commands
 
 While nodes are running, you can send ASCII commands directly over their USB Serial monitor at 115200 baud to change runtime configuration:
 
@@ -191,7 +220,7 @@ While nodes are running, you can send ASCII commands directly over their USB Ser
 
 ---
 
-## 8. Status LED Indications (WS2812 RGB)
+## Status LED Indications (WS2812 RGB)
 
 The onboard WS2812 RGB LED communicates real-time network states:
 
@@ -206,7 +235,7 @@ The onboard WS2812 RGB LED communicates real-time network states:
 
 ---
 
-## 9. Telemetry & Diagnostics
+## Telemetry & Diagnostics
 
 Every second, nodes output a structured ANSI telemetry block over the serial console:
 
@@ -225,7 +254,7 @@ Key metrics to monitor:
 
 ---
 
-## 10. Automated Test Suite
+## Automated Test Suite
 
 Run the full end-to-end hardware regression test suite using:
 ```powershell
@@ -236,6 +265,6 @@ This verifies magic word rejection, startup state transitions, stream re-connect
 
 ---
 
-## 11. License
+## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0-or-later)**. See the root [`LICENSE`](../../LICENSE) file for details.

@@ -131,7 +131,7 @@ The project utilizes Espressif's official **`esp_audio_codec`** component (`espr
 
 ### Environment Setup (ESP-IDF v6.0.2 in PowerShell)
 ```powershell
-. "C:\Espressif\idf-v6.0.2\esp-idf\export.ps1"
+. "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\esp-idf\export.ps1"
 ```
 
 ### 1. Build and Flash Audio SINK (Node23 on COM23)

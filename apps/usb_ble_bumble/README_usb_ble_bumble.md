@@ -248,9 +248,9 @@ Validates live LC3 streaming with custom presentation delay (50ms), High-Quality
 
 ### Flashing Firmware to ESP32-C6
 ```powershell
-. "C:\Espressif\idf-v6.0.2\esp-idf\export.ps1"
+. "C:\Users\stefa\OneDrive\Documents\ESP\v6.0.2\esp-idf\export.ps1"
 
 Set-Location "c:\Git_ble_audio\apps\usb_ble_bumble"
 idf.py build
-& "C:\Users\stefa\.espressif\python_env\idf6.0_py3.13_env\Scripts\python.exe" -m esptool --chip esp32c6 -p COM21 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 4MB --flash_freq 40m 0x0 "build/bootloader/bootloader.bin" 0x8000 "build/partition_table/partition-table.bin" 0x10000 "build/usb_ble_bumble.bin"
+python -m esptool --chip esp32c6 -p COM21 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 4MB --flash_freq 40m 0x0 "build/bootloader/bootloader.bin" 0x8000 "build/partition_table/partition-table.bin" 0x10000 "build/usb_ble_bumble.bin"
 ```
