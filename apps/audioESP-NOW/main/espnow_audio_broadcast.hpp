@@ -98,6 +98,7 @@ enum class NetworkState {
 struct StreamTelemetry {
     uint32_t sample_rate = CONFIG_ESPNOW_SAMPLE_RATE_HZ;
     uint32_t frame_duration_us = 10000;
+    uint8_t  bit_depth = 16;
     uint8_t  channels = 1;
     uint32_t bitrate_kbps = (CONFIG_ESPNOW_FRAME_LEN_OCTETS * 8) / 10;
     int8_t   rssi_dbm = -26;
@@ -106,8 +107,8 @@ struct StreamTelemetry {
 
     std::string getStatusString() const {
         char buf[64];
-        snprintf(buf, sizeof(buf), "%s 16-bit %.1f kHz",
-                 (channels == 1) ? "Mono" : "Stereo", sample_rate / 1000.0f);
+        snprintf(buf, sizeof(buf), "%s %u-bit %.1f kHz",
+                 (channels == 1) ? "Mono" : "Stereo", bit_depth, sample_rate / 1000.0f);
         return std::string(buf);
     }
 
@@ -230,6 +231,8 @@ public:
     // On-the-fly audio stream reconfiguration (SOURCE node)
     esp_err_t setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets, uint32_t frame_duration_us = 0);
     esp_err_t setSampleRate(uint32_t sample_rate_hz);
+    esp_err_t setBitDepth(uint8_t bit_depth);
+    uint8_t getBitDepth() const;
     esp_err_t setFrameLen(uint16_t frame_len_octets);
     esp_err_t setFrameDuration(uint32_t frame_duration_us);
     uint32_t getSampleRate() const { return m_telemetry.sample_rate; }

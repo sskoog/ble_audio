@@ -23,12 +23,27 @@ public:
     I2sAudioDriver(int bclk_pin, int ws_pin, int dout_pin, int din_pin = -1, int gain_pin = 0);
     ~I2sAudioDriver();
 
-    esp_err_t init(uint32_t sample_rate = 32000, uint32_t frame_duration_us = 10000, i2s_data_bit_width_t bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT, i2s_slot_mode_t slot_mode = I2S_SLOT_MODE_STEREO);
+    esp_err_t init(uint32_t sample_rate = 32000, 
+                   uint32_t frame_duration_us = 10000, 
+                   i2s_data_bit_width_t bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT, 
+                   i2s_slot_mode_t slot_mode = I2S_SLOT_MODE_STEREO);
     
-    // Dynamic sample rate & DMA frame size reconfiguration
+    // Dynamic sample rate, bit depth & DMA frame size reconfiguration
+    esp_err_t reconfigureAudioFormat(uint32_t sample_rate, 
+                                     i2s_data_bit_width_t bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT, 
+                                     uint32_t frame_duration_us = 10000, 
+                                     i2s_slot_mode_t slot_mode = I2S_SLOT_MODE_STEREO);
+
     esp_err_t reconfigureSampleRate(uint32_t sample_rate, uint32_t frame_duration_us = 10000);
+    esp_err_t setBitDepth(i2s_data_bit_width_t bits_per_sample);
+    esp_err_t setBitDepth(uint8_t bit_depth_bits);
+
     uint32_t getSampleRate() const { return m_sample_rate; }
     uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
+    i2s_data_bit_width_t getBitWidth() const { return m_bits_per_sample; }
+    uint8_t getBitDepth() const { return static_cast<uint8_t>(m_bits_per_sample); }
+    i2s_slot_mode_t getSlotMode() const { return m_slot_mode; }
+    size_t getBytesPerSample() const { return (m_bits_per_sample == I2S_DATA_BIT_WIDTH_16BIT) ? 2 : 4; }
 
     // Hardware gain control (3, 6, 9, 12 dB)
     void setHardwareGain(Max98357Gain gain);
@@ -73,6 +88,8 @@ private:
     bool m_is_running = false;
     uint32_t m_sample_rate = 32000;
     uint32_t m_frame_duration_us = 10000;
+    i2s_data_bit_width_t m_bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT;
+    i2s_slot_mode_t m_slot_mode = I2S_SLOT_MODE_STEREO;
     std::atomic<uint32_t> m_underrun_count{0};
 };
 

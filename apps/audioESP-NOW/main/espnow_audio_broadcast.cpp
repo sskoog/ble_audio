@@ -221,6 +221,26 @@ esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t
     return ESP_OK;
 }
 
+esp_err_t EspNowAudioBroadcast::setBitDepth(uint8_t bit_depth) {
+    if (bit_depth != 16 && bit_depth != 24 && bit_depth != 32) {
+        ESP_LOGE(TAG, "Unsupported bit depth: %u (supported: 16, 24, 32)", bit_depth);
+        return ESP_ERR_INVALID_ARG;
+    }
+    m_telemetry.bit_depth = bit_depth;
+    if (m_node_role == NODE_ROLE_SINK && m_i2s_dac) {
+        m_i2s_dac->setBitDepth(bit_depth);
+    }
+    ESP_LOGI(TAG, "Audio Bit Depth set to %u-bit", bit_depth);
+    return ESP_OK;
+}
+
+uint8_t EspNowAudioBroadcast::getBitDepth() const {
+    if (m_node_role == NODE_ROLE_SINK && m_i2s_dac) {
+        return m_i2s_dac->getBitDepth();
+    }
+    return m_telemetry.bit_depth;
+}
+
 esp_err_t EspNowAudioBroadcast::setSampleRate(uint32_t sample_rate_hz) {
     return setAudioConfig(sample_rate_hz, m_octets_per_frame, m_frame_duration_us);
 }
@@ -501,11 +521,39 @@ void EspNowAudioBroadcast::runSourceLoop() {
 void EspNowAudioBroadcast::runSinkLoop() {
     static uint8_t current_lc3_buf[MAX_LC3_FRAME_OCTETS] = {0};
     static int16_t decoded_pcm[MAX_PCM_FRAME_SAMPLES] = {0};
-    static int16_t stereo_pcm[MAX_PCM_FRAME_SAMPLES * 2] = {0};
+    static int16_t stereo_pcm_16[MAX_PCM_FRAME_SAMPLES * 2] = {0};
+    static int32_t stereo_pcm_32[MAX_PCM_FRAME_SAMPLES * 2] = {0};
     size_t actual_samples = 0;
     size_t bytes_written = 0;
     uint32_t consecutive_plc_count = 0;
     uint32_t sync_eval_counter = 0;
+
+    auto format_stereo_pcm = [&](const int16_t* src, size_t count, uint32_t vol) -> std::pair<const void*, size_t> {
+        uint8_t bd = m_i2s_dac ? m_i2s_dac->getBitDepth() : 16;
+        if (bd == 16) {
+            for (size_t i = 0; i < count; ++i) {
+                int16_t sample = static_cast<int16_t>((static_cast<int32_t>(src[i]) * vol) / 255);
+                stereo_pcm_16[2 * i]     = sample;
+                stereo_pcm_16[2 * i + 1] = sample;
+            }
+            return {stereo_pcm_16, count * 2 * sizeof(int16_t)};
+        } else if (bd == 24) {
+            // 24-bit MSB-aligned in 32-bit container
+            for (size_t i = 0; i < count; ++i) {
+                int32_t sample32 = static_cast<int32_t>((static_cast<int32_t>(src[i]) * vol) / 255) << 8;
+                stereo_pcm_32[2 * i]     = sample32;
+                stereo_pcm_32[2 * i + 1] = sample32;
+            }
+            return {stereo_pcm_32, count * 2 * sizeof(int32_t)};
+        } else { // 32-bit MSB-aligned in 32-bit container
+            for (size_t i = 0; i < count; ++i) {
+                int32_t sample32 = static_cast<int32_t>((static_cast<int32_t>(src[i]) * vol) / 255) << 16;
+                stereo_pcm_32[2 * i]     = sample32;
+                stereo_pcm_32[2 * i + 1] = sample32;
+            }
+            return {stereo_pcm_32, count * 2 * sizeof(int32_t)};
+        }
+    };
 
     while (m_audio_task_running) {
         uint32_t vol_scale = m_telemetry.is_muted ? 0 : ((static_cast<uint32_t>(m_telemetry.volume_percent) * 255) / 100);
@@ -545,14 +593,10 @@ void EspNowAudioBroadcast::runSinkLoop() {
                     }
                     m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
                                             m_telemetry.sample_rate, m_telemetry.frame_duration_us);
-                    for (size_t i = 0; i < actual_samples; ++i) {
-                        int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
-                        stereo_pcm[2 * i]     = sample;
-                        stereo_pcm[2 * i + 1] = sample;
-                    }
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
                     if (m_i2s_dac) {
-                        m_i2s_dac->preload(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written);
+                        auto pcm_out = format_stereo_pcm(decoded_pcm, actual_samples, vol_scale);
+                        m_i2s_dac->preload(pcm_out.first, pcm_out.second, &bytes_written);
                     }
                 }
 
@@ -565,14 +609,10 @@ void EspNowAudioBroadcast::runSinkLoop() {
                     }
                     m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
                                             m_telemetry.sample_rate, m_telemetry.frame_duration_us);
-                    for (size_t i = 0; i < actual_samples; ++i) {
-                        int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
-                        stereo_pcm[2 * i]     = sample;
-                        stereo_pcm[2 * i + 1] = sample;
-                    }
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
                     if (m_i2s_dac) {
-                        m_i2s_dac->preload(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written);
+                        auto pcm_out = format_stereo_pcm(decoded_pcm, actual_samples, vol_scale);
+                        m_i2s_dac->preload(pcm_out.first, pcm_out.second, &bytes_written);
                     }
                 }
 
@@ -626,15 +666,11 @@ void EspNowAudioBroadcast::runSinkLoop() {
                     int64_t dec_dur_us = esp_timer_get_time() - dec_start_us;
                     m_codec_duration_ring_buffer.push(static_cast<uint32_t>(dec_dur_us));
 
-                    for (size_t i = 0; i < actual_samples; ++i) {
-                        int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
-                        stereo_pcm[2 * i]     = sample;
-                        stereo_pcm[2 * i + 1] = sample;
-                    }
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
 
                     if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                        m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 15);
+                        auto pcm_out = format_stereo_pcm(decoded_pcm, actual_samples, vol_scale);
+                        m_i2s_dac->write(pcm_out.first, pcm_out.second, &bytes_written, 15);
                     }
                 } else {
                     m_fifo_underrun.fetch_add(1, std::memory_order_relaxed);
@@ -643,15 +679,11 @@ void EspNowAudioBroadcast::runSinkLoop() {
                     if (consecutive_plc_count < m_watchdog_timeout_frames) {
                         m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
                                                 m_telemetry.sample_rate, m_telemetry.frame_duration_us);
-                        for (size_t i = 0; i < actual_samples; ++i) {
-                            int16_t sample = static_cast<int16_t>((static_cast<int32_t>(decoded_pcm[i]) * vol_scale) / 255);
-                            stereo_pcm[2 * i]     = sample;
-                            stereo_pcm[2 * i + 1] = sample;
-                        }
                         m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
 
                         if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                            m_i2s_dac->write(stereo_pcm, actual_samples * 2 * sizeof(int16_t), &bytes_written, 15);
+                            auto pcm_out = format_stereo_pcm(decoded_pcm, actual_samples, vol_scale);
+                            m_i2s_dac->write(pcm_out.first, pcm_out.second, &bytes_written, 15);
                         }
                     } else {
                         ESP_LOGW(TAG, "SINK: Reached %lu consecutive PLC frames (%lu ms loss). Requesting transition to SCANNING...",

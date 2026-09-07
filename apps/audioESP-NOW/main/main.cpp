@@ -156,6 +156,27 @@ static void handle_ascii_command(const char* raw_line) {
             print_console("[OK] Cycled Audio Sample Rate to %lu Hz (BROADCASTING)\n", (unsigned long)next_sr);
             ESP_LOGW(TAG, "Cycled Audio Sample Rate to: %lu Hz", (unsigned long)next_sr);
         }
+    } else if (strncasecmp(line, "bits ", 5) == 0 || strncasecmp(line, "bd ", 3) == 0 || strncasecmp(line, "bitdepth ", 9) == 0) {
+        const char* p = strchr(line, ' ');
+        if (p && s_espnow_broadcast) {
+            uint8_t bd = static_cast<uint8_t>(atoi(p + 1));
+            if (bd == 16 || bd == 24 || bd == 32) {
+                s_espnow_broadcast->setBitDepth(bd);
+                print_console("[OK] Audio Bit Depth changed to %u-bit\n", bd);
+                ESP_LOGW(TAG, "Audio Bit Depth changed to: %u-bit", bd);
+            } else {
+                print_console("[ERROR] Invalid bit depth '%s'. Supported: 16, 24, 32\n", p + 1);
+                ESP_LOGE(TAG, "Invalid bit depth");
+            }
+        }
+    } else if (strcasecmp(line, "bits") == 0 || strcasecmp(line, "bd") == 0) {
+        if (s_espnow_broadcast) {
+            uint8_t curr = s_espnow_broadcast->getBitDepth();
+            uint8_t next = (curr == 16) ? 24 : ((curr == 24) ? 32 : 16);
+            s_espnow_broadcast->setBitDepth(next);
+            print_console("[OK] Cycled Audio Bit Depth to %u-bit\n", next);
+            ESP_LOGW(TAG, "Cycled Audio Bit Depth to: %u-bit", next);
+        }
     } else if (strcasecmp(line, "start") == 0 || strcasecmp(line, "play") == 0 || strcasecmp(line, "broadcast") == 0) {
         if (s_espnow_broadcast) {
             s_espnow_broadcast->transitionTo(AudioNet::NetworkState::BROADCASTING);
@@ -256,6 +277,8 @@ static void handle_ascii_command(const char* raw_line) {
                       "  mode / ch_mode      : Toggle Mono <-> Stereo mode\n"
                       "  sr <hz> / rate <hz> : Set Sample Rate (48k, 32k, 24k, 16k, 8k)\n"
                       "  sr / rate           : Cycle to next supported sample rate\n"
+                      "  bits <16|24|32> / bd: Set Audio Bit Depth (16, 24, 32 bits)\n"
+                      "  bits / bd           : Cycle to next supported bit depth (16->24->32->16)\n"
                       "  dur <10|7.5>        : Set Frame Duration (10.0 ms or 7.5 ms)\n"
                       "  dur                 : Toggle Frame Duration (10ms <-> 7.5ms)\n"
                       "  octets <N>          : Set LC3 Frame Octets (20..120 bytes)\n"

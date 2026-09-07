@@ -3,7 +3,7 @@
 #if defined(CONFIG_IDF_TARGET_ESP32S3) || CONFIG_ACTIVE_NODE_ID == 16
 static system_config_t s_active_config = {
     .node_id = 16,
-    .node_role = NODE_ROLE_SOURCE,
+    .node_role = NODE_ROLE_SINK,
     .device_name = "ESP32-S3-16",
     .i2s_bclk_gpio = -1,
     .i2s_ws_gpio = -1,

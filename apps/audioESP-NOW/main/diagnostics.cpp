@@ -176,7 +176,7 @@ void SystemDiagnostics::tick() {
         // 5. Sample Rate (SR kHz)
         char sr_str[8];
         if (is_audio_active) {
-            snprintf(sr_str, sizeof(sr_str), "%4.1f", stream.sample_rate / 1000.0f);
+            snprintf(sr_str, sizeof(sr_str), "%3.0f", stream.sample_rate / 1000.0f);
         } else {
             snprintf(sr_str, sizeof(sr_str), " -  ");
         }
@@ -311,8 +311,8 @@ void SystemDiagnostics::tick() {
 
         if ((m_header_counter % 5) == 0) {
             printf("%s\n", border_line);
-            printf("|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR    PD    CODEC ms   AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |\n");
-            printf("|  %%  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk    kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master |\n");
+            printf("|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms   AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |\n");
+            printf("|  %%  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master |\n");
         }
         printf("%s\n", row4_buf);
         fflush(stdout);
