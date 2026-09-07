@@ -16,6 +16,12 @@ idf_component_register(
         audio_metering
         nvs_flash
         driver
+        esp_driver_gpio
+        esp_driver_i2s
+        esp_driver_ledc
+        esp_driver_uart
+        esp_driver_tsens
+        esp_driver_usb_serial_jtag
         esp_timer
         esp_hw_support
         esp-dsp
