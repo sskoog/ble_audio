@@ -178,7 +178,7 @@ bool EspNowAudioBroadcast::isMasterTimeValid() const {
 
 esp_err_t EspNowAudioBroadcast::setAudioConfig(uint32_t sample_rate_hz, uint16_t frame_len_octets, uint32_t frame_duration_us) {
     if (sample_rate_hz != 8000 && sample_rate_hz != 16000 && sample_rate_hz != 24000 && sample_rate_hz != 32000 &&
-        sample_rate_hz != 44100 && sample_rate_hz != 48000) {
+        sample_rate_hz != 48000 && sample_rate_hz != 96000) {
         ESP_LOGE(TAG, "Unsupported sample rate: %lu Hz", (unsigned long)sample_rate_hz);
         return ESP_ERR_INVALID_ARG;
     }

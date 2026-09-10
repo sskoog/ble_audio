@@ -34,8 +34,8 @@ static inline size_t calculateRequiredPcmSamples(uint32_t sample_rate, uint32_t 
             case 16000: return 120;
             case 24000: return 180;
             case 32000: return 240;
-            case 44100: return 330;
             case 48000: return 360;
+            case 96000: return 720;
             default:    return (sample_rate * 75) / 10000;
         }
     } else { // 10000 us default
@@ -44,8 +44,8 @@ static inline size_t calculateRequiredPcmSamples(uint32_t sample_rate, uint32_t 
             case 16000: return 160;
             case 24000: return 240;
             case 32000: return 320;
-            case 44100: return 441;
             case 48000: return 480;
+            case 96000: return 960;
             default:    return (sample_rate * 10) / 1000;
         }
     }

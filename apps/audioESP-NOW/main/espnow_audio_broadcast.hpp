@@ -37,8 +37,8 @@ enum class Lc3SampleRateCode : uint8_t {
     SR_16000 = 1,
     SR_24000 = 2,
     SR_32000 = 3,
-    SR_44100 = 4,
-    SR_48000 = 5,
+    SR_48000 = 4,
+    SR_96000 = 5,
 };
 
 static inline uint8_t sampleRateToCode(uint32_t hz) {
@@ -47,9 +47,9 @@ static inline uint8_t sampleRateToCode(uint32_t hz) {
         case 16000: return 1;
         case 24000: return 2;
         case 32000: return 3;
-        case 44100: return 4;
-        case 48000: return 5;
-        default:    return 3;
+        case 48000: return 4;
+        case 96000: return 5;
+        default:    return 3; // Default 32 kHz
     }
 }
 
@@ -59,8 +59,8 @@ static inline uint32_t codeToSampleRate(uint8_t code) {
         case 1: return 16000;
         case 2: return 24000;
         case 3: return 32000;
-        case 4: return 44100;
-        case 5: return 48000;
+        case 4: return 48000;
+        case 5: return 96000;
         default: return 32000;
     }
 }

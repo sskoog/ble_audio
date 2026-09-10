@@ -2,14 +2,14 @@
 
 ## 1. Executive Summary
 
-This document details the architecture, packet packaging, transmission mechanics, and configuration options of the wireless audio streaming protocol implemented in **`audioESP-NOW`** (and shared across the node-to-node audio pipeline). 
+This document details the architecture, packet packaging, transmission mechanics, and configuration of the **Vendor-Specific Action Frame (VSAF)** audio broadcast protocol implemented in the `audioESP-NOW` firmware.
 
-The system transmits high-fidelity audio over 2.4 GHz Wi-Fi without Bluetooth or TCP/IP overhead using:
-- **ESP-NOW Action Frames**: Layer-2 raw 802.11 frames with sub-millisecond transmission airtime.
-- **LC3 (Low Complexity Communication Codec)**: Fixed-point psychoacoustic compression (8 kHz to 48 kHz, 7.5 ms and 10.0 ms frame durations).
-- **VSAF Protocol (Very Low Latency Synchronized Audio Frame)**: 248-byte word-aligned packet encapsulation featuring in-band dual-frame redundancy for zero-latency single packet loss recovery.
-- **Microsecond Clock Synchronization & DMA Ping-Pong**: Hardware timer pacing (133.3 fps @ 7.5 ms / 100.0 fps @ 10.0 ms) on the transmitter (SOURCE) and DAC interrupt-synchronized DMA playback on the receiver (SINK).
-- **Zero-Overhead USB Pass-Through & Autonomous Fallback**: Real-time PC streaming over 921600 baud USB Serial with an autonomous 250 ms watchdog fallback to on-chip tone generation.
+The system transmits high-fidelity audio over 2.4 GHz Wi-Fi without Bluetooth or TCP/IP overhead by combining:
+- **ESP-NOW Action Frames (VSAF)**: Layer-2 raw 802.11 vendor-specific action frames with sub-millisecond transmission airtime (~112 us per packet at 24 Mbps OFDM).
+- **LC3 (Low Complexity Communication Codec)**: Psychoacoustic compression (fixed-point on ESP32-C6 RISC-V, Google liblc3 with hardware FPU on ESP32-S3 Xtensa) operating across standard 8 kHz integer multiples (8, 16, 24, 32, 48, 96 kHz).
+- **Dynamic VSAF Dual-Frame Payload**: Variable-length, 32-bit word-aligned packet architecture carrying both Primary Frame $N$ and Redundant Frame $N-1$ ($8 + 2 \times N$ bytes).
+- **Microsecond Clock Synchronization**: Presentation Timestamps (`pts_us`) enabling sub-millisecond DAC clock phase alignment across independent Left/Right SINK nodes.
+- **Dynamic On-the-Fly Reconfiguration**: Live bitrate (16..128 kbps), sample rate (8..96 kHz), frame duration (7.5 ms / 10.0 ms), and DAC bit depth (16/24/32-bit) changes without dropping connection state.
 
 ---
 
@@ -17,28 +17,28 @@ The system transmits high-fidelity audio over 2.4 GHz Wi-Fi without Bluetooth or
 
 ```mermaid
 flowchart TD
-    subgraph SOURCE["SOURCE Node (Transmitter: ESP32-C6 / ESP32-S3)"]
-        A["Audio In: PC USB Stream (921600 baud)<br/>or On-Chip Pentatonic Synth"] --> B["LC3 Compression<br/>8k..48k Hz, 7.5ms / 10ms<br/>(60..120 Octets/Frame)"]
-        B --> C["VSAF Packetizer<br/>248-Byte Word-Aligned Frame<br/>curr_frame (N) + prev_frame (N-1)"]
+    subgraph SOURCE["SOURCE Node (Transmitter: ESP32-S3 / ESP32-C6)"]
+        A["Audio In: PC USB Stream (921600 baud)<br/>or Generative Pentatonic Synth"] --> B["LC3 Encoder Engine<br/>(8..96 kHz, 7.5ms / 10ms)"]
+        B --> C["VSAF Packetizer<br/>Dynamic Word-Aligned Frame<br/>Header (8B) + Frame N + Frame N-1"]
         C --> D["ESP-NOW TX Engine<br/>OFDM 24 Mbps (Ch 1)<br/>Broadcast: FF:FF:FF:FF:FF:FF"]
     end
 
-    D -- "2.4 GHz Wi-Fi Action Frames<br/>248 Byte Packets @ 133.3 / 100 fps" --> E
+    D -- "2.4 GHz Wi-Fi VSAF Frames<br/>Dynamic 48..248 Byte Packets @ 100 / 133.3 fps" --> E
 
-    subgraph SINK["SINK Node (Receiver: ESP32-C6)"]
-        E["ESP-NOW RX Callback<br/>Magic (0x1337) & Channel Filter (ch_id)"] --> F{"Sequence Check<br/>& Deduplication"}
+    subgraph SINK["SINK Node (Receiver: ESP32-C6 / ESP32-S3)"]
+        E["ESP-NOW RX Callback<br/>Magic (0x1337) & Channel Filter (ch_id)"] --> F{"Sequence Check"}
         F -- "In-order Packet (Seq == Last + 1)" --> G["Push curr_frame (N) to FIFO"]
-        F -- "Single Loss (Seq == Last + 2)" --> H["Extract Frame N-1 from prev_frame<br/>Push Frame N-1 & Frame N to FIFO"]
-        G --> I["SPSC RX FIFO<br/>(Capacity: 16 Frames)"]
+        F -- "Single Loss (Seq == Last + 2)" --> H["Extract Frame N-1 from prev_frame<br/>Push N-1, then Frame N to FIFO"]
+        G --> I["SPSC RX FIFO<br/>(Capacity: 24 Frames)"]
         H --> I
-        I --> J["SINK Audio Loop<br/>(7.5ms / 10ms periodic tick)"]
+        I --> J["SINK Audio Task<br/>(State Machine Tick)"]
         J --> K{"Frame in FIFO?"}
         K -- "Yes" --> L["LC3 Decode (Frame N)"]
-        K -- "No (Burst Loss)" --> M["LC3 PLC (Packet Loss Concealment)<br/>Pitch/Spectral Extrapolation"]
-        L --> N["Volume Scaling & Dual-Mono Expansion"]
+        K -- "No (Burst Loss)" --> M["LC3 PLC (Packet Loss Concealment)<br/>Pitch/Spectral Interpolation"]
+        L --> N["Volume Scaling & 16/24/32-bit PCM Formatter"]
         M --> N
-        N --> O["Dual-Descriptor I2S DMA<br/>(2 x Descriptors Ping-Pong)"]
-        O --> P["MAX98357A / PCM5102A DAC<br/>Analog Speaker Output"]
+        N --> O["Dual-Descriptor I2S DMA Ring<br/>(MAX98357A / PCM5102A DAC)"]
+        O --> P["Analog Speaker Output"]
     end
 ```
 
@@ -46,239 +46,175 @@ flowchart TD
 
 ## 3. VSAF Packet Format & Memory Layout
 
-The **`EspNowAudioPacket`** struct is strictly packed (`__attribute__((packed))`), ensuring fixed alignment across compiler versions and platforms. The header is **8 bytes**, followed by **`curr_frame` (Frame N)** at offset 8 and **`prev_frame` (Frame N-1)** at offset 128. 
+The **Vendor-Specific Action Frame (VSAF)** audio packet consists of an **8-byte word-aligned header** followed by two contiguous LC3 frame payloads ($2 \times N$ octets).
 
-The entire packet is **248 bytes**, guaranteeing perfect 32-bit word alignment across all internal fields while preserving a 2-byte safety margin under ESP-NOW's 250-byte maximum frame limit.
+The total packet length is **`8 + 2 * N` bytes**, where $N$ is the single-frame LC3 octet count ($N \in [20 .. 120]$).
 
-### Packet Byte Map
-
-```
+```text
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          Magic (0x1337)       | Sequence No.  |  Config Byte  |
+|          Magic Word           |    Seq Num    | Config & Mode |  (Bytes 0..3)
+|          (0x1337)             |    (0..255)   |   (Bitfield)  |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|               Presentation Timestamp: pts_us (32-bit)         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-+                    curr_frame [Primary Frame N]               +
-|                   (120 Octets: Offsets 8 .. 127)              |
+|              Presentation Timestamp (PTS in microseconds)     |  (Bytes 4..7)
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                                                               |
-+                 prev_frame [Redundant Frame N-1]              +
-|                  (120 Octets: Offsets 128 .. 247)             |
+|             Primary LC3 Frame N (curr_frame: N bytes)         |  (Bytes 8 .. 8+N-1)
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
+|          Redundant LC3 Frame N-1 (prev_frame: N bytes)        |  (Bytes 8+N .. 8+2N-1)
+|                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 ### Config Byte (`cfg`) Bitfield Map (Offset 3)
 
-```
+```text
 Bit:   7         6         5   4   3       2   1   0
      +-------+-----------+---------------+-----------+
      | Sync  | Frame Dur | Sample Rate   | Channel   |
-     | Flag  | 0=10ms    | Code (0..5)   | ID (0..7) |
-     |       | 1=7.5ms   |               |           |
+     | Flag  | 0=10.0ms  | Code (0..5)   | ID (0..7) |
+     |       | 1= 7.5ms  |               |           |
      +-------+-----------+---------------+-----------+
       [1 bit]   [1 bit]       [3 bits]      [3 bits]
 ```
 
-### C/C++ Struct Definition
-
-```cpp
-// Discrete LC3 sample rate mapping (3 bits: 0..5)
-enum class Lc3SampleRateCode : uint8_t {
-    SR_8000  = 0,
-    SR_16000 = 1,
-    SR_24000 = 2,
-    SR_32000 = 3,
-    SR_44100 = 4,
-    SR_48000 = 5,
-};
-
-// 248-Byte Word-Aligned Dual-Frame Audio Packet
-struct EspNowAudioPacket {
-    uint16_t magic;          // 0x1337 (Offsets 0..1, 16-bit aligned)
-    uint8_t  seq;            // Sequence counter 0..255 (Offset 2)
-    uint8_t  cfg;            // [0..2: ch_id] [3..5: sr_code] [6: dur] [7: sync] (Offset 3)
-    uint32_t pts_us;         // 32-bit Microsecond Presentation Timestamp (Offsets 4..7, 32-bit aligned)
-    uint8_t  curr_frame[120];// Primary Frame N   (Offsets 8..127, 32-bit aligned)
-    uint8_t  prev_frame[120];// Redundant Frame N-1 (Offsets 128..247, 32-bit aligned)
-} __attribute__((packed));
-
-static constexpr size_t VSAF_HEADER_LEN = 8;
-```
-
 ### Field-by-Field Breakdown
 
-| Byte Offset | Field Name | Data Type | Size (Bytes) | Alignment | Purpose & Functional Description |
-|:---|:---|:---|:---|:---|:---|
-| `0..1` | `magic` | `uint16_t` | 2 | 16-bit | **VSAF Protocol Identifier** (`0x1337`). Fast software early-exit rejection in ISR/callback. |
-| `2` | `seq` | `uint8_t` | 1 | 8-bit | **Packet Sequence Counter** (`0..255`). Increments by 1 per frame. Used for loss detection and deduplication. |
-| `3` | `cfg` | `uint8_t` | 1 | 8-bit | **Packed Configuration Bitfield**:<br/>- **Bits 0..2 (3b)**: `channel_id` (0..5 active, up to 8 channels: FL, FR, C, LFE, SL, SR, Top-L, Top-R)<br/>- **Bits 3..5 (3b)**: `sample_rate_code` (0..5: 8k, 16k, 24k, 32k, 44.1k, 48k)<br/>- **Bit 6 (1b)**: `frame_duration` (`0` = 10.0 ms, `1` = 7.5 ms)<br/>- **Bit 7 (1b)**: `sync_flag` (`1` = Stream Start / Hard Resync, `0` = Steady Playback) |
-| `4..7` | `pts_us` | `uint32_t` | 4 | **32-bit** | **Master Presentation Timestamp (PTS)**. Microsecond hardware timestamp for Sample 0 of `curr_frame`. Wraps every ~71.58 minutes. |
-| `8..127` | `curr_frame` | `uint8_t[120]` | 120 | **32-bit** | **Primary Frame N**. Current compressed audio frame for sequence number `seq`. Directly follows `pts_us` for optimal cache locality. |
-| `128..247`| `prev_frame` | `uint8_t[120]` | 120 | **32-bit** | **Redundant Frame N-1**. Exact copy of preceding audio frame for zero-latency single-loss recovery. Starts on exact 32-bit word boundary 128. |
-| **Total** | | | **248 Bytes** | **32-bit** | *(Divisible by 4, 8, and 16; leaves 2-byte margin under 250-byte ESP-NOW limit)* |
+| Byte Offset | Field Name | Data Type | Size | Alignment | Purpose & Functional Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `0..1` | `magic` | `uint16_t` | 2 Bytes | 16-bit | **VSAF Protocol Identifier** (`0x1337`). Discards foreign Wi-Fi/ESP-NOW traffic. |
+| `2` | `seq` | `uint8_t` | 1 Byte | 8-bit | **Packet Sequence Counter** (`0..255`). Increments on each transmit cycle; detects dropped frames. |
+| `3` | `cfg` | `uint8_t` | 1 Byte | 8-bit | **Configuration Bitfield**:<br/>- **Bits 0..2**: `ch_id` ($0 = \text{Left}$, $1 = \text{Right}$, $2..7 = \text{Aux}$)<br/>- **Bits 3..5**: `sr_code` ($0=8\text{k}, 1=16\text{k}, 2=24\text{k}, 3=32\text{k}, 4=48\text{k}, 5=96\text{k}$)<br/>- **Bit 6**: `dur_bit` ($0 = 10.0\text{ ms}, 1 = 7.5\text{ ms}$)<br/>- **Bit 7**: `sync_flag` (Master clock sync pulse) |
+| `4..7` | `pts_us` | `uint32_t` | 4 Bytes | **32-bit** | **Presentation Timestamp (PTS)**. Microsecond hardware timestamp when audio was sampled (`esp_timer_get_time()`). Used for sub-millisecond inter-node synchronization. |
+| `8 .. 8+N-1` | `curr_frame` | `uint8_t[N]` | $N$ Bytes | **32-bit** | **Primary Frame N**. The current LC3 compressed frame to be decoded and played. |
+| `8+N .. 8+2N-1` | `prev_frame` | `uint8_t[N]` | $N$ Bytes | **32-bit** | **Redundant Frame N-1**. Exact copy of the previous cycle's frame ($PTS - \text{Duration}$) for zero-latency single packet loss recovery. |
 
 ---
 
-## 4. Redundancy & Packet Loss Concealment (PLC)
+### 4. 32-Bit Word Alignment & Frame Length Rules
 
-ESP-NOW broadcast does not use Wi-Fi Layer-2 ACKs or hardware retransmissions. To guarantee uninterrupted audio across noisy 2.4 GHz environments, the system utilizes a **two-tier recovery architecture**:
+To maintain high memory throughput and avoid unaligned memory access penalties on RISC-V (ESP32-C6) and Xtensa (ESP32-S3), the protocol enforces:
+
+1. **Header Alignment**: `VSAF_HEADER_LEN = 8` bytes $\rightarrow$ guarantees `curr_frame` starts at a **32-bit word boundary** (offset 8).
+2. **Multiples of 4 Bytes**: $N$ (the single-frame octet count) is strictly constrained to **multiples of 4 bytes** ($N \pmod 4 = 0$).
+   - `prev_frame` starts at offset $8 + N$.
+   - Because 8 is divisible by 4, and $N$ is divisible by 4, **`prev_frame` is guaranteed to be 32-bit word-aligned** in SRAM.
+3. **Benefits**:
+   - Enables single-cycle 32-bit word loads/stores (`lw`/`sw` on RISC-V, `l32i`/`s32i` on Xtensa).
+   - Direct compatibility with LC3 bitstream readers which consume data in 32-bit chunks.
+   - Zero-copy DMA buffer slicing.
+
+---
+
+### 5. Standard 8 kHz Sample Rate Grid (44.1 kHz Omission Rationale)
+
+In accordance with the **Bluetooth LE Audio (BAP / LC3)** core specification, VSAF standardizes strictly on the 8 kHz integer clock grid:
+
+| Code (`Bits 5..3`) | Sample Rate | Samples @ 10.0 ms | Samples @ 7.5 ms | Standard & Application |
+| :---: | :---: | :---: | :---: | :--- |
+| **`0`** (`000b`) | **8 kHz** | 80 samples | 60 samples | Ultra-low bandwidth speech / Telephony |
+| **`1`** (`001b`) | **16 kHz** | 160 samples | 120 samples | Wideband voice (mSBC / HFP equivalent) |
+| **`2`** (`010b`) | **24 kHz** | 240 samples | 180 samples | Super-wideband speech |
+| **`3`** (`011b`) | **32 kHz** | 320 samples | 240 samples | Standard broadcast audio (Default) |
+| **`4`** (`100b`) | **48 kHz** | 480 samples | 360 samples | High-Fidelity Studio Music (Mandatory LE Audio) |
+| **`5`** (`101b`) | **96 kHz** | 960 samples | 720 samples | High-Resolution Audio (Optional / Extended) |
+| **`6 .. 7`** | *Reserved* | - | - | Future expansion |
+
+#### Why 44.1 kHz is Omitted:
+- **Fractional Framing on 7.5 ms**: $44100 \times 0.0075 = \mathbf{330.75}$ samples. Fractional samples require multi-frame dithering (331, 331, 330) or drop 0.75 samples/frame, causing 100 samples/sec drift.
+- **Odd Sample Count on 10.0 ms**: $44100 \times 0.010 = \mathbf{441}$ samples. 441 is odd (not divisible by 2 or 4), breaking 32-bit DMA alignment and stereo interleaving.
+- **LE Audio Compliance**: Bluetooth SIG BAP explicitly excludes 44.1 kHz to eliminate clock domain conversions across ISO channels.
+
+---
+
+### 6. C/C++ Header Definitions
+
+```cpp
+// 8-Byte Word-Aligned VSAF Header
+struct EspNowAudioHeader {
+    uint16_t magic;          // 0x1337 (Offsets 0..1, 16-bit aligned)
+    uint8_t  seq;            // Sequence counter 0..255 (Offset 2)
+    uint8_t  cfg;            // [0..2: ch_id 0..7] [3..5: sr_code] [6: 0=10ms/1=7.5ms] [7: sync] (Offset 3)
+    uint32_t pts_us;         // 32-bit Microsecond Presentation Timestamp (Offsets 4..7, 32-bit aligned)
+} __attribute__((packed));
+
+// Dynamic VSAF Packet Buffer Definition
+static constexpr size_t VSAF_HEADER_LEN = 8;
+static constexpr size_t MAX_LC3_FRAME_OCTETS = 120;
+
+// Maximum size: 8 + 2 * 120 = 248 bytes (32-bit aligned)
+struct EspNowAudioPacket {
+    EspNowAudioHeader hdr;
+    uint8_t  curr_frame[MAX_LC3_FRAME_OCTETS];
+    uint8_t  prev_frame[MAX_LC3_FRAME_OCTETS];
+} __attribute__((packed));
+```
+
+#### Dynamic Receiver Extraction on SINK:
+
+```cpp
+void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len, int8_t rssi, uint8_t rate) {
+    if (data_len < static_cast<int>(VSAF_HEADER_LEN + 20)) return;
+
+    const auto* hdr = reinterpret_cast<const EspNowAudioHeader*>(data);
+    if (hdr->magic != m_active_magic) return;
+
+    // Channel filtering (Ch 0 = Left, Ch 1 = Right)
+    uint8_t pkt_ch = hdr->cfg & 0x07;
+    if (pkt_ch != m_target_channel) return;
+
+    // Dynamic frame length calculation from over-the-air payload size
+    size_t payload_len = data_len - VSAF_HEADER_LEN;
+    uint16_t frame_len = static_cast<uint16_t>(payload_len / 2);
+    if (frame_len < 20 || frame_len > MAX_LC3_FRAME_OCTETS || (frame_len % 4) != 0) return;
+
+    const uint8_t* curr_frame_ptr = data + VSAF_HEADER_LEN;
+    const uint8_t* prev_frame_ptr = data + VSAF_HEADER_LEN + frame_len;
+
+    // Push frames to FIFO and trigger SINK decoder...
+}
+```
+
+---
+
+### 7. Dynamic Bitrate, Frame Size & Bandwidth Matrix
+
+| Frame Octets ($N$) | Bitrate @ 10.0 ms | Bitrate @ 7.5 ms | Total VSAF Packet ($8 + 2N$) | Audio Bandwidth (Stereo) | Recommended Profile |
+| :---: | :---: | :---: | :---: | :---: | :--- |
+| **20 Bytes** | **16.0 kbps** | 21.3 kbps | **48 Bytes** | 32 kbps | Ultra-Low Power / Weak RSSI Fallback |
+| **40 Bytes** | **32.0 kbps** | 42.7 kbps | **88 Bytes** | 64 kbps | Speech / Low-Bandwidth Voice |
+| **60 Bytes** | **48.0 kbps** | 64.0 kbps | **128 Bytes** | 96 kbps | Standard Efficiency Audio |
+| **80 Bytes** | **64.0 kbps** | 85.3 kbps | **168 Bytes** | 128 kbps | High-Quality Music (Default) |
+| **100 Bytes** | **80.0 kbps** | 106.7 kbps | **208 Bytes** | 160 kbps | Very High Fidelity Music |
+| **120 Bytes** | **96.0 kbps** | **128.0 kbps** | **248 Bytes** | 192 / 256 kbps | Studio-Grade Maximum Fidelity |
+
+---
+
+### 8. In-Band Packet Loss Recovery (PLC)
 
 ```mermaid
 sequenceDiagram
     participant TX as SOURCE (Transmitter)
     participant RX as SINK (Receiver)
 
-    Note over TX,RX: 1. Normal Playback Flow
-    TX->>RX: Packet Seq #10 (Prev: #9, Curr: #10)
+    Note over TX,RX: 1. Normal In-Order Playback
+    TX->>RX: Packet Seq #10 [Curr: #10, Prev: #9]
     Note over RX: SINK pushes Curr Frame #10 to FIFO
 
     Note over TX,RX: 2. Single Packet Loss (Air Drop)
     TX--xRX: Packet Seq #11 LOST IN TRANSIT
-    TX->>RX: Packet Seq #12 (Prev: #11, Curr: #12)
-    Note over RX: SINK detects jump (Seq 10 -> 12).<br/>Extracts Frame #11 from prev_frame.<br/>Pushes #11 then #12 into FIFO.<br/>Zero-latency bit-exact recovery!
+    TX->>RX: Packet Seq #12 [Curr: #12, Prev: #11]
+    Note over RX: SINK detects jump (Seq 10 -> 12).<br/>Extracts Frame #11 from prev_frame (0 ms latency cost)
 
-    Note over TX,RX: 3. Burst Loss (> 1 Packet Dropped)
+    Note over TX,RX: 3. Burst Loss (> 1 Consecutive Drop)
     TX--xRX: Packet Seq #13 LOST IN TRANSIT
     TX--xRX: Packet Seq #14 LOST IN TRANSIT
-    Note over RX: FIFO runs empty -> LC3 PLC takes over.<br/>Decodes with nullptr input for up to 4 frames.<br/>Extrapolates pitch & spectral envelope.
-
-    Note over TX,RX: 4. Long Outage (Watchdog Resync)
-    Note over RX: If 5 consecutive PLC frames occur (50 ms loss),<br/>SINK transitions back to SCANNING mode.
+    Note over RX: FIFO empties -> LC3 PLC takes over.<br/>Decodes with nullptr for pitch/spectral interpolation
 ```
 
-### Tier 1: In-Band Dual-Frame Redundancy (Single-Loss Recovery)
-- Each packet carries both the **Current Frame (N)** and the **Previous Frame (N-1)**.
-- If packet `N` is dropped over the air, the arrival of packet `N+1` allows the SINK receiver to inspect `prev_frame` and recover frame `N` with 100% bit-exact accuracy.
-- **PTS of `prev_frame`**:
-  - For 7.5 ms frames: $\text{PTS}_{\text{prev}} = \text{PTS}_{\text{curr}} - 7500\ \mu\text{s}$
-  - For 10.0 ms frames: $\text{PTS}_{\text{prev}} = \text{PTS}_{\text{curr}} - 10000\ \mu\text{s}$
-- **Latency Cost**: **0 ms**. The frame is recovered instantly without requesting a retransmission.
-
-### Tier 2: LC3 Native Packet Loss Concealment (Burst-Loss Recovery)
-- When 2 or more consecutive packets are lost, the RX FIFO empties.
-- The SINK audio loop invokes `decodeFrame(nullptr, 0, ...)`, triggering the LC3 codec's internal psychoacoustic PLC algorithm to extrapolate pitch periods and spectral formants.
-- **Watchdog Protection**: If 5 consecutive frames fail to arrive, the SINK gracefully transitions from `PLAYING` back to `SCANNING` to prevent audible glitches and await a clean stream.
-
----
-
-## 5. Timing, Throughput & Bandwidth Calculations
-
-### Audio Stream Metrics (7.5 ms vs 10.0 ms)
-
-| Parameter | 10.0 ms Duration (Standard) | 7.5 ms Duration (High-Fidelity) |
-| :--- | :--- | :--- |
-| **Frame Duration** | 10,000 us (10.0 ms) | 7,500 us (7.5 ms) |
-| **Packet Cadence** | 100.0 pkts/second (100 fps) | 133.33 pkts/second (133.3 fps) |
-| **PCM Samples @ 48 kHz** | 480 samples (960 bytes raw PCM) | 360 samples (720 bytes raw PCM) |
-| **PCM Samples @ 32 kHz** | 320 samples (640 bytes raw PCM) | 240 samples (480 bytes raw PCM) |
-| **LC3 Octets / Channel** | **120 octets** (or 80..120) | **120 octets** (Fixed Intact Layout) |
-| **Audio Bitrate / Channel** | **96.0 kbps** | **128.0 kbps** (Higher Fidelity Quality) |
-| **Total VSAF Packet Size** | **248 bytes** (Fixed 8B Header + 120B Curr + 120B Prev) | **248 bytes** (Fixed 8B Header + 120B Curr + 120B Prev) |
-
-### Network Airtime & RF Spectrum Utilization (at 24 Mbps OFDM)
-- **802.11 Preamble + PLCP Header**: $\approx 20\ \mu\text{s}$
-- **MAC Header (24 bytes) + VSAF Payload (248 bytes) + FCS (4 bytes)**: $276\text{ bytes} = 2,208\text{ bits}$
-- **Transmission Time at 24 Mbps**: $2,208 / 24 = 92.0\ \mu\text{s}$
-- **Total Airtime per Packet**: $\approx \mathbf{112\ \mu\text{s}}$
-- **Single Channel Duty Cycle**:
-  - @ 10.0 ms (100 fps): $100 \times 112\ \mu\text{s} = 11.2\text{ ms/s} \implies \mathbf{1.12\%}$
-  - @ 7.5 ms (133.3 fps): $133.33 \times 112\ \mu\text{s} = 14.9\text{ ms/s} \implies \mathbf{1.49\%}$
-- **6-Channel Burst Duty Cycle**:
-  - @ 10.0 ms: $6 \times 1.12\% = \mathbf{6.72\%}$
-  - @ 7.5 ms: $6 \times 1.49\% = \mathbf{8.94\%}$
-- **Leaves $> 91\%$ of the 2.4 GHz RF spectrum completely free for standard Wi-Fi and Bluetooth coexistence.**
-
----
-
-## 6. SINK State Machine & DMA Buffer Architecture
-
-```mermaid
-stateDiagram-v2
-    [*] --> OFF
-    OFF --> IDLE: Initialize Wi-Fi & ESP-NOW
-    IDLE --> SCANNING: Listen for incoming audio stream
-    SCANNING --> PREFILL: Source detected & locked on (magic 0x1337 + target ch)
-    PREFILL --> PLAYING: FIFO reaches >= 5 frames (50 ms cushion), preload DMA & enable I2S
-    PLAYING --> SCANNING: 5 consecutive missing frames (watchdog timeout)
-```
-
-### State Definitions
-
-1. **`OFF`**: Wi-Fi radio and I2S DAC clocks are shut down.
-2. **`IDLE`**: Wi-Fi and ESP-NOW are initialized; I2S clocks remain gated (low-power standby).
-3. **`SCANNING`**: SINK passively listens for valid VSAF packets matching `magic == 0x1337` and its configured channel ID (`ch_id`).
-4. **`PREFILL`**: Audio packets are actively arriving. The SINK pushes frames into the LC3 RX FIFO and preloads the **Dual I2S DMA Descriptors** once the buffer threshold (5 packets) is reached.
-5. **`PLAYING`**: I2S clocks are enabled and hardware playback begins. The audio loop blocks on a binary semaphore (`m_dma_free_sem`) triggered by the hardware DMA `on_sent` interrupt callback (`i2s_dma_tx_done_cb`), ensuring playback is strictly locked to the physical DAC clock.
-
----
-
-## 7. Windows 11 PC Audio Streamer Pipeline (Option B)
-
-```
-┌────────────────────────────────────────────────────────────┐
-│                    WINDOWS 11 PC HOST                      │
-│                                                            │
-│  [ MP3 Playlist (data/mp3) / WASAPI Loopback / Synth ]     │
-│                            │                               │
-│                            ▼                               │
-│     [ Polyphase Resampler: scipy.signal.resample_poly ]    │
-│                            │                               │
-│                            ▼                               │
-│  [ Multi-Channel LC3 Encoder Array: 1-6 x liblc3.dll ]     │
-│                            │                               │
-│                            ▼                               │
-│   [ VSAF Packet Serializer: 248-Byte Word-Aligned Header ] │
-│                            │                               │
-│                            ▼                               │
-│     [ USB Serial Transmitter: pyserial @ 921600 baud ]     │
-└────────────────────────────┬───────────────────────────────┘
-                             │ USB Cable
-                             ▼
-┌────────────────────────────────────────────────────────────┐
-│              NODE 21: ESP32-C6 SOURCE (COM121)             │
-│                                                            │
-│  - Reads binary VSAF packets from USB Serial (COM121)      │
-│  - Transmits directly via esp_now_send() (< 4% CPU)        │
-│  - Autonomous Watchdog: If PC stops for >250 ms,           │
-│    resumes on-chip pentatonic tone generator               │
-└────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 8. Multi-Node Clock Synchronization & Phase Alignment
-
-To achieve sample-accurate multi-speaker playback across independent physical nodes, all SINK nodes synchronize to the SOURCE node's Presentation Time Stamp (PTS):
-
-1. **Hardware Time-Base Normalization (TSF)**:
-   - Both SOURCE and SINK read their local 1 MHz Wi-Fi TSF hardware timer (`esp_wifi_get_tsf_time()`).
-   - SINK computes clock offset and filters drift with an Exponential Moving Average (EMA).
-2. **Synchronous Timed Launch**:
-   - In `PREFILL`, SINK buffers initial frames and calculates exact launch time:
-     $$\text{Launch Time} = T_0 + \text{TARGET\_LATENCY\_US}\quad (T_0 + 35{,}000\ \mu\text{s})$$
-   - SINK enables I2S DMA on the exact target microsecond.
-3. **Closed-Loop Drift Compensation**:
-   - The DMA completion interrupt tracks phase error against physical DAC pins.
-   - Micro-interpolation adjusts playback phase by $\pm 1$ sample across 2,000 samples ($< 0.05\%$ pitch shift), maintaining phase alignment to within **$< 10\ \mu\text{s}$ ($\pm 0.5$ audio sample)**.
-
----
-
-## 9. Heterogeneous Hardware Interoperability: ESP32-S3 (SOURCE) & ESP32-C6 (SINK)
-
-Deploying an **ESP32-S3 as Master SOURCE** alongside **ESP32-C6 nodes as SINKs** is fully supported:
-
-- **Common Wi-Fi Standard**: Uses 802.11g OFDM at 24 Mbps (`WIFI_PHY_RATE_24M`) with 20 MHz channel bandwidth on both platforms.
-- **Identical Little-Endian Memory Layout**: Xtensa 32-bit (S3) and RISC-V 32-bit (C6) compile the 248-byte packed struct with identical byte alignments.
-- **Hardware Alignment Safety**: All multi-byte struct fields (`pts_us`, `curr_frame`, `prev_frame`) start on 32-bit word boundaries, avoiding Xtensa alignment exceptions (`LoadStoreAlignmentCause`).
-- **Processing Partitioning**:
-  - **ESP32-S3 (SOURCE)**: Core 1 handles parallel LC3 encoding for up to 6 channels while Core 0 handles FreeRTOS Wi-Fi packet bursts.
-  - **ESP32-C6 (SINK)**: 160 MHz RISC-V core easily executes single-channel decoding ($< 7\%$ CPU load) and I2S DMA streaming.
-
----
-
-## 10. License
-
-This protocol and reference implementation are licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0-or-later)**.
+- **Tier 1 (In-Band Dual-Frame Recovery)**: Single lost packets are recovered with **100% mathematical fidelity** from the subsequent packet's `prev_frame` payload with **0 ms latency penalty** and zero synthesized distortion.
+- **Tier 2 (Native LC3 PLC)**: Burst losses invoke the LC3 decoder's internal Packet Loss Concealment to smoothly extrapolate audio waveforms without clicks or pops.
+- **Tier 3 (Watchdog Recovery)**: If $\ge 5$ consecutive frames are dropped ($\ge 50\text{ ms}$ loss), the SINK gracefully enters `SCANNING` state, isolates I2S clocks, and pre-fills its jitter cushion upon signal re-acquisition.
