@@ -210,14 +210,14 @@ Streams 6 discrete audio channels at 32 kHz, 10.0 ms frame duration:
 
 While nodes are running, you can send ASCII commands directly over their USB Serial monitor at 115200 baud to change runtime configuration:
 
-| Command | Target | Description | Example |
-| :--- | :--- | :--- | :--- |
-| `ch <0..5>` | SINK | Changes the active audio channel the speaker listens to. | `ch 1` (Switch to Right channel) |
-| `rate <Hz>` | SOURCE | Changes the stream sampling rate dynamically. | `rate 44100` |
-| `dur <ms>` | SOURCE | Switches frame duration dynamically between 7.5 and 10.0 ms. | `dur 7.5` |
-| `magic <word>` | BOTH | Sets the network isolation magic filter word (default `0x1337`). | `magic 0x1337` |
-| `drop` | SOURCE | Simulates dropping a single packet to test in-band recovery. | `drop` |
-
+- All interactive commands over USB serial must handle trailing `\r\n` cleanly and support:
+  - `start` / `stop`: Toggle broadcasting state.
+  - `sr <hz>`: Switch sample rate (48000, 32000, 24000, 16000, 8000).
+  - `dur <ms>` / `pd <ms>`: Switch frame duration (10.0 or 7.5).
+  - `mode <mono|stereo>`: Toggle channel mode.
+  - `tone <hz>`: Adjust internal sine wave test frequency.
+  - `vol <0-100>`: Adjust SINK software/hardware attenuation.
+  - `stats` / `help`: Display diagnostic overview and command help.
 ---
 
 ## Status LED Indications (WS2812 RGB)
@@ -235,15 +235,30 @@ The onboard WS2812 RGB LED communicates real-time network states:
 
 ---
 
+## Internal stats
+Several internal statistics are collected and are available for analysis, please see 'Telemetry & Diagnostics' section for examples.
+
+### Counter Persistence:
+   - `PLC tot`, `DMA UDR`, `FIFO UDR`, and `PREV REC` must be cumulative session counters that only reset upon leaving the `STREAMING` state.
+   - Instantaneous rates (such as `Lost 1/s`) must not overwrite cumulative diagnostic counters.
+
+
+---
+
 ## Telemetry & Diagnostics
 
-Every second, nodes output a structured ANSI telemetry block over the serial console:
+Every second, nodes output a structured ANSI telemetry block over the USB serial console. Below is an example for Node 23 acting as SINK:
 
 ```text
-I (46620) : ========== [ESP32-C6-23] ==========
-I (46620) [SYS]: CPU 12% @ 160 MHz | Temp 37 C | Heap 281 KB | MasterTime 16188 ms
-I (46620) [ESPNOW]: SINK | PLAYING [Ch 0] | 1800 total pkts (133.3 pkts/s) | RSSI -26 dBm | SyncAdj 24 | Magic 0x1337
-I (46630) [AUDIO]: RMS|Pk -38.2|-22.1 dBFS | DMA_UDR 0 | FIFO_OV/UD 0/0 | PLC 0 | PREV_REC 0 | Stereo 16-bit 48.0 kHz
++========================================================= ESP32-C6-23 [SINK] =========================================================+
+|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms   AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |
+|  %  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master |
+| 29  49  160 | STRM  | -38  01  1M |  LC3  -32.9 -29.8    32   10  2.40  2.96  -26  +3    99    0    0     0    0 | 376721  376732 |
+| 30  48  160 | STRM  | -39  01  1M |  LC3  -33.1 -29.7    32   10  2.34  2.44  -26  +3   100    0    0     0    0 | 377728  377738 |
+| 29  48  160 | STRM  | -38  01  1M |  LC3  -32.8 -29.8    32   10  2.33  2.42  -26  +3    98    0    0     0    0 | 378730  378741 |
+| 30  48  160 | STRM  | -38  01  1M |  LC3  -32.7 -29.7    32   10  2.19  2.44  -26  +3   100    0    0     0    0 | 379735  379746 |
+| 29  49  160 | STRM  | -38  01  1M |  LC3  -32.6 -29.8    32   10  2.35  2.57  -26  +3    98    0    0     0    0 | 380737  380726 |
+
 ```
 
 Key metrics to monitor:
@@ -268,3 +283,5 @@ This verifies magic word rejection, startup state transitions, stream re-connect
 ## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0-or-later)**. See the root [`LICENSE`](../../LICENSE) file for details.
+
+
