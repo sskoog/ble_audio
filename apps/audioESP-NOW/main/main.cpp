@@ -1,8 +1,8 @@
 #include "config.h"
-#include "espnow_audio_broadcast.hpp"
 #include "lc3_codec.hpp"
 #include "tone_generator.hpp"
 #include "i2s_audio.hpp"
+#include "espnow_audio_broadcast.hpp"
 #include "status_led.hpp"
 #include "button.hpp"
 #include "diagnostics.hpp"
@@ -14,9 +14,15 @@
 #include "nvs_flash.h"
 #include "driver/uart.h"
 #include "driver/usb_serial_jtag.h"
+
+
+
+
 #include "soc/usb_serial_jtag_struct.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -94,9 +100,6 @@ static uint32_t get_next_sample_rate(uint32_t current_sr) {
     }
 }
 
-#include "hal/usb_serial_jtag_ll.h"
-#include "freertos/semphr.h"
-
 static SemaphoreHandle_t s_console_mutex = nullptr;
 
 static void print_console(const char* fmt, ...) {
@@ -128,11 +131,8 @@ static void handle_ascii_command(const char* raw_line) {
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t' || line[len - 1] == '\r' || line[len - 1] == '\n')) {
         line[--len] = '\0';
     }
-    if (len == 0) return;
 
-    print_console("\n>>> CMD: '%s'\n", line);
-
-    if (strncasecmp(line, "sr ", 3) == 0 || strncasecmp(line, "rate ", 5) == 0 || strncasecmp(line, "samplerate ", 11) == 0) {
+    if (strncasecmp(line, "sr ", 3) == 0 || strncasecmp(line, "rate ", 5) == 0) {
         const char* p = strchr(line, ' ');
         uint32_t rate = parse_sample_rate_arg(p);
         if (rate > 0 && s_espnow_broadcast) {
@@ -305,16 +305,18 @@ static void console_task_routine(void* pvParameters) {
     char line_buf[128];
     int line_idx = 0;
     int64_t last_char_time_us = 0;
-    static uint8_t ring_buf[1024];
+    static uint8_t ring_buf[4096];
     size_t ring_len = 0;
-    static constexpr size_t VSAF_PKT_SIZE = sizeof(AudioNet::EspNowAudioPacket); // 248 bytes
 
-    // Install UART0 driver (115200 standard baud on S3, 2MBaud on C6 Node 21)
-    int uart_baud = 115200;
-#if defined(CONFIG_IDF_TARGET_ESP32C6)
-    uart_baud = 2000000;
-#endif
-
+    // 1. Install USB-SERIAL-JTAG driver with interrupt-driven ring buffer (4KB)
+    usb_serial_jtag_driver_config_t jtag_cfg = {
+        .tx_buffer_size = 512,
+        .rx_buffer_size = 4096,
+    };
+    usb_serial_jtag_driver_install(&jtag_cfg);
+    
+    // 2. Install UART0 driver (2MBaud)
+    int uart_baud = 2000000;
     uart_config_t uart_cfg = {
         .baud_rate = uart_baud,
         .data_bits = UART_DATA_8_BITS,
@@ -329,76 +331,76 @@ static void console_task_routine(void* pvParameters) {
 
     print_console("\n[CONSOLE READY] CLI & Binary VSAF input active on USB-Serial and UART0 (%d baud).\n", uart_baud);
 
-    auto process_incoming_byte = [&](uint8_t byte) {
-        if (ring_len < sizeof(ring_buf)) {
-            ring_buf[ring_len++] = byte;
-        } else {
-            memmove(ring_buf, ring_buf + 1, ring_len - 1);
-            ring_buf[ring_len - 1] = byte;
+    uint8_t rx_buf[1024];
+    while (true) {
+        // Read available bytes from USB-Serial-JTAG
+        int n_usb = usb_serial_jtag_read_bytes(rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(1));
+        if (n_usb > 0) {
+            if (ring_len + n_usb <= sizeof(ring_buf)) {
+                memcpy(ring_buf + ring_len, rx_buf, n_usb);
+                ring_len += n_usb;
+            }
         }
 
-        // If ring buffer is not currently synced on a VSAF packet header (0x37, 0x13), parse as ASCII CLI
-        if (ring_len < 2 || (ring_buf[0] != 0x37 || ring_buf[1] != 0x13)) {
-            char c = static_cast<char>(byte);
-            if (c == '\r' || c == '\n') {
-                if (line_idx > 0) {
-                    line_buf[line_idx] = '\0';
-                    handle_ascii_command(line_buf);
+        // Read available bytes from UART0
+        int n_uart = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), 0);
+        if (n_uart > 0) {
+            if (ring_len + n_uart <= sizeof(ring_buf)) {
+                memcpy(ring_buf + ring_len, rx_buf, n_uart);
+                ring_len += n_uart;
+            }
+        }
+
+        // Fast parse dynamic VSAF packets or ASCII CLI commands
+        while (ring_len >= 8) {
+            // Check for VSAF Magic (0x1337 -> 0x37, 0x13 in little-endian)
+            if (ring_buf[0] == 0x37 && ring_buf[1] == 0x13) {
+                size_t octets = (s_espnow_broadcast ? s_espnow_broadcast->getFrameLen() : 120);
+                size_t pkt_len = AudioNet::VSAF_HEADER_LEN + 2 * octets;
+
+                if (ring_len >= pkt_len) {
+                    if (s_espnow_broadcast) {
+                        s_espnow_broadcast->processUsbVsafPacket(ring_buf, pkt_len);
+                    }
+                    if (ring_len > pkt_len) {
+                        memmove(ring_buf, ring_buf + pkt_len, ring_len - pkt_len);
+                    }
+                    ring_len -= pkt_len;
                     line_idx = 0;
                     last_char_time_us = 0;
+                    continue;
+                } else {
+                    // Waiting for the rest of the packet
+                    break;
                 }
-            } else if (c == '\b' || c == 0x7F) {
-                if (line_idx > 0) {
-                    line_idx--;
+            } else {
+                // Not magic byte: process ASCII CLI character
+                char c = static_cast<char>(ring_buf[0]);
+                if (c == '\r' || c == '\n') {
+                    if (line_idx > 0) {
+                        line_buf[line_idx] = '\0';
+                        handle_ascii_command(line_buf);
+                        line_idx = 0;
+                        last_char_time_us = 0;
+                    }
+                } else if (c == '\b' || c == 0x7F) {
+                    if (line_idx > 0) {
+                        line_idx--;
+                        last_char_time_us = esp_timer_get_time();
+                    }
+                } else if (line_idx < static_cast<int>(sizeof(line_buf) - 1) && c >= 32 && c <= 126) {
+                    line_buf[line_idx++] = c;
                     last_char_time_us = esp_timer_get_time();
                 }
-            } else if (line_idx < static_cast<int>(sizeof(line_buf) - 1) && c >= 32 && c <= 126) {
-                line_buf[line_idx++] = c;
-                last_char_time_us = esp_timer_get_time();
-            }
-        } else {
-            line_idx = 0;
-            last_char_time_us = 0;
-        }
 
-        // Process any complete 248-byte VSAF packets in ring buffer
-        while (ring_len >= VSAF_PKT_SIZE) {
-            if (ring_buf[0] == 0x37 && ring_buf[1] == 0x13) {
-                if (s_espnow_broadcast) {
-                    s_espnow_broadcast->processUsbVsafPacket(ring_buf, VSAF_PKT_SIZE);
+                if (ring_len > 1) {
+                    memmove(ring_buf, ring_buf + 1, ring_len - 1);
                 }
-                memmove(ring_buf, ring_buf + VSAF_PKT_SIZE, ring_len - VSAF_PKT_SIZE);
-                ring_len -= VSAF_PKT_SIZE;
-            } else {
-                // Shift forward 1 byte to find sync
-                memmove(ring_buf, ring_buf + 1, ring_len - 1);
                 ring_len--;
             }
         }
-    };
 
-    uint8_t rx_buf[256];
-    while (true) {
-        // 1. Poll UART0 (COM121)
-        int n_uart = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), 0);
-        if (n_uart > 0) {
-            for (int i = 0; i < n_uart; ++i) {
-                process_incoming_byte(rx_buf[i]);
-            }
-        }
-
-        // 2. Poll Native USB-Serial/JTAG Hardware FIFO directly (COM21)
-        while (usb_serial_jtag_ll_rxfifo_data_available()) {
-            uint8_t byte_val = 0;
-            uint32_t read_cnt = usb_serial_jtag_ll_read_rxfifo(&byte_val, 1);
-            if (read_cnt > 0) {
-                process_incoming_byte(byte_val);
-            } else {
-                break;
-            }
-        }
-
-        // 3. Fallback idle timeout: If user sent text without Enter (e.g. Serial Studio "None" line ending)
+        // Fallback idle timeout: If user sent text without Enter
         if (line_idx > 0 && last_char_time_us > 0) {
             int64_t elapsed_us = esp_timer_get_time() - last_char_time_us;
             if (elapsed_us > 250000) { // 250 ms idle
@@ -408,8 +410,6 @@ static void console_task_routine(void* pvParameters) {
                 last_char_time_us = 0;
             }
         }
-
-        vTaskDelay(pdMS_TO_TICKS(5)); // 200 Hz responsive polling
     }
 }
 
@@ -423,7 +423,7 @@ extern "C" void app_main(void) {
 
     ESP_LOGI(TAG, "=========================================================");
     ESP_LOGI(TAG, "   audioESP-NOW: High-Fidelity LC3 Audio Streamer        ");
-    ESP_LOGI(TAG, "   Target: ESP32-C6 | Wi-Fi ESP-NOW | Bluetooth DISABLED ");
+    ESP_LOGI(TAG, "   Target: Multi-Target | Wi-Fi ESP-NOW | BLE DISABLED   ");
     ESP_LOGI(TAG, "=========================================================");
 
     const system_config_t* cfg = get_system_config();
@@ -467,16 +467,15 @@ extern "C" void app_main(void) {
         s_espnow_broadcast->transitionTo(AudioNet::NetworkState::SCANNING);
         s_status_led->setSystemState(Hardware::SystemState::SCANNING);
     }
-    // Note: SOURCE intentionally boots into IDLE mode; press User Button (GPIO 9) to toggle BROADCASTING
 
     s_espnow_broadcast->startAudioTask();
 
 #if SOC_CPU_CORES_NUM > 1
     xTaskCreatePinnedToCore(diagnostics_task_routine, "diagnostics", 4096, nullptr, 2, nullptr, 0);
-    xTaskCreatePinnedToCore(console_task_routine, "console", 4096, nullptr, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(console_task_routine, "console", 4096, nullptr, 3, nullptr, 0);
 #else
     xTaskCreate(diagnostics_task_routine, "diagnostics", 4096, nullptr, 2, nullptr);
-    xTaskCreate(console_task_routine, "console", 4096, nullptr, 2, nullptr);
+    xTaskCreate(console_task_routine, "console", 4096, nullptr, 3, nullptr);
 #endif
 
     ESP_LOGI(TAG, "audioESP-NOW node initialized and running. Type 'bench' to run benchmark.");

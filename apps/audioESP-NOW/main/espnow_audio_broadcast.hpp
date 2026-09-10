@@ -13,6 +13,8 @@
 #include <atomic>
 #include <string>
 #include <cmath>
+#include <algorithm>
+#include <array>
 
 #ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
 #ifdef ESPNOW_PREFILL_THRESHOLD_FRAMES_DEFAULT
@@ -217,6 +219,68 @@ private:
     std::atomic<size_t> m_count{0};
 };
 
+
+class TimeOffsetRingBuffer {
+public:
+    static constexpr size_t CAPACITY = 64;
+
+    TimeOffsetRingBuffer() { reset(); }
+
+    void push(int64_t offset_us) {
+        size_t head = m_head.load(std::memory_order_relaxed);
+        m_buffer[head] = offset_us;
+        m_head.store((head + 1) % CAPACITY, std::memory_order_release);
+        size_t count = m_count.load(std::memory_order_relaxed);
+        if (count < CAPACITY) {
+            m_count.store(count + 1, std::memory_order_relaxed);
+        }
+    }
+
+    void reset() {
+        m_head.store(0, std::memory_order_relaxed);
+        m_count.store(0, std::memory_order_relaxed);
+    }
+
+    size_t getCount() const {
+        return m_count.load(std::memory_order_acquire);
+    }
+
+    bool computeStats(float& out_median_ms, float& out_range_ms) const {
+        size_t count = m_count.load(std::memory_order_acquire);
+        if (count == 0) {
+            out_median_ms = 0.0f;
+            out_range_ms = 0.0f;
+            return false;
+        }
+
+        int64_t temp[CAPACITY];
+        size_t head = m_head.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < count; ++i) {
+            size_t idx = (head + CAPACITY - count + i) % CAPACITY;
+            temp[i] = m_buffer[idx];
+        }
+
+        int64_t min_val = temp[0];
+        int64_t max_val = temp[0];
+        for (size_t i = 1; i < count; ++i) {
+            if (temp[i] < min_val) min_val = temp[i];
+            if (temp[i] > max_val) max_val = temp[i];
+        }
+        out_range_ms = static_cast<float>(max_val - min_val) / 1000.0f;
+
+        std::sort(temp, temp + count);
+        int64_t median_val = (count % 2 == 1) ? temp[count / 2] : ((temp[count / 2 - 1] + temp[count / 2]) / 2);
+        out_median_ms = static_cast<float>(median_val) / 1000.0f;
+
+        return true;
+    }
+
+private:
+    std::array<int64_t, CAPACITY> m_buffer{};
+    std::atomic<size_t> m_head{0};
+    std::atomic<size_t> m_count{0};
+};
+
 class EspNowAudioBroadcast {
 public:
     EspNowAudioBroadcast(Codec::Lc3CodecEngine& lc3_codec,
@@ -296,6 +360,10 @@ public:
     bool isMasterTimeValid() const;
     uint32_t getClockSyncAdjustCount() const { return m_clock_sync_micro_adjust_count.load(std::memory_order_relaxed); }
     uint32_t getPrevFrameRecoveryCount() const { return m_prev_frame_recoveries.load(std::memory_order_relaxed); }
+    // 10 Hz Polling & Diagnostics for Master Time Offset Ring Buffer
+    void update10HzTimeOffsetStats();
+    void getTimeOffsetStats(float& out_ema_ms, float& out_rb_med_ms, float& out_rb_rng_ms, bool& out_has_stats) const;
+
     void getCodecDurationStats(float& out_avg_ms, float& out_peak_ms, bool& out_has_data) const {
         m_codec_duration_ring_buffer.getStats(out_avg_ms, out_peak_ms, out_has_data);
     }
@@ -329,6 +397,10 @@ private:
     StreamTelemetry            m_telemetry;
     AudioLevelMeter            m_audio_meter;
     SpscDurationRingBuffer<uint32_t, 10> m_codec_duration_ring_buffer;
+    TimeOffsetRingBuffer       m_time_offset_ring_buffer;
+    std::atomic<float>         m_cached_rb_median_ms{0.0f};
+    std::atomic<float>         m_cached_rb_range_ms{0.0f};
+    std::atomic<bool>          m_has_cached_offset_stats{false};
 
     bool                       m_wifi_initialized = false;
     bool                       m_audio_task_running = false;

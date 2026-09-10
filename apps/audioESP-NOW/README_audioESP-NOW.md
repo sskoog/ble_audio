@@ -89,28 +89,42 @@ The SINK firmware outputs standard digital audio over I2S to external DAC module
 ---
 
 
-## Audio Architecture & VSAF Protocol
+## Architecture
 
-### Packet Structure (VSAF Dual-Frame Redundancy)
-ESP-NOW audio packets use the VSAF container format:
-- **8-Byte Header**:
-  - `magic` (2B): `0x1337`
-  - `seq` (2B): Monotonically incrementing 16-bit sequence number
-  - `cfg` (1B): Bitfield (Bit 0: Redundancy present, Bit 1: Stereo mode, Bits 2-3: Channel index, Bits 4-7: Reserved)
-  - `pts_us` (3B): Presentation timestamp in microseconds modulo 2^24
-- **Payload**:
-  - Primary Frame (Frame N, e.g., 120 bytes)
-  - Redundant Frame (Frame N-1, e.g., 120 bytes)
+### Audio Protocol 
+Layer-2 IEE802.11 ("WiFi") VSAF packets ("ESP-NOW") are used to broadcast audio packets.
+See [ESP-NOW_protocol](ESP-NOW_protocol.md).
 
-### Supported Audio Configurations
-- **Sample Rates**: 48.0 kHz, 32.0 kHz, 24.0 kHz, 16.0 kHz, 8.0 kHz
-- **Frame Cadence**: 10.0 ms (Default) and 7.5 ms
-- **Bitrates / Frame Sizes**:
-  - 10.0 ms @ 120 octets = 96 kbps per channel
-  - 7.5 ms @ 120 octets = 128 kbps per channel
-- **Channel Modes**:
-  - **Mono Mode**: Single LC3 encode; packet duplicated into two VSAF packets for Ch 0 and Ch 1.
-  - **Stereo Mode**: Two distinct LC3 encodes; sent as independent VSAF packets for Ch 0 and Ch 1.
+### Audio pipeline
+Overview of how the low-level audio pipeline works, assuming starting from IDLE-state:
+* IDLE/SCANNING state. I2S clocks gated.
+* A VSAF broadcast is detected and locked on to. The first valid LC3-packets are received fed to the LC3 RX FIFO.
+* The time synchronization with the master starts. The SINK now has an apprehension of the master time.
+* The audio pipeline is set up to the correct frame duration, bit depth and sample rate. I2S clocks still gated.
+* LC3-decoder processes first frame from FIFO, put PCM output in first DMA descriptor.
+* LC3-decoder processes second frame from FIFO, put PCM output in second DMA descriptor.
+* The I2S clocks are still gated, waiting for the local version of master time >= presentation time.
+* More LC3-packets might be received and put in the FIFO during this wait.
+* I2S clocks are started when presentation time is due.
+* I2S starts clocking out data. 
+* After 10 ms (LC3 frame duration), the first DMA descriptor is free, and a DMA interrupt is fired, the I2S seamlessly grabs data from the second DMA descriptor.
+* The DMA interrupt tells the LC3-decoder to grab the next packet in the FIFO and process. 
+   - The decoder now has 10 ms to decode the packet before the second DMA-desciptor is empty. This sould be plenty of time, since LC3-decoding requires ~2-3 ms.
+   - If the LC3-decoder finds no immediate data in the FIFO, it runs PLC instead of decoding, to conceal a lost packet and create semi-reasonable audio based on recent LC3-frames. This keeps the DMA fed with data, avoiding DMA underrun, which would sound terrible at the audio output. 
+* If several PLCs (>=5) are triggered in a row, the audio pipeline is reset, and the node goes back to the SCANNING state.
+
+### Presentation delay
+The SOURCE stamps each audio packet with **PTS** in microseconds from `esp_timer_get_time()`. 
+
+### Audio streaming state machine
+The overall state of the nodes are controlled by a software state machine.
+
+States:
+* IDLE: Radio is off, no audio output.
+* SCANNING: Radio on, scanning for VSAF broadcasts. No audio output.
+* PREFILL: Locking onto a broadcast, setting up the audio pipeline (I2S clocks gated), filling the audio buffers.
+* STREAMING: I2S clocks enabled, audio output, continiously receiving VSAF packets and decoding them on-the-fly.
+ 
 
 ### Critical Timing Requirement
 Audio broadcasting MUST use absolute microsecond hardware timer pacing (`esp_timer_get_time()`) instead of relative delays (`vTaskDelayUntil` / `vTaskDelay`) to eliminate clock drift and frame creep.

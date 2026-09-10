@@ -46,6 +46,7 @@ static const char* getState5Char(AudioNet::NetworkState state) {
 
 void SystemDiagnostics::tick() {
     m_loop_count++;
+    m_espnow_broadcast.update10HzTimeOffsetStats();
 
     const system_config_t* cfg = get_system_config();
 
@@ -151,19 +152,24 @@ void SystemDiagnostics::tick() {
             wifi_ch = current_hw_ch;
         }
 
-        // 2. Read WiFi RSSI dynamically
+        // 2. Read WiFi RSSI / TX Gain dynamically
         char rssi_str[8];
         if (cfg->node_role == NODE_ROLE_SOURCE) {
-            snprintf(rssi_str, sizeof(rssi_str), " - ");
+            int8_t actual_tx_power = 0;
+            if (esp_wifi_get_max_tx_power(&actual_tx_power) == ESP_OK) {
+                snprintf(rssi_str, sizeof(rssi_str), "%+4.1f", actual_tx_power * 0.25f);
+            } else {
+                snprintf(rssi_str, sizeof(rssi_str), "+9.0");
+            }
         } else if (m_espnow_broadcast.getState() == AudioNet::NetworkState::OFF ||
                    m_espnow_broadcast.getState() == AudioNet::NetworkState::IDLE) {
-            snprintf(rssi_str, sizeof(rssi_str), " - ");
+            snprintf(rssi_str, sizeof(rssi_str), "  - ");
         } else {
             int8_t rssi_val = m_espnow_broadcast.getLastRssi();
             if (rssi_val <= -120) {
-                snprintf(rssi_str, sizeof(rssi_str), " - ");
+                snprintf(rssi_str, sizeof(rssi_str), "  - ");
             } else {
-                snprintf(rssi_str, sizeof(rssi_str), "%3d", rssi_val);
+                snprintf(rssi_str, sizeof(rssi_str), "%4d", rssi_val);
             }
         }
 
@@ -276,15 +282,42 @@ void SystemDiagnostics::tick() {
             snprintf(master_time_str, sizeof(master_time_str), "   -  ");
         }
 
-        // Build Title Border
+        // Time Offset Diagnostics (EMA_offs, RB_med, RB_rng)
+        float ema_ms = 0.0f, rb_med_ms = 0.0f, rb_rng_ms = 0.0f;
+        bool has_offset_stats = false;
+        m_espnow_broadcast.getTimeOffsetStats(ema_ms, rb_med_ms, rb_rng_ms, has_offset_stats);
+
+        char ema_str[8], med_str[8], rng_str[8];
+        if (has_offset_stats && cfg->node_role == NODE_ROLE_SINK) {
+            snprintf(ema_str, sizeof(ema_str), "%5.2f", ema_ms);
+            snprintf(med_str, sizeof(med_str), "%5.2f", rb_med_ms);
+            snprintf(rng_str, sizeof(rng_str), "%5.2f", rb_rng_ms);
+        } else {
+            snprintf(ema_str, sizeof(ema_str), "  -  ");
+            snprintf(med_str, sizeof(med_str), "  -  ");
+            snprintf(rng_str, sizeof(rng_str), "  -  ");
+        }
+
         char title_str[64];
         snprintf(title_str, sizeof(title_str), " %s [%s] ", cfg->device_name, (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK");
         size_t title_len = strlen(title_str);
-        size_t total_inner = 134;
+
+        char audio_block[96];
+        snprintf(audio_block, sizeof(audio_block),
+                 "  %-3.3s  %5.5s %5.5s  %4.4s  %3.3s %5.5s %5.5s  %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %4.4s %4.4s ",
+                 enc_str, rms_str, peak_str, sr_str, pd_str, codec_avg_str, codec_pk_str, gain_sw_str, gain_hw_str,
+                 pkts_str, plc_str, dma_udr_str, fifo_udr_str, prev_rec_str);
+
+        char time_sync_block[48];
+        snprintf(time_sync_block, sizeof(time_sync_block),
+                 " %6lu  %6.6s  %5.5s %5.5s %5.5s ",
+                 (unsigned long)t_local, master_time_str, ema_str, med_str, rng_str);
+
+        size_t total_inner = 159;
         size_t left_pad = (total_inner > title_len) ? (total_inner - title_len) / 2 : 0;
         size_t right_pad = (total_inner > title_len) ? (total_inner - title_len - left_pad) : 0;
 
-        char border_line[160];
+        char border_line[192];
         int pos = 0;
         border_line[pos++] = '+';
         for (size_t i = 0; i < left_pad; ++i) border_line[pos++] = '=';
@@ -294,25 +327,23 @@ void SystemDiagnostics::tick() {
         border_line[pos++] = '+';
         border_line[pos++] = '\0';
 
-        char audio_block[96];
-        snprintf(audio_block, sizeof(audio_block),
-                 "  %-3.3s  %5.5s %5.5s  %4.4s  %3.3s %5.5s %5.5s  %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %4.4s %4.4s ",
-                 enc_str, rms_str, peak_str, sr_str, pd_str, codec_avg_str, codec_pk_str, gain_sw_str, gain_hw_str,
-                 pkts_str, plc_str, dma_udr_str, fifo_udr_str, prev_rec_str);
-
-        char row4_buf[168];
+        char row4_buf[192];
         snprintf(row4_buf, sizeof(row4_buf),
-                 "| %2d  %2d  %3u | %-5.5s | %3.3s  %02u %-3.3s |%s| %6lu  %6.6s |",
+                 "| %2d  %2d  %3u | %-5.5s | %4.4s %02u %-3.3s |%s|%s|",
                  cpu_load_pct, (int)(temp_c + 0.5f), (unsigned)cpu_freq_mhz,
                  getState5Char(m_espnow_broadcast.getState()),
                  rssi_str, (unsigned)wifi_ch, phy_str,
                  audio_block,
-                 (unsigned long)t_local, master_time_str);
+                 time_sync_block);
 
         if ((m_header_counter % 5) == 0) {
             printf("%s\n", border_line);
-            printf("|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms   AMP dB  PKTS  PLC  DMA  FIFO  PREV |    TIME (ms)   |\n");
-            printf("|  %%  °C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master |\n");
+            printf("|    CPU      | STATE |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms   AMP dB  PKTS  PLC  DMA  FIFO  PREV |         TIME & SYNCHRONIZATION (ms)         |\n");
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                printf("|  %%   C  MHz |       | GAIN Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master  EMA_offs RB_med RB_rng |\n");
+            } else {
+                printf("|  %%   C  MHz |       | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk    SW  HW   1/s  tot  UDR   UDR   REC |  Local  Master  EMA_offs RB_med RB_rng |\n");
+            }
         }
         printf("%s\n", row4_buf);
         fflush(stdout);
