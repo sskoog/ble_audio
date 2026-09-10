@@ -43,12 +43,13 @@ Unique hardware nodes in this project are enumerated according to their assigned
 
 | COM Port(s) | Node Identifier | Hardware Board / Module | Description & Product References |
 | :--- | :--- | :--- | :--- |
-| **COM20** | **Node20** | **ESP32-C6-LCD** | [Waveshare ESP32-C6-LCD](https://www.amazon.se/dp/B0DHTMYTCY) 18-pin thumb-size module with 1.47" 172x320 px LCD + WS2812B RGB LED |
-| **COM21 / COM121** | **Node21** | **ESP32-C6-WROOM** | [ESP32-C6-WROOM-1](https://www.amazon.se/dp/B0CN66P5XY?ref=ppx_yo2ov_dt_b_fed_asin_title) 32-pin full-size module (COM21: Flash & Telemetry, COM121: Bumble & Audio Ingest) + WS2812B RGB LED |
-| COM23 | Node23 | **ESP32-C6-zero** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) 18-pin thumb-size module |
-| COM24 | Node24 | **ESP32-C6-zero** | [Waveshare ESP32-C6-Zero](https://www.amazon.se/dp/B0F12PRH9G) 18-pin thumb-size module |
-| COM25 | Node25 | **ESP32-C6-mini** | [Heemol ESP32-C6 Mini](https://www.amazon.se/dp/B0H33M4Y9R) 20-pin thumb-size module |
-| COM26 | Node26 | **ESP32-C6-mini** | [Heemol ESP32-C6 Mini](https://www.amazon.se/dp/B0H33M4Y9R) 20-pin thumb-size module |
+| COM16 | Node16 | [XIAO ESP32-S3 Plus](https://www.seeedstudio.com/Seeed-Studio-XIAO-ESP32S3-Plus-p-6361.html) | Seed Studio XIAO thumb-size module |
+| COM20 | Node20 | [ESP32-C6-LCD](https://www.amazon.se/dp/B0DHTMYTCY) | 18-pin thumb-size module with 1.47" 172x320 px LCD + WS2812B RGB LED |
+| COM21 / COM121 | Node21 | [ESP32-C6-WROOM](https://www.amazon.se/dp/B0CN66P5XY?ref=ppx_yo2ov_dt_b_fed_asin_title) | 32-pin full-size module (COM21: Flash & Telemetry, COM121: Bumble & Audio Ingest) + WS2812B RGB LED |
+| COM23 | Node23 | [ESP32-C6-zero](https://www.amazon.se/dp/B0F12PRH9G) | 18-pin thumb-size module |
+| COM24 | Node24 | [ESP32-C6-zero](https://www.amazon.se/dp/B0F12PRH9G) | 18-pin thumb-size module |
+| COM25 | Node25 | [ESP32-C6-mini](https://www.amazon.se/dp/B0H33M4Y9R) | 20-pin thumb-size module |
+| COM26 | Node26 | [ESP32-C6-mini](https://www.amazon.se/dp/B0H33M4Y9R) | 20-pin thumb-size module |
 
 ### I2S decoders and power amplifiers
 * **Audio Amplifier / DAC Module**: [MAX98357A I2S 3.2W Class-D Mono Amplifier](https://www.aliexpress.com/item/1005012453004931.html) ([Alternative AliExpress Source](https://www.aliexpress.com/item/1005010273388760.html)).

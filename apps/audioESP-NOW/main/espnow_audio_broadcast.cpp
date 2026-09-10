@@ -705,15 +705,15 @@ void EspNowAudioBroadcast::runSinkLoop() {
 
 void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len, int8_t rssi, uint8_t rate) {
     if (m_node_role != NODE_ROLE_SINK) return;
-    if (data_len < static_cast<int>(sizeof(EspNowAudioPacket))) return;
+    if (data_len < static_cast<int>(VSAF_HEADER_LEN + 20)) return;
 
-    const auto* pkt = reinterpret_cast<const EspNowAudioPacket*>(data);
-    if (pkt->magic != m_active_magic) {
+    const auto* hdr = reinterpret_cast<const EspNowAudioHeader*>(data);
+    if (hdr->magic != m_active_magic) {
         return;
     }
 
     // Filter by audio channel
-    uint8_t pkt_ch = pkt->cfg & 0x07;
+    uint8_t pkt_ch = hdr->cfg & 0x07;
     if (pkt_ch != m_target_channel) {
         return; // Discard packets intended for other audio channels
     }
@@ -722,26 +722,35 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
     m_last_rx_rate.store(rate, std::memory_order_relaxed);
     m_telemetry.rssi_dbm = rssi;
 
-    uint8_t sr_code = (pkt->cfg >> 3) & 0x07;
+    uint8_t sr_code = (hdr->cfg >> 3) & 0x07;
     uint32_t sample_rate = codeToSampleRate(sr_code);
-    uint8_t dur_bit = (pkt->cfg >> 6) & 0x01;
+    uint8_t dur_bit = (hdr->cfg >> 6) & 0x01;
     uint32_t pkt_dur_us = dur_bit ? 7500 : 10000;
-    uint16_t frame_len = 120; // Fixed intact 120-octet LC3 frame
+    
+    // Dynamic frame length calculation based on dual-frame redundancy payload
+    size_t payload_len = data_len - VSAF_HEADER_LEN;
+    uint16_t frame_len = static_cast<uint16_t>(payload_len / 2);
+    if (frame_len < 20 || frame_len > MAX_LC3_FRAME_OCTETS) {
+        return;
+    }
 
-    uint32_t pts_curr = pkt->pts_us;
+    const uint8_t* curr_frame_ptr = data + VSAF_HEADER_LEN;
+    const uint8_t* prev_frame_ptr = data + VSAF_HEADER_LEN + frame_len;
+
+    uint32_t pts_curr = hdr->pts_us;
     int64_t now_us = esp_timer_get_time();
     m_master_time_offset_us = static_cast<int64_t>(pts_curr) - now_us;
     m_last_sync_time_us.store(now_us, std::memory_order_relaxed);
 
     if (m_has_last_rx_seq) {
-        if (pkt->seq == m_last_rx_seq) {
+        if (hdr->seq == m_last_rx_seq) {
             return;
         }
 
         uint8_t expected = m_last_rx_seq + 1;
-        if (pkt->seq == static_cast<uint8_t>(expected + 1)) {
+        if (hdr->seq == static_cast<uint8_t>(expected + 1)) {
             uint32_t pts_prev = pts_curr - pkt_dur_us;
-            if (push_rx_lc3_frame(pkt->prev_frame, frame_len, expected, static_cast<uint16_t>(sample_rate),
+            if (push_rx_lc3_frame(prev_frame_ptr, frame_len, expected, static_cast<uint16_t>(sample_rate),
                                   static_cast<uint16_t>(pkt_dur_us), pts_prev)) {
                 m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
                 m_rx_packets_sec.fetch_add(1, std::memory_order_relaxed);
@@ -752,12 +761,12 @@ void EspNowAudioBroadcast::onPacketReceived(const uint8_t* mac_addr, const uint8
         }
     }
 
-    if (push_rx_lc3_frame(pkt->curr_frame, frame_len, pkt->seq, static_cast<uint16_t>(sample_rate),
+    if (push_rx_lc3_frame(curr_frame_ptr, frame_len, hdr->seq, static_cast<uint16_t>(sample_rate),
                           static_cast<uint16_t>(pkt_dur_us), pts_curr)) {
         m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
         m_rx_packets_sec.fetch_add(1, std::memory_order_relaxed);
 
-        m_last_rx_seq = pkt->seq;
+        m_last_rx_seq = hdr->seq;
         m_has_last_rx_seq = true;
 
         if (s_audio_task_handle) {

@@ -3,7 +3,7 @@
 #if defined(CONFIG_IDF_TARGET_ESP32S3) || CONFIG_ACTIVE_NODE_ID == 16
 static system_config_t s_active_config = {
     .node_id = 16,
-    .node_role = NODE_ROLE_SINK,
+    .node_role = NODE_ROLE_SOURCE,
     .device_name = "ESP32-S3-16",
     .i2s_bclk_gpio = -1,
     .i2s_ws_gpio = -1,
@@ -31,9 +31,9 @@ static system_config_t s_active_config = {
 };
 #else // Node 23 (Default SINK for ESP32-C6)
 static system_config_t s_active_config = {
-    .node_id = 23,
+    .node_id = 24,
     .node_role = NODE_ROLE_SINK,
-    .device_name = "ESP32-C6-23",
+    .device_name = "ESP32-C6-24",
     .i2s_bclk_gpio = 2,    // GP2 (BCLK / pin6)
     .i2s_ws_gpio = 3,      // GP3 (LRCLK / LRC / pin7)
     .i2s_dout_gpio = 1,    // GP1 (DIN / pin5)
