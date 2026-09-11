@@ -1,16 +1,17 @@
 # Multi-Unicast ESP-NOW Audio Streaming Architecture & Protocol Specification
 
-## 1. Executive Summary & Hardware Assumptions
+## 1. Executive Summary & Hardware Topology
 
-The **`audio_ESP_NOW_unicast`** application implements a low-latency, multi-channel, multi-speaker wireless audio distribution system over 802.11 ESP-NOW unicast semantics. The network topology comprises one central **SOURCE** transmitter and **2 to 6 SINK** speaker nodes operating synchronously with microsecond-level presentation timeline alignment.
+The **`audio_ESP_NOW_unicast`** application implements a high-fidelity, ultra-low-latency, multi-channel, multi-speaker wireless audio distribution system over 802.11 ESP-NOW unicast semantics. The network topology comprises one central **SOURCE** transmitter and **2 to 6 SINK** speaker nodes operating synchronously with microsecond-level presentation timeline alignment.
 
 ```
                   +--------------------------------------+
                   |        ESP32-S3 SOURCE (Dongle)      |
                   |  - Xtensa Dual-Core @ 240 MHz        |
-                  |  - Hardware FPU liblc3 Multi-Encoder |
-                  |  - Master PTS Generation             |
-                  |  - Core 1 Dedicated 100 Hz Pacer     |
+                  |  - Dual-Core Parallel liblc3 Encoder |
+                  |  - Master PTS Generation (50ms delay)|
+                  |  - 0 Hz Circuit Breaker for Offline  |
+                  |  - dB-Scale Master & Ch Volume Ctrl  |
                   +-------------------+------------------+
                                       |
        +------------------------------+------------------------------+
@@ -20,6 +21,8 @@ The **`audio_ESP_NOW_unicast`** application implements a low-latency, multi-chan
 | SINK 0 (Left) |              | SINK 1 (Right)|              | SINK 2..5     |
 | ESP32-C6 / S3 |              | ESP32-C6 / S3 |              | ESP32-C6 / S3 |
 | MAX98357A DAC |              | MAX98357A DAC |              | MAX98357A DAC |
+| 2 DMA Descs   |              | 2 DMA Descs   |              | 2 DMA Descs   |
+| 96dB/s Slew   |              | 96dB/s Slew   |              | 96dB/s Slew   |
 +---------------+              +---------------+              +---------------+
 ```
 
@@ -28,23 +31,98 @@ The **`audio_ESP_NOW_unicast`** application implements a low-latency, multi-chan
 1. **SOURCE Node**:
    - **SoC**: ESP32-S3 (Xtensa Dual-Core @ 240 MHz).
    - **Compute Capability**: Hardware Single-Precision FPU with SIMD vector extensions.
-   - **Role**: Encodes 2 to 6 independent audio channels using Google `liblc3` (~3.4 ms per stereo pair at 48 kHz / 10 ms / 96 kbps) on Core 1, attaches microsecond Presentation Time Stamps (PTS), and dispatches discrete 802.11 unicast frames to each registered SINK.
+   - **Dual-Core Encoding**: Core 1 encodes Left / Channel 0 while a dedicated FreeRTOS worker task (`lc3_worker_c0`) on Core 0 encodes Right / Channel 1 concurrently (~3.7 ms total encode time per 10 ms stereo block).
+   - **Role**: Dispatches discrete 802.11 unicast frames to registered ONLINE SINKs and sends on-demand volume control commands.
 2. **SINK Nodes**:
    - **SoC**: ESP32-C6 (160 MHz 32-bit RISC-V) or ESP32-S3.
-   - **Role**: Receives unicast packets targeted to its configured Channel ID (`ch_id`), filters out unrelated traffic, computes local phase-locked clock offsets, decodes LC3 frames, and outputs stereo I2S PCM to a MAX98357A Class-D amplifier.
+   - **Role**: Emits periodic 2 Hz broadcast presence beacons (`SINK_HELLO`), receives unicast packets targeted to its channel, applies 96 dB/s slew-limited volume scaling, decodes LC3 frames, and feeds a dual-descriptor I2S DMA pipeline to a MAX98357A Class-D amplifier.
 
 ---
 
-## 2. 802.11 Physical Layer (PHY) & Airtime Analysis
+## 2. Audio Volume Control & Slew-Rate Limiter
 
-### 2.1 PHY Configuration Rationale
+### 2.1 Scaled 0 to 255 dB-Domain Mapping
+Volume is communicated using an 8-bit unsigned integer (`uint8_t volume_u8`), providing 254 active steps across a 96 dB dynamic range (~0.378 dB per step resolution):
+- **`0`**: **MUTE** (linear multiplier = `0.0`, $-\infty$ dB)
+- **`1`**: **-96.0 dB** (minimum audible sound floor, linear multiplier = `0.0000158`)
+- **`255`**: **0.0 dBFS** (maximum volume / unity gain, linear multiplier = `1.0`)
 
-Standard ESP-NOW broadcast transmissions (`FF:FF:FF:FF:FF:FF`) cannot leverage 802.11n High-Throughput (HT) rates because 802.11 MAC semantics lack an acknowledgement mechanism for broadcast destinations; the Wi-Fi baseband automatically falls back to basic OFDM (6.0 Mbps).
+Conversion formula:
+```cpp
+gain_dB = -96.0f + (float)(vol_u8 - 1) * (96.0f / 254.0f);
+linear_gain = powf(10.0f, gain_dB / 20.0f);
+```
 
-By operating in **Multi-Unicast mode**, each packet is addressed directly to the SINK node's individual STA MAC address (`B0:A6:04:xx:xx:xx`). This enables:
+### 2.2 SINK Slew Rate Limiter (96 dB/s)
+To eliminate audible zipper noise, clicks, or pops during volume changes:
+1. **Logarithmic Slew in dB Domain**: The SINK steps its internal gain by at most `CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC * (frame_duration_us / 1000000.0f)` (0.96 dB per 10 ms frame at 96 dB/s).
+2. **Per-Sample Linear Interpolation**: Across the 480 PCM samples in each 10 ms frame, the gain multiplier is smoothly interpolated from `start_linear` to `end_linear`.
+3. **Fade Duration Examples**:
+   - Full scale swing (`-96 dB` to `0 dB`): Exactly **1.00 second**.
+   - `MUTE` from full volume: Smooth fade to silence in **1.00 second**.
+   - Minor adjustment (`-12 dB` to `0 dB`): Seamlessly completes in **125 ms**.
+
+---
+
+## 3. SINK-Initiated Presence & Dynamic Handshake Protocol
+
+### 3.1 The Problem with SOURCE-Side Probing
+In naive unicast networks, the SOURCE continuously transmits probe packets to all configured peers to discover when an offline node powers on. However, in 802.11 MAC unicast semantics:
+- When a target node is offline or unpowered, the 802.11 MAC hardware controller triggers up to 7 retransmissions per packet, backing off exponentially.
+- Each failed unicast attempt locks the Wi-Fi baseband TX queue for **3 to 5 ms**.
+- If two or three nodes are powered off simultaneously, the SOURCE baseband queue starves, delaying audio packets to remaining online nodes and causing audible jitter and DMA underruns.
+
+### 3.2 SINK-Initiated Handshake Architecture (`SINK_HELLO`)
+To eliminate all SOURCE-side probing overhead and guarantee 100% airtime availability for active nodes, this application implements a **SINK-Initiated Presence Protocol**:
+
+```
++----------------+                                          +----------------+
+|  SINK Node     |                                          |  SOURCE Node   |
+|  (Boot / Scan) |                                          |  (Core 1 CAST) |
++-------+--------+                                          +-------+--------+
+        |                                                           |
+        | [State: SCANNING]                                         | (Streaming to active peers)
+        |                                                           | (OFFLINE peers get 0 pkts)
+        | --- Broadcast SINK_HELLO (2 Hz, octets=0, Ch 0/1) ------> |
+        |     (FF:FF:FF:FF:FF:FF - 0 MAC Retries, 0 Block)          |
+        |                                                           | SINK_HELLO Received:
+        |                                                           | - Mark Peer ONLINE
+        |                                                           | - Attach MAC to Stream
+        |                                                           |
+        | <========= 100 Hz Unicast Audio Stream (LC3) ============ |
+        |                                                           |
+        | [Buffer 5 frames (50ms)]                                  |
+        | [State: PREFILL -> STREAM]                                |
+        |                                                           |
+```
+
+1. **Zero-Probing SOURCE (0 Hz for Offline Nodes)**:
+   - When a SINK is offline, the SOURCE peer table marks it as `OFFLINE`.
+   - The SOURCE **completely skips** transmission to `OFFLINE` nodes in `runSourceLoop()`.
+   - **0 packets and 0 probes** are dispatched to offline nodes, consuming **0.00 us** of Wi-Fi airtime.
+2. **SINK Auto-Announcement (`SINK_HELLO`)**:
+   - While in `SCANNING` mode waiting for a stream, the SINK broadcasts a 2 Hz `SINK_HELLO` packet to `FF:FF:FF:FF:FF:FF`.
+   - Broadcast packets in 802.11 require no MAC ACKs and trigger **0 hardware retries**, ensuring zero channel blocking.
+   - The packet payload contains `octets = 0`, `opcode = SINK_HELLO (0x01)`, and the target audio channel (`channel_id = 0` Left, `1` Right, `2` Center).
+3. **Dynamic SOURCE Attachment**:
+   - The SOURCE receives `SINK_HELLO` via `onPacketReceived()` on Core 0.
+   - The engine automatically adds or updates the SINK peer in the hardware table, marks its status as `ONLINE`, and immediately begins streaming unicast LC3 audio frames at 100 Hz.
+
+### 3.3 Circuit Breaker Mechanism (Fast Failure Detection)
+- If a SINK loses power or goes out of range during streaming, the 802.11 hardware MAC fails to receive an ACK.
+- In `onPacketSent()`, the SOURCE tracks `consecutive_ack_fails`.
+- **Trigger**: Upon **5 consecutive missed ACKs (50 ms)**, the circuit breaker immediately trips the peer status to `OFFLINE`.
+- **Result**: Transmission to that SINK drops to **0 Hz** instantly, preventing any channel congestion or frame delivery delays to other active SINKs.
+
+---
+
+## 4. 802.11 Physical Layer (PHY) & Airtime Analysis
+
+### 4.1 PHY Configuration Rationale
+By operating in **Multi-Unicast mode** with known MAC addresses, the system leverages:
 - Direct negotiation of **802.11n HT20 MCS rates** (up to 72.2 Mbps).
 - Mandatory hardware-level **802.11 MAC Acknowledgements (ACKs)** sent by the receiver within 16 us (SIFS).
-- Automatic hardware-level MAC retransmissions (default up to 7 retries) on frame corruption or collision.
+- Automatic hardware-level MAC retransmissions on transient interference.
 
 | PHY Rate Code | Modulation & Coding | Raw Bitrate | Airtime / Packet (128B) | Airtime (6 Nodes) | Channel Clearance (10ms frame) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -59,257 +137,72 @@ By operating in **Multi-Unicast mode**, each packet is addressed directly to the
 - **Wi-Fi Channel**: Channel 1 (2412 MHz fixed)
 - **TX Power**: `+9.0 dBm` (`36` * 0.25 dBm)
 
-### 2.2 Airtime & Retry Headroom Breakdown
-
-For an audio stream of 48 kHz / 10 ms / 120 octets (96 kbps):
-- **Payload**: 13 bytes VSAF Header + 120 bytes LC3 Payload = **128 bytes**.
-- **802.11 Overhead**: 24 bytes MAC header + 4 bytes FCS = **161 bytes over-the-air**.
-
-```
-+------------------+-----------------------+----------+---------------+
-| Preamble & Header| 161-Byte MAC Frame    | SIFS     | 14-Byte ACK   |
-| (HT20 Preamble)  | (13.0 Mbps QPSK 1/2)  | (16 us)  | (24.0 Mbps)   |
-| 36 us            | 99 us                 | 16 us    | 26 us         |
-+------------------+-----------------------+----------+---------------+
-|<----------------------- Total: ~177 us ---------------------------->|
-```
-
-- **2 SINK Nodes (Stereo Pair)**: 2 * 177 us = **0.35 ms** total transmission time per 10 ms frame period (**96.5% channel clearance**).
-- **6 SINK Nodes (5.1 Surround)**: 6 * 177 us = **1.06 ms** total transmission time per 10 ms frame period (**89.4% channel clearance**).
-
-**Retry Headroom**:
-Even in a congested 2.4 GHz RF environment where co-located Bluetooth or Wi-Fi causes packet collisions, a failed frame will trigger an instant hardware retransmission (~177 us). With 89.4% idle channel time (8.94 ms free per 10 ms block), the system has headroom for up to **50 total hardware retransmissions per audio cycle** without delaying audio delivery or starving the network.
-
 ---
 
-## 3. Core Software Architecture
+## 5. Packet Wire Format (VSAF 8-Byte Compact Header)
 
-The software architecture is built on **ESP-IDF v6.0.2** and **FreeRTOS SMP**:
-
-```
-+---------------------------------------------------------------------------------+
-|                               ESP-IDF v6.0.2 STACK                              |
-+----------------------------------------+----------------------------------------+
-|              CORE 0                    |                 CORE 1                 |
-+----------------------------------------+----------------------------------------+
-| - Wi-Fi Driver & ESP-NOW Interrupts    | - Dedicated Unicast TX Pacer (100 Hz)  |
-| - Diagnostics & Telemetry (10 Hz)      | - liblc3 Multi-Channel Encoder (S3)    |
-| - USB Serial Interactive CLI Task      | - Lock-Free Master Presentation Clock  |
-| - SINK I2S DMA Driver & State Machine  |                                        |
-+----------------------------------------+----------------------------------------+
-| SHARED DATA LAYER (Thread-Safe Atomic Queues, Critical Sections, SPSC Buffers)  |
-+---------------------------------------------------------------------------------+
-```
-
-### 3.1 Thread-Safety & Synchronization Rules
-
-1. **Shared Peer Table**:
-   - Access to the 6-peer registry (`m_peers[]`) is guarded by a dedicated FreeRTOS critical section (`taskENTER_CRITICAL(&m_peer_mux)`).
-   - Dynamic peer addition, deletion, enable/disable, and channel remapping can execute on Core 0 CLI while Core 1 unicast engine is actively streaming.
-2. **Telemetry & Error Counters**:
-   - All high-frequency counters (`m_tx_packets_total`, `m_tx_acks_total`, `m_rx_packets_total`, `m_fifo_underrun`, `m_plc_count`, `m_underrun_count`) use `std::atomic<uint32_t>` with `std::memory_order_relaxed` to ensure zero cache contention and zero mutex stalls on the real-time audio path.
-3. **RX Audio FIFO**:
-   - Implemented as a Single-Producer Single-Consumer (SPSC) ring buffer with atomic head/tail indices.
-   - Pushing occurs inside the ESP-NOW Wi-Fi reception callback (high priority ISR / Wi-Fi task).
-   - Popping occurs inside the FreeRTOS SINK audio task pinned to I2S DMA interrupts.
-
----
-
-## 4. Centralized Streaming State Machine
-
-State transitions are strictly managed. State modifications **can ONLY happen through `EspNowUnicastEngine::transitionTo()`**, which verifies valid transition guards and resets appropriate internal timing benchmarks.
-
-```
-                           +-------------------+
-                           |        OFF        |
-                           +---------+---------+
-                                     |
-                                     v
-                           +-------------------+
-             +------------>|       IDLE        |<------------+
-             |             +---------+---------+             |
-             |                       |                       |
-      (stop / timeout)               | (start / resume)      | (stop / pause)
-             |                       |                       |
-             |         +-------------+-------------+         |
-             |         | (Role: SOURCE)            | (Role: SINK)
-             |         v                           v         |
-     +-------+---------------+             +-------+---------------+
-     |         CAST          |             |       SCANNING        |
-     +-----------------------+             +-------+---------------+
-                                                   |
-                                                   | (FIFO >= Prefill Threshold)
-                                                   v
-                                           +-------+---------------+
-                                           |        PREFILL        |
-                                           +-------+---------------+
-                                                   |
-                                                   | (Preload 2 DMA & Phase Lock)
-                                                   v
-                                           +-------+---------------+
-                                           |        STREAM         |
-                                           +-------+---------------+
-                                                   |
-                                                   | (Watchdog: 20 Missing Frames)
-                                                   +-------------------------+
-```
-
-### State Definitions
-
-| State | Role | Description & Operational Behavior | Allowed Next States |
-| :--- | :--- | :--- | :--- |
-| **`OFF`** | Both | Hardware drivers powered down or uninitialized. | `IDLE` |
-| **`IDLE`** | Both | Network engine initialized, Wi-Fi radio active on channel, audio pipeline gated. Zero packet transmission. | `CAST`, `SCANNING`, `OFF` |
-| **`CAST`**| SOURCE | Actively encoding stereo/multi-channel LC3 audio at 100 Hz and dispatching unicast frames to all enabled peers. | `IDLE`, `OFF` |
-| **`SCANNING`** | SINK | Radio listening on Wi-Fi channel. Incoming frames matching target `ch_id` are placed into FIFO. Audio output muted. | `PREFILL`, `IDLE`, `OFF` |
-| **`PREFILL`** | SINK | Prefill threshold reached (typically 5 frames). SINK decodes first 2 frames, preloads both I2S DMA descriptors while hardware clocks are stopped, calculates presentation release time, and enables I2S hardware. | `STREAM`, `SCANNING`, `IDLE` |
-| **`STREAM`** | SINK | Active playback. Synchronized to I2S DMA interrupts. Drains FIFO at 100 Hz. Executes JIT wait and PLC if packet is missed. | `SCANNING`, `IDLE`, `OFF` |
-
----
-
-## 5. Unified VSAF Packet Structure & Word Alignment
-
-To keep the protocol minimal and avoid introducing additional discriminator bytes, **both audio streaming packets and control packets share the exact same 8-byte header layout**. 
-
-The field **`octets` (Byte 1)** acts as the unambiguous packet type discriminator:
-- **`octets == 0`**: **Control Packet** (Total packet size = **8 bytes**, no payload).
-- **`octets == 40..240`**: **Audio Streaming Packet** (8-byte header + `octets` bytes of LC3 audio payload). Any octet count below 40 is invalid for an LC3 audio frame.
-
-### 5.1 Real-Time Audio Streaming Packet (`octets >= 40`)
-
-Transmitted periodically every 10.0 ms individually to each registered SINK. In unicast mode, `ch_id` is omitted because the destination MAC address uniquely identifies the recipient, and the SOURCE manages the channel-to-node routing table.
+To maximize efficiency and maintain 32-bit/64-bit word alignment for LC3 payload decoding, the packet header is streamlined to **8 bytes**:
 
 ```
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|      seq      |octets (40..240)|             flags            |
+|   seq (u8)    |  octets (u8)  |        audio.flags (u16)      |
+|               |  (0 = CTRL)   |  (sr_code:3, dur_code:2, res) |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                            pts_us                             |
+|                    audio.pts_us (uint32_t)                    |
+|             (Presentation Time Stamp in Microseconds)         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                   LC3 Encoded Audio Payload...                |
-|               (octets bytes, default 120B / 96 kbps)          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-#### Audio Header Field Specifications:
-1. **`seq` (uint8_t, Byte 0)**: Rolling sequence number (0..255) for packet loss detection and PLC.
-2. **`octets` (uint8_t, Byte 1)**: LC3 frame size in bytes (40 to 240 bytes; default: **120 bytes** = 96 kbps @ 48 kHz / 10 ms).
-3. **`flags` (uint16_t, Bytes 2-3 - Naturally 16-bit Aligned)**:
-   - **Bits 0..2 (3 bits)**: Sample Rate Code (`0`: 8k, `1`: 16k, `2`: 24k, `3`: 32k, `4`: 48k [Default], `5`: 96k). *44.1 kHz is excluded as standard LC3 10ms frame tables require integer sample multiples: 80, 160, 240, 320, 480, 960 samples*.
-   - **Bits 3..4 (2 bits)**: Frame Duration Code (`0`: 10.0 ms, `1`: 7.5 ms, `2`: 5.0 ms, `3`: 2.5 ms).
-   - **Bits 5..6 (2 bits)**: Codec Profile (`0`: LC3 Standard, `1`: LC3plus High-Resolution).
-   - **Bits 7..15 (9 bits)**: Reserved.
-4. **`pts_us` (uint32_t, Bytes 4-7 - Naturally 32-bit Aligned)**: Microsecond Presentation Time Stamp modulo $2^{32}$ (~71.58 minute rollover with seamless two's-complement modular difference).
-5. **LC3 Payload (Starts at Byte 8)**: Begins on a clean **32-bit and 64-bit word boundary**. Total packet size with 120B LC3 payload = **128 bytes**.
-
----
-
-### 5.2 Out-of-Band Control Packet (`octets == 0`, Draft Architecture)
-
-Sent **on-demand only** as unicast frames with mandatory 802.11 MAC ACK. Reuses Bytes 2-7 for command parameters without adding any payload bytes:
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|      seq      |  octets (0x00)|    opcode     |     param     |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                            value                              |
+|                 LC3 Compressed Audio Payload                  |
+|                 (Length = octets, e.g. 120 bytes)             |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-#### Control Field Specifications (Total Packet: Exactly 8 Bytes):
-1. **`seq` (uint8_t, Byte 0)**: Rolling transaction counter (for deduplication on 802.11 retries).
-2. **`octets` (uint8_t, Byte 1 = `0x00`)**: Identifies this packet as a Control frame.
-3. **`opcode` (uint8_t, Byte 2)**: Command identifier:
-   - `0x01` = Set Volume
-   - `0x02` = Mute / Unmute
-   - `0x03` = Hardware Gain (MAX98357A 3, 6, 9, 12 dB)
-   - `0x04` = Set Channel Target
-   - `0x05` = Ping / Latency Echo
-   - `0x06` = Reboot
-4. **`param` (uint8_t, Byte 3)**: Primary argument (e.g., volume level `0..100`, mute `0/1`, gain `3..12`).
-5. **`value` (uint32_t, Bytes 4-7 - Naturally 32-bit Aligned)**: Secondary argument / Microsecond timestamp.
+### Control & Volume Packet Overlay (`octets == 0`)
+When `octets == 0`, the header is interpreted as a Control/Volume structure:
 
 ```cpp
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t  seq;        // Byte 0: Rolling sequence number / transaction counter
-    uint8_t  octets;     // Byte 1: 0 = Control Packet, 40..240 = LC3 frame size
+    uint8_t  seq;        // Byte 0: Rolling sequence number (0..255)
+    uint8_t  octets;     // Byte 1: 0 = Control Packet, 40..240 = LC3 Audio payload length
     union {
         struct {
-            uint16_t flags;  // Bytes 2..3: Sample rate, duration, profile
-            uint32_t pts_us; // Bytes 4..7: Presentation Time Stamp (us)
+            uint16_t flags;      // Bytes 2..3: Bit 0..2: SR (8k..96k), Bit 3..4: Dur (10ms)
+            uint32_t pts_us;     // Bytes 4..7: Presentation Time Stamp (us timeline)
         } audio;
         struct {
-            uint8_t  opcode; // Byte 2: Control Opcode
-            uint8_t  param;  // Byte 3: Primary argument (Volume 0..100, Mute 0/1)
-            uint32_t value;  // Bytes 4..7: Secondary argument / Timestamp
+            uint8_t  opcode;     // Byte 2: ControlOpcode (0x01=SINK_HELLO, 0x02=SINK_BYE, 0x04=VOLUME_SET)
+            uint8_t  channel_id; // Byte 3: Target Audio Channel (0=Left, 1=Right, 0xFF=All SINKs)
+            uint8_t  volume_u8;  // Byte 4: Volume (0=Mute, 1=-96.0dB, 255=0.0dB)
+            uint8_t  flags;      // Byte 5: Bit 0: 0=Smooth Slew, 1=Instant
+            uint16_t reserved;   // Bytes 6..7: Word padding
         } ctrl;
     };
-    // If octets >= 40, LC3 audio payload begins at Byte 8 (32/64-bit word boundary)
 } vsaf_packet_t;
 #pragma pack(pop)
 ```
 
 ---
 
-## 6. LC3 FIFO Queue & Pipeline Reconfiguration
+## 6. Clock Synchronization & 50 ms Presentation Delay
 
-### 6.1 Ingress Filtering & Verification
-
-When an 802.11 frame arrives in the Wi-Fi callback:
-1. Header length is verified (`data_len >= sizeof(vsaf_unicast_header_t)`).
-2. `hdr->ch_id` is matched against the SINK's configured target channel (`m_target_channel`). Non-matching frames are discarded immediately.
-3. Reception local timestamp (`rx_local_time_us = esp_timer_get_time()`) is stamped.
-4. Frame is pushed into `s_rx_fifo[]`. If full, `m_fifo_overflow` increments.
-5. Audio task is notified via `xTaskNotifyGive(s_audio_task_handle)`.
-
-```
-[Incoming 802.11 Frame]
-         |
-         v
-+-----------------------+     No
-| hdr->ch_id == My_CH?  | ----------> [Drop Packet]
-+-----------+-----------+
-         | Yes
-         v
-+-----------------------------------+
-| Capture rx_local_time_us          |
-| Push LC3 Payload + Metadata to RB |
-+-----------------------------------+
-         |
-         v
-+-----------------------------------+
-| xTaskNotifyGive(audio_task)       |
-+-----------------------------------+
-```
-
-### 6.2 Pipeline Reconfiguration Triggers
-
-1. **Sample Rate / Duration Change** (`flags` mismatch):
-   - Triggers full reconfiguration:
-     1. Closes current LC3 decoder instance.
-     2. Calls `initDecoder(new_rate, 1, new_duration, new_octets)`.
-     3. Calls `m_i2s_dac->reconfigureSampleRate(new_rate, new_duration)`.
-     4. Transitions state machine back to `PREFILL` to pre-charge DMA descriptors cleanly.
-2. **Bitrate / Octets Change** (`octets` mismatch):
-   - If `octets` changes (e.g., from 120 to 100 bytes) while sample rate remains unchanged:
-   - The Espressif LC3 decoder dynamically adapts to the new `in_bytes` length without needing to restart I2S hardware clocks or interrupt audio playback.
+### 6.1 Timeline Alignment
+- **Master PTS Clock**: The SOURCE stamps each frame with `pts_us = now_us + 50000` (50 ms in the future).
+- **SINK Phase-Lock**: Upon receiving a frame, the SINK compares local reception time with PTS to maintain sub-millisecond sync across all speakers.
+- **Jitter Resilience**: The 50 ms cushion absorbs RF bursts, channel retransmissions, and FreeRTOS task scheduling jitter without draining the I2S DMA buffers.
 
 ---
 
 ## 7. I2S DMA Dual-Descriptor & Prefill Architecture
 
-### 7.1 Ping-Pong DMA Setup
-
-The I2S driver (`Hardware::I2sAudioDriver`) configures the ESP32 hardware DMA with **2 descriptors** (ping-pong arrangement).
+### 7.1 Strict 2-Descriptor DMA Setup
+The I2S driver (`Hardware::I2sAudioDriver`) configures the ESP32 hardware DMA with **strictly 2 descriptors** (`chan_cfg.dma_desc_num = 2`).
 - **Descriptor Length**: Exactly one 10 ms stereo audio frame (480 samples * 2 channels * 2 bytes = **1920 bytes** at 16-bit 48 kHz).
-- **Interrupt Mode**: `on_sent` callback fires whenever a descriptor finishes transmission, signaling that a slot is free.
+- **Interrupt Mode**: `on_sent` callback fires whenever a descriptor completes transmission.
 
 ```
- DMA Ring:
+ DMA Ping-Pong Ring:
  +---------------------------+---------------------------+
  |    Descriptor 0 (10ms)    |    Descriptor 1 (10ms)    |
  |  [ Currently Playing ]   |  [ Next Frame Preloaded ] |
@@ -319,73 +212,22 @@ The I2S driver (`Hardware::I2sAudioDriver`) configures the ESP32 hardware DMA wi
       "DMA Slot Free" Event
 ```
 
-### 7.2 DMA Prefill Strategy on Stream Startup
-
-To eliminate startup pops and guarantee zero DMA underruns:
-1. When entering `PREFILL`, I2S hardware clocks (`BCLK` and `WS`) remain **stopped**.
-2. SINK pops Frame 0, decodes LC3, and preloads Descriptor 0 using `i2s_channel_preload_data()`.
-3. SINK pops Frame 1, decodes LC3, and preloads Descriptor 1 using `i2s_channel_preload_data()`.
-4. SINK calls `i2s_channel_enable()` to start clocks.
-5. The hardware starts playing Descriptor 0 while Descriptor 1 provides a 10 ms safety buffer.
-
-### 7.3 Pacing & 5 ms JIT Absorption
-
-In `STREAM` state, decoding is driven strictly by DMA empty events with temporal buffer protection:
-
-```
-[DMA Slot Free ISR]
-         |
-         v
-[Wait for DMA Slot Sem]
-         |
-         v
-+-------------------------------+
-| Pop Frame from RX FIFO        |
-+---------------+---------------+
-                |
-        Has Frame?
-       /              Yes          No
-     /                 v               v
-[Decode LC3]    [Wait up to 5 ms JIT Notification]
-    |                   |
-    |           Received Frame?
-    |              /             |            Yes          No
-    |            /                 |           v               v
-    |     [Decode LC3]     [Trigger PLC]
-    \___________ ______________/
-                v
-  [Format Stereo int16 PCM]
-                |
-                v
-  [Write 1920B to DMA Slot]
-```
-
-- **5 ms JIT Wait**: If the Wi-Fi packet has not arrived at the exact microsecond the DMA descriptor empties, the task waits up to 5 ms (`ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5))`).
-- Because Descriptor 1 is currently playing for 10 ms, waiting 5 ms leaves ample margin (2.5 ms decode time) before a DMA underrun could occur.
-- If no packet arrives after 5 ms, Packet Loss Concealment (PLC) synthesizes the missing frame, ensuring continuous audio without buffer underflow.
+### 7.2 Pre-charging Strategy on Startup
+1. In `SCANNING`, SINK accumulates incoming frames in `s_rx_fifo` until reaching `CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES = 5` (50 ms).
+2. SINK transitions to `PREFILL`, decodes Frame 0 into Descriptor 0, and Frame 1 into Descriptor 1 via `i2s_channel_preload_data()`.
+3. SINK enables I2S hardware clocks (`i2s_channel_enable()`), achieving seamless, pop-free playback.
 
 ---
 
-## 8. Multi-Bit Depth & Sample Rate Reconfiguration Matrix
-
-| Sample Rate | Slot Mode | Bit Depth | Slot Width | Frame Samples (10ms) | DMA Descriptor Size | Bitrate (LC3 Default) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **48000 Hz** | Stereo | 16-bit | 16-bit | 480 mono / 960 stereo | **1920 bytes** | 96 kbps (120B) |
-| 48000 Hz | Stereo | 24-bit | 32-bit | 480 mono / 960 stereo | **3840 bytes** | 96 kbps (120B) |
-| 48000 Hz | Stereo | 32-bit | 32-bit | 480 mono / 960 stereo | **3840 bytes** | 96 kbps (120B) |
-| 44100 Hz | Stereo | 16-bit | 16-bit | 441 mono / 882 stereo | **1764 bytes** | 88.2 kbps (110B) |
-| 32000 Hz | Stereo | 16-bit | 16-bit | 320 mono / 640 stereo | **1280 bytes** | 64 kbps (80B) |
-| 24000 Hz | Stereo | 16-bit | 16-bit | 240 mono / 480 stereo | **960 bytes** | 48 kbps (60B) |
-| 16000 Hz | Stereo | 16-bit | 16-bit | 160 mono / 320 stereo | **640 bytes** | 32 kbps (40B) |
-
----
-
-## 9. Interactive CLI Console Commands
-
-The system includes a real-time ASCII command parser running on Core 0:
+## 8. Interactive CLI Console Commands
 
 | Command | Description |
 | :--- | :--- |
+| `vol <0..100>` | Set volume percentage (0 = Mute, 100 = 0 dBFS). Broadcasts from SOURCE or sets local SINK. |
+| `voldb <-96..0>` | Set volume directly in dBFS (-96.0 dB to 0.0 dB). |
+| `volu8 <0..255>` | Set raw 8-bit volume level directly. |
+| `volch <ch> <0..255>` | Set volume for a specific channel (0: Left, 1: Right) from SOURCE. |
+| `mute` / `unmute` | Smoothly mute or unmute audio using 96 dB/s slew rate. |
 | `peer list` | Display registered SINK peers, session uptime, sent count, and ACK percentages. |
 | `peer add <mac> <ch> [name]` | Register a new SINK peer (ch 0..5, e.g. `peer add B0:A6:04:99:38:44 0 Left`). |
 | `peer del <mac>` | Unregister a SINK peer from the transmission list. |
@@ -399,3 +241,57 @@ The system includes a real-time ASCII command parser running on Core 0:
 | `clear` / `cls` | Reset all transmission, ACK, PLC, and DMA error counters. |
 | `diag` | Print full instant telemetry report. |
 | `reset` / `reboot` | Reboot microcontroller. |
+
+## 9. Dedicated Subwoofer Audio Channel Architecture (Channel ID 5)
+
+To optimize overall network airtime while delivering uncompromised bass response, the system provides a dedicated **Subwoofer Channel** (Channel ID 5):
+
+```
++---------------------------------------------------------------------------------------------+
+|                                    SOURCE Subwoofer DSP Pipeline                            |
+|                                                                                             |
+|   Stereo Stream (48k)                                                                       |
+|   [Left 480 samples]  ---\  Mono Sum      [480 samples @ 48kHz]    Downsampler (Factor 6)  |
+|                           +-------------> [4th-Order LR4 LP]   --> [Decimate 48k -> 8k]     |
+|   [Right 480 samples] ---/  (L + R) / 2   [fc = 100 Hz]            [80 samples @ 8kHz]      |
+|                                                                             |               |
+|                                                                             v               |
+|                                                                     [LC3 8kHz Encoder]      |
+|                                                                     [80 Octets / 10ms Frame]|
+|                                                                             |               |
+|                                                                             v               |
+|                                                                    ESP-NOW Unicast (Ch 5)   |
++---------------------------------------------------------------------------------------------+
+
++---------------------------------------------------------------------------------------------+
+|                                    SINK Subwoofer Playback Pipeline                         |
+|                                                                                             |
+|   ESP-NOW Unicast (Ch 5)                                                                    |
+|   [80 Octets @ 8kHz] ---> [LC3 8kHz Decoder] ---> [80 samples @ 8kHz]                       |
+|                                                          |                                  |
+|                                                          v                                  |
+|                                              [Volume Slew Limiter (96 dB/s)]                |
+|                                                          |                                  |
+|                                                          v                                  |
+|                                              [I2S DMA Ring Buffer (Native 8kHz Stereo DAC)] |
++---------------------------------------------------------------------------------------------+
+```
+
+### 9.1 4th-Order Linkwitz-Riley Low-Pass Filter (LR4 LP)
+- **Topology**: Cascaded pair of 2nd-order Butterworth low-pass biquads ($Q = 1/\sqrt{2} pprox 0.70710678$).
+- **Direct Form II Transposed**: Numerically stable implementation processing 16-bit PCM.
+- **Magnitude Response**:
+  - **-6.02 dB** at cutoff frequency $f_c$ (`CONFIG_ESPNOW_SUB_LP_HZ`, default 100.0 Hz).
+  - **-24.6 dB** at 1 octave above cutoff (200 Hz).
+  - **-128.97 dB** at 4,000 Hz (Nyquist frequency of 8 kHz).
+- **Anti-Aliasing Immunity**: The -129 dB attenuation at the 4 kHz Nyquist boundary ensures zero aliasing distortion when decimating directly by factor of 6.
+
+### 9.2 Multi-Rate Resampling & LC3 Compression
+- **10 ms Frame Geometry**: A 10 ms frame contains 480 samples at 48 kHz, which decimates to exactly **80 samples at 8 kHz**.
+- **Bitrate & Airtime**: Encoding 80 samples @ 8 kHz into **80 octets per frame** yields a 64 kbps stream, preserving pristine bass definition while drastically reducing Wi-Fi packet airtime.
+- **Native 8 kHz SINK Playback**: Subwoofer SINK nodes listening on Channel 5 configure their I2S DAC directly to 8 kHz. The decoded 80-sample 8 kHz frame is fed straight into the native 8 kHz dual-descriptor I2S DMA pipeline without any software upsampling.
+
+### 9.3 Dynamic CLI Control
+- `sublp <hz>`: Dynamically adjusts the Linkwitz-Riley cutoff frequency (20 Hz to 1,000 Hz) on the SOURCE in real time.
+- `ch 5`: Configures a SINK speaker node to receive and decode the Subwoofer channel.
+- `peer add <MAC> 5 [Name]`: Registers a dedicated Subwoofer peer node on the SOURCE.

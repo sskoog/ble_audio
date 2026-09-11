@@ -28,11 +28,11 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES
-#define CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES 5 // Number of 10ms LC3 frames needed before leaving SCANNING to PREFILL (5 = 50ms)
+#define CONFIG_ESPNOW_PREFILL_THRESHOLD_FRAMES 4 // Number of 10ms LC3 frames needed before leaving SCANNING to PREFILL (4 = 40ms)
 #endif
 
 #ifndef CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES
-#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES 20 // Consecutive missing frames / PLC before falling back from STREAM to SCANNING (20 = 200ms)
+#define CONFIG_ESPNOW_WATCHDOG_TIMEOUT_FRAMES 10 // Consecutive missing frames / PLC before falling back from STREAM to SCANNING (10 = 100ms)
 #endif
 
 #ifndef CONFIG_ESPNOW_SAMPLE_RATE_HZ
@@ -47,7 +47,39 @@ extern "C" {
 #define CONFIG_ESPNOW_PRESENTATION_DELAY_US 50000 // 50 ms Presentation Delay
 #endif
 
-#define MAX_LC3_FRAME_OCTETS 120 // Maximum LC3 frame size supported over ESP-NOW (up to 96 kbps @ 10ms)
+// Subwoofer Channel Configuration
+#ifndef CONFIG_ESPNOW_SUB_LP_HZ
+#define CONFIG_ESPNOW_SUB_LP_HZ 100.0f // 4th-order Linkwitz-Riley LP cutoff frequency in Hz
+#endif
+
+#ifndef CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ
+#define CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ 8000 // Subwoofer downsampled rate (lowest LC3-supported rate)
+#endif
+
+#ifndef CONFIG_ESPNOW_SUB_FRAME_LEN_OCTETS
+#define CONFIG_ESPNOW_SUB_FRAME_LEN_OCTETS 80 // 80 octets per 10ms frame (64 kbps @ 8 kHz)
+#endif
+
+#define SUB_CHANNEL_ID 5 // Channel ID 5 (0: Left, 1: Right, 2: Center, 3: L-Surr, 4: R-Surr, 5: Sub)
+
+// SINK Volume Control & Slew Limiter Constants
+#ifndef CONFIG_VOLUME_MIN_DB
+#define CONFIG_VOLUME_MIN_DB -96.0f // Minimum volume in dB (step 1)
+#endif
+
+#ifndef CONFIG_VOLUME_MAX_DB
+#define CONFIG_VOLUME_MAX_DB 0.0f   // Maximum volume in dB (step 255)
+#endif
+
+#ifndef CONFIG_VOLUME_DEFAULT_U8
+#define CONFIG_VOLUME_DEFAULT_U8 30 // Default power-on volume
+#endif
+
+#ifndef CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC
+#define CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC 96.0f // Volume Slew Rate in dB/second (96 dB/s)
+#endif
+
+#define MAX_LC3_FRAME_OCTETS 200 // Maximum LC3 frame size supported over ESP-NOW
 #define MAX_PCM_FRAME_SAMPLES 480 // Maximum PCM samples per 10ms frame (480 @ 48 kHz)
 
 typedef struct {

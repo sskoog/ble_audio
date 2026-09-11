@@ -7,10 +7,12 @@
 #include "tone_generator.hpp"
 #include "i2s_audio.hpp"
 #include "audio_metering.hpp"
+#include "audio_filters.hpp"
 #include "config.h"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 #define MAX_UNICAST_SINKS 6
 
@@ -31,6 +33,14 @@ enum class PeerStatus : uint8_t {
     ONLINE   = 2
 };
 
+enum class ControlOpcode : uint8_t {
+    NONE        = 0x00,
+    SINK_HELLO  = 0x01, // SINK -> SOURCE: Announce presence, target channel & request stream
+    SINK_BYE    = 0x02, // SINK -> SOURCE: Graceful detach / power off
+    SOURCE_ACK  = 0x03, // SOURCE -> SINK: Handshake ACK
+    VOLUME_SET  = 0x04  // SOURCE -> SINK: Volume / gain control (uint8_t 0..255 dB scaled)
+};
+
 struct SinkPeerConfig {
     uint8_t    mac[6];
     uint8_t    channel_id;             // 0: Left, 1: Right, 2: Center, 3: L-Surround, 4: R-Surround, 5: Sub
@@ -41,18 +51,29 @@ struct SinkPeerConfig {
     uint32_t   packets_sent;
     uint32_t   acks_received;
     uint32_t   ack_failures;
-    uint32_t   consecutive_ack_fails;  // Circuit breaker: track consecutive missing ACKs for 2Hz probing
+    uint32_t   consecutive_ack_fails;  // Circuit breaker: track consecutive missing ACKs
     int8_t     last_rssi;
 };
 
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t  seq;        // Byte 0: Rolling sequence number (0..255 for packet loss detection & PLC)
-    uint8_t  octets;     // Byte 1: LC3 frame size in octets (40..240, default: 120 bytes = 96 kbps)
-    uint16_t flags;      // Bytes 2..3: Bit 0..2: SR (8k,16k,24k,32k,48k,96k), Bit 3..4: Dur (10ms), Bit 5..15: Reserved
-    uint32_t pts_us;     // Bytes 4..7: Presentation Time Stamp (us timeline, naturally 32-bit aligned!)
-    // Payload starts at Byte 8 (32-bit & 64-bit word aligned boundary)
-} vsaf_unicast_header_t; // Exactly 8 bytes! Naturally word-aligned!
+    uint8_t  seq;        // Byte 0: Rolling sequence number (0..255)
+    uint8_t  octets;     // Byte 1: 0 = Control / Handshake, 20..200 = LC3 Audio payload length
+    union {
+        struct {
+            uint16_t flags;      // Bytes 2..3: Bit 0..2: SR (8k=0, 16k=1, 24k=2, 32k=3, 48k=4, 96k=5), Bit 3..4: Dur (10ms)
+            uint32_t pts_us;     // Bytes 4..7: Presentation Time Stamp (us timeline, 32-bit aligned)
+        } audio;
+        struct {
+            uint8_t  opcode;     // Byte 2: ControlOpcode (e.g. VOLUME_SET = 0x04)
+            uint8_t  channel_id; // Byte 3: Target Audio Channel (0=Left, 1=Right, 5=Sub, 0xFF=All SINKs)
+            uint8_t  volume_u8;  // Byte 4: Volume scaled (0=Mute, 1=-96.0dB, 255=0.0dB)
+            uint8_t  flags;      // Byte 5: Bit 0: 0=Smooth Slew (96dB/s), 1=Instant
+            uint16_t reserved;   // Bytes 6..7: Word padding
+        } ctrl;
+    };
+} vsaf_packet_t;
+typedef vsaf_packet_t vsaf_unicast_header_t;
 #pragma pack(pop)
 
 struct StreamTelemetry {
@@ -106,34 +127,32 @@ public:
         if (m_count < CAPACITY) m_count++;
     }
     void computeStats(float& out_median, float& out_range, bool& out_valid) const {
-        if (m_count < 3) {
+        if (m_count == 0) {
             out_median = 0.0f;
             out_range = 0.0f;
             out_valid = false;
             return;
         }
-        float temp[CAPACITY];
-        for (size_t i = 0; i < m_count; i++) temp[i] = m_buffer[i];
+        float sorted[CAPACITY];
+        for (size_t i = 0; i < m_count; i++) {
+            sorted[i] = m_buffer[i];
+        }
         for (size_t i = 0; i < m_count - 1; i++) {
             for (size_t j = i + 1; j < m_count; j++) {
-                if (temp[i] > temp[j]) {
-                    float swap = temp[i];
-                    temp[i] = temp[j];
-                    temp[j] = swap;
+                if (sorted[i] > sorted[j]) {
+                    float tmp = sorted[i];
+                    sorted[i] = sorted[j];
+                    sorted[j] = tmp;
                 }
             }
         }
-        out_median = temp[m_count / 2];
-        out_range = temp[m_count - 1] - temp[0];
+        out_median = sorted[m_count / 2];
+        out_range = sorted[m_count - 1] - sorted[0];
         out_valid = true;
     }
-    void reset() {
-        m_head = 0;
-        m_count = 0;
-    }
 private:
-    static constexpr size_t CAPACITY = 20;
-    float m_buffer[CAPACITY];
+    static constexpr size_t CAPACITY = 10;
+    float m_buffer[CAPACITY] = {0.0f};
     size_t m_head = 0;
     size_t m_count = 0;
 };
@@ -149,14 +168,29 @@ public:
     esp_err_t start();
     esp_err_t stop();
 
-    // Peer Management
+    // Peer Management & Dynamic Handshake
     bool addPeer(const uint8_t* mac, uint8_t channel_id, const char* name);
     bool removePeer(const uint8_t* mac);
     bool setPeerEnabled(const uint8_t* mac, bool enabled);
-    int  getPeerCount() const;
+    bool addOrUpdatePeerFromHello(const uint8_t* mac, uint8_t channel_id, const char* name = nullptr);
+    int  getPeerCount() const { return m_peer_count; }
     const SinkPeerConfig* getPeer(int index) const;
     const SinkPeerConfig* getPeerByMac(const uint8_t* mac) const;
     void resetPeerStats();
+
+    // Volume Control & Slew Limiter
+    void setVolume(uint8_t vol_u8, bool instant = false);
+    uint8_t getVolume() const { return m_target_volume_u8.load(std::memory_order_relaxed); }
+    float getTargetVolumeDb() const;
+    float getCurrentSlewDb() const { return m_current_gain_db; }
+    void sendVolumeCommand(uint8_t channel_id, uint8_t vol_u8, bool instant = false);
+
+    // Subwoofer DSP Control
+    void setSubwooferCutoff(float cutoff_hz) {
+        m_sub_cutoff_hz = cutoff_hz;
+        m_sub_lr4_filter.setCutoff(cutoff_hz);
+    }
+    float getSubwooferCutoff() const { return m_sub_cutoff_hz; }
 
     // Dynamic Stream Configuration
     esp_err_t setSampleRate(uint32_t sample_rate_hz);
@@ -171,8 +205,21 @@ public:
     uint16_t getFrameLen() const { return m_octets_per_frame; }
     uint8_t  getBitDepth() const { return m_telemetry.bit_depth; }
 
-    // Multi-Channel Target Selection (SINK node: 0..5)
-    void setTargetChannel(uint8_t channel_id) { m_target_channel = channel_id & 0x07; }
+    // Multi-Channel Target Selection (SINK node: 0: Left, 1: Right, 5: Subwoofer)
+    void setTargetChannel(uint8_t channel_id) {
+        m_target_channel = channel_id & 0x07;
+        if (m_node_role == NODE_ROLE_SINK) {
+            uint32_t expected_sr = (m_target_channel == SUB_CHANNEL_ID) ? CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ : CONFIG_ESPNOW_SAMPLE_RATE_HZ;
+            uint16_t expected_octets = (m_target_channel == SUB_CHANNEL_ID) ? CONFIG_ESPNOW_SUB_FRAME_LEN_OCTETS : m_octets_per_frame;
+            if (expected_sr != m_telemetry.sample_rate) {
+                m_telemetry.sample_rate = expected_sr;
+                m_lc3_codec.reconfigureDecoder(expected_sr, expected_octets, m_frame_duration_us);
+                if (m_i2s_dac) {
+                    m_i2s_dac->reconfigureSampleRate(expected_sr, m_frame_duration_us);
+                }
+            }
+        }
+    }
     uint8_t getTargetChannel() const { return m_target_channel; }
 
     // Real-Time USB Audio Stream Ingestion (SOURCE node)
@@ -254,15 +301,19 @@ private:
     void runSourceLoop();
     void runSinkLoop();
 
-    Codec::Lc3CodecEngine&     m_lc3_codec;    // Primary encoder (Left / Mono) or SINK decoder
-    Codec::Lc3CodecEngine      m_lc3_codec_r;  // Secondary encoder (Right Channel for Stereo)
+    Codec::Lc3CodecEngine&     m_lc3_codec;     // Primary encoder (Left / Mono) or SINK decoder
+    Codec::Lc3CodecEngine      m_lc3_codec_r;   // Secondary encoder (Right Channel for Stereo)
+    Codec::Lc3CodecEngine      m_lc3_codec_sub; // Subwoofer encoder (8 kHz mono, 80 octets)
+    Dsp::LinkwitzRiley4thOrderLowPass m_sub_lr4_filter; // 4th-order LR Low-Pass Filter @ 100 Hz
+    float                      m_sub_cutoff_hz = CONFIG_ESPNOW_SUB_LP_HZ;
+
     Audio::ToneGenerator*      m_tone_gen;     // Primary tone generator (Left / Mono)
     Audio::ToneGenerator       m_tone_gen_r;   // Secondary tone generator (Right Channel for Stereo)
     Hardware::I2sAudioDriver*  m_i2s_dac;
 
     uint8_t                    m_node_role;
     uint8_t                    m_node_id;
-    uint8_t                    m_target_channel = 0; // SINK listens to this channel (0..5)
+    uint8_t                    m_target_channel = 0; // SINK listens to this channel (0:Left, 1:Right, 5:Sub)
     uint16_t                   m_octets_per_frame = CONFIG_ESPNOW_FRAME_LEN_OCTETS;
     uint32_t                   m_frame_duration_us = 10000;
     NetworkState               m_state = NetworkState::OFF;
@@ -273,6 +324,12 @@ private:
     std::atomic<float>         m_cached_rb_median_ms{0.0f};
     std::atomic<float>         m_cached_rb_range_ms{0.0f};
     std::atomic<bool>          m_has_cached_offset_stats{false};
+
+    // SINK Volume & Slew Limiter State
+    std::atomic<uint8_t>       m_target_volume_u8{CONFIG_VOLUME_DEFAULT_U8};
+    std::atomic<bool>          m_instant_volume_requested{false};
+    float                      m_current_gain_db = 0.0f;
+    float                      m_current_linear_gain = 1.0f;
 
     bool                       m_wifi_initialized = false;
     bool                       m_audio_task_running = false;

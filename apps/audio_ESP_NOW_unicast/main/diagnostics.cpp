@@ -2,20 +2,20 @@
 #include "config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_cpu.h"
-#include "esp_clk_tree.h"
-#include "esp_heap_caps.h"
-#include "esp_wifi.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include <cmath>
-#include <cstring>
+#include "esp_system.h"
 #include <cstdio>
+#include <cstring>
+#include <cmath>
+
+static const char* TAG = "DIAGNOSTICS";
 
 namespace Diagnostics {
 
-SystemDiagnostics::SystemDiagnostics(AudioNet::EspNowUnicastEngine& unicast_engine, Hardware::StatusLed& status_led)
-    : m_unicast_engine(unicast_engine), m_status_led(status_led) {}
+SystemDiagnostics::SystemDiagnostics(AudioNet::EspNowUnicastEngine& unicast_engine,
+                                     Hardware::StatusLed& status_led)
+    : m_unicast_engine(unicast_engine),
+      m_status_led(status_led) {
+}
 
 SystemDiagnostics::~SystemDiagnostics() {
     if (m_temp_sensor) {
@@ -26,23 +26,27 @@ SystemDiagnostics::~SystemDiagnostics() {
 }
 
 void SystemDiagnostics::init() {
-    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
-    esp_err_t ret = temperature_sensor_install(&temp_sensor_config, &m_temp_sensor);
-    if (ret == ESP_OK) {
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    esp_err_t err = temperature_sensor_install(&temp_sensor_config, &m_temp_sensor);
+    if (err == ESP_OK) {
         temperature_sensor_enable(m_temp_sensor);
+    } else {
+        ESP_LOGW(TAG, "On-chip temperature sensor init failed: %s", esp_err_to_name(err));
+        m_temp_sensor = nullptr;
     }
 }
 
-static void format_uptime(int64_t start_time_us, char* out_buf, size_t buf_size) {
+static inline void format_uptime(int64_t start_time_us, char* out_buf, size_t buf_size) {
     if (start_time_us <= 0) {
-        snprintf(out_buf, buf_size, "--:--");
+        snprintf(out_buf, buf_size, "00:00");
         return;
     }
     int64_t now_us = esp_timer_get_time();
-    int64_t diff_s = (now_us - start_time_us) / 1000000;
-    if (diff_s < 0) diff_s = 0;
-    uint32_t mins = static_cast<uint32_t>(diff_s / 60);
-    uint32_t secs = static_cast<uint32_t>(diff_s % 60);
+    int64_t elapsed_sec = (now_us - start_time_us) / 1000000;
+    if (elapsed_sec < 0) elapsed_sec = 0;
+
+    uint32_t mins = static_cast<uint32_t>(elapsed_sec / 60);
+    uint32_t secs = static_cast<uint32_t>(elapsed_sec % 60);
     if (mins >= 60) {
         uint32_t hours = mins / 60;
         mins %= 60;
@@ -174,17 +178,28 @@ void SystemDiagnostics::tick() {
             float rms_dbfs = m_unicast_engine.getAudioFrameRMS_dBFS();
             float peak_dbfs = m_unicast_engine.getAudioPeak_dBFS();
 
+            uint8_t vol_u8 = m_unicast_engine.getVolume();
+            float vol_db = m_unicast_engine.getTargetVolumeDb();
+            char vol_str[24];
+            if (vol_u8 == 0) {
+                snprintf(vol_str, sizeof(vol_str), "MUTE (0/255)");
+            } else {
+                snprintf(vol_str, sizeof(vol_str), "%u/255 (%+5.1fdB)", vol_u8, vol_db);
+            }
+
             printf("\n========================= SINK MULTI-UNICAST TELEMETRY =========================\n");
             printf(" Role: SINK (Node %d) | Target CH: %d (%s) | State: %-9s | Uptime: %s\n",
                    cfg->node_id,
                    m_unicast_engine.getTargetChannel(),
-                   (m_unicast_engine.getTargetChannel() == 0) ? "Left" : (m_unicast_engine.getTargetChannel() == 1) ? "Right" : "Surround",
+                   (m_unicast_engine.getTargetChannel() == 0) ? "Left" : (m_unicast_engine.getTargetChannel() == 1) ? "Right" : (m_unicast_engine.getTargetChannel() == 5) ? "Subwoofer" : "Surround",
                    m_unicast_engine.getStateString(),
                    uptime_str);
-            printf(" PHY: %-15s | RSSI: %3ddBm | Temp: %4.1fC | Heap: %lukB | Vol/Gain: +%ddB\n",
+            printf(" PHY: %-15s | RSSI: %3ddBm | Temp: %4.1fC | Heap: %lukB | Slew: %4.0fdB/s\n",
                    m_unicast_engine.getWifiPhyRateString(),
                    rssi, temp_c, (unsigned long)free_heap_kb,
-                   m_unicast_engine.getHardwareGainDb());
+                   CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC);
+            printf(" Volume: %-18s | MAX98357A Gain: +%ddB\n",
+                   vol_str, m_unicast_engine.getHardwareGainDb());
             printf(" LC3: %luHz/%ums (%uB) | RMS: %5.1f dBFS | Peak: %5.1f dBFS\n",
                    (unsigned long)stream.sample_rate,
                    (unsigned int)(stream.frame_duration_us / 1000),

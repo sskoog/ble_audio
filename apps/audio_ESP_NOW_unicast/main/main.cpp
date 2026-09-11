@@ -113,9 +113,14 @@ static void handle_ascii_command(const char* raw_line) {
                       "  stop / pause               - Stop transmission / receiver (transition to IDLE)\n"
                       "  phy <rate>                 - Switch PHY rate (mc0..mc7, 6m, 9m, 12m, 18m, 24m)\n"
                       "  mode mono|stereo|surround  - Switch audio channel generation mode\n"
-                      "  ch <0..5>                  - Set SINK target channel (0: Left, 1: Right)\n"
-                      "  octets <60..120>           - Set LC3 frame length in octets (default: 120)\n"
+                      "  ch <0..5>                  - Set SINK target channel (0: Left, 1: Right, 5: Sub)\n"
+                      "  sublp <20..500>            - Set Subwoofer 4th-order LR low-pass cutoff (Hz)\n""  octets <60..120>           - Set LC3 frame length in octets (default: 120)\n"
                       "  sr <16k|24k|32k|48k|96k>   - Set audio sample rate\n"
+                      "  vol <0..100>               - Set volume percentage (0=Mute, 100=0dB)\n"
+                      "  voldb <-96..0>             - Set volume in dB (-96.0 dB to 0.0 dB)\n"
+                      "  volu8 <0..255>             - Set raw uint8 volume\n"
+                      "  volch <ch> <0..255>        - Set volume for specific channel (SOURCE)\n"
+                      "  mute / unmute              - Mute / Unmute audio (slew-limited)\n"
                       "  gain <0|3|6|9|12|15>       - Set I2S DAC hardware gain (dB)\n"
                       "  bench                      - Run in-depth LC3 codec benchmark suite\n"
                       "  clear / cls                - Reset / clear error counters\n"
@@ -252,7 +257,7 @@ static void handle_ascii_command(const char* raw_line) {
         if (ch >= 0 && ch <= 5 && s_unicast_engine) {
             s_unicast_engine->setTargetChannel(static_cast<uint8_t>(ch));
             print_console("[OK] SINK target channel set to %d (%s)\n",
-                          ch, (ch == 0) ? "Left" : (ch == 1) ? "Right" : "Surround");
+                          ch, (ch == 0) ? "Left" : (ch == 1) ? "Right" : (ch == 5) ? "Subwoofer" : "Surround");
         }
     } else if (strncasecmp(line, "octets ", 7) == 0) {
         int oct = atoi(line + 7);
@@ -282,6 +287,81 @@ static void handle_ascii_command(const char* raw_line) {
         if (s_bench_suite) {
             print_console("[RUN] Running LC3 Codec Benchmark Suite...\n");
             s_bench_suite->runAllBenchmarks();
+        }
+    } else if (strncasecmp(line, "vol ", 4) == 0) {
+        int pct = atoi(line + 4);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        uint8_t vol_u8 = (pct == 0) ? 0 : static_cast<uint8_t>(1 + (pct * 254) / 100);
+        if (s_unicast_engine) {
+            const system_config_t* cfg = get_system_config();
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                s_unicast_engine->sendVolumeCommand(0xFF, vol_u8);
+                print_console("[OK] SOURCE broadcast VOLUME_SET: %d%% (%u/255) to all SINKs\n", pct, vol_u8);
+            } else {
+                s_unicast_engine->setVolume(vol_u8);
+                print_console("[OK] SINK Volume set: %d%% (%u/255)\n", pct, vol_u8);
+            }
+        }
+    } else if (strncasecmp(line, "voldb ", 6) == 0) {
+        float db = atof(line + 6);
+        if (db < CONFIG_VOLUME_MIN_DB) db = CONFIG_VOLUME_MIN_DB;
+        if (db > CONFIG_VOLUME_MAX_DB) db = CONFIG_VOLUME_MAX_DB;
+        uint8_t vol_u8 = static_cast<uint8_t>(1.0f + ((db - CONFIG_VOLUME_MIN_DB) / (CONFIG_VOLUME_MAX_DB - CONFIG_VOLUME_MIN_DB)) * 254.0f);
+        if (s_unicast_engine) {
+            const system_config_t* cfg = get_system_config();
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                s_unicast_engine->sendVolumeCommand(0xFF, vol_u8);
+                print_console("[OK] SOURCE broadcast VOLUME_SET: %+5.1fdB (%u/255) to all SINKs\n", db, vol_u8);
+            } else {
+                s_unicast_engine->setVolume(vol_u8);
+                print_console("[OK] SINK Volume set: %+5.1fdB (%u/255)\n", db, vol_u8);
+            }
+        }
+    } else if (strncasecmp(line, "volu8 ", 6) == 0) {
+        int u8_val = atoi(line + 6);
+        if (u8_val < 0) u8_val = 0;
+        if (u8_val > 255) u8_val = 255;
+        uint8_t vol_u8 = static_cast<uint8_t>(u8_val);
+        if (s_unicast_engine) {
+            const system_config_t* cfg = get_system_config();
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                s_unicast_engine->sendVolumeCommand(0xFF, vol_u8);
+                print_console("[OK] SOURCE broadcast raw VOLUME_SET: %u/255\n", vol_u8);
+            } else {
+                s_unicast_engine->setVolume(vol_u8);
+                print_console("[OK] SINK raw Volume set: %u/255\n", vol_u8);
+            }
+        }
+    } else if (strncasecmp(line, "volch ", 6) == 0) {
+        int ch = 0, u8_val = 255;
+        if (sscanf(line + 6, "%d %d", &ch, &u8_val) == 2 && s_unicast_engine) {
+            if (u8_val < 0) u8_val = 0;
+            if (u8_val > 255) u8_val = 255;
+            s_unicast_engine->sendVolumeCommand(static_cast<uint8_t>(ch), static_cast<uint8_t>(u8_val));
+            print_console("[OK] SOURCE sent VOLUME_SET to Channel %d: %u/255\n", ch, u8_val);
+        }
+    } else if (strcasecmp(line, "mute") == 0) {
+        if (s_unicast_engine) {
+            const system_config_t* cfg = get_system_config();
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                s_unicast_engine->sendVolumeCommand(0xFF, 0);
+                print_console("[OK] SOURCE broadcast MUTE (0/255) to all SINKs\n");
+            } else {
+                s_unicast_engine->setVolume(0);
+                print_console("[OK] SINK Muted\n");
+            }
+        }
+    } else if (strcasecmp(line, "unmute") == 0) {
+        if (s_unicast_engine) {
+            const system_config_t* cfg = get_system_config();
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                s_unicast_engine->sendVolumeCommand(0xFF, 255);
+                print_console("[OK] SOURCE broadcast UNMUTE (255/255 = 0.0dB) to all SINKs\n");
+            } else {
+                s_unicast_engine->setVolume(255);
+                print_console("[OK] SINK Unmuted (255/255 = 0.0dB)\n");
+            }
         }
     } else if (strcasecmp(line, "reset") == 0 || strcasecmp(line, "reboot") == 0) {
         print_console("[SYS] Rebooting system...\n");
