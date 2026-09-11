@@ -299,6 +299,8 @@ public:
     uint8_t getBitDepth() const;
     esp_err_t setFrameLen(uint16_t frame_len_octets);
     esp_err_t setFrameDuration(uint32_t frame_duration_us);
+    esp_err_t setWifiPhyRate(wifi_phy_mode_t phymode, wifi_phy_rate_t rate);
+    wifi_phy_rate_t getWifiPhyRate() const { return m_tx_phy_rate; }
     uint32_t getSampleRate() const { return m_telemetry.sample_rate; }
     uint32_t getFrameDurationUs() const { return m_frame_duration_us; }
     uint16_t getFrameLen() const { return m_octets_per_frame; }
@@ -430,6 +432,8 @@ private:
     std::atomic<uint32_t>      m_fifo_underrun{0};
     std::atomic<int8_t>        m_last_rx_rssi{-127};
     std::atomic<uint8_t>       m_last_rx_rate{0};
+    wifi_phy_mode_t            m_tx_phy_mode = WIFI_PHY_MODE_11G;
+    wifi_phy_rate_t            m_tx_phy_rate = WIFI_PHY_RATE_12M;
 };
 
 } // namespace AudioNet

@@ -1,0 +1,970 @@
+#include "espnow_unicast_engine.hpp"
+#include "config.h"
+#include "status_led.hpp"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_rom_sys.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+#include "esp_idf_version.h"
+#include <cstring>
+#include <cmath>
+
+static const char* TAG = "ESPNOW_UNICAST";
+
+namespace AudioNet {
+
+static inline uint16_t encode_vsaf_flags(uint32_t sample_rate_hz, uint32_t frame_duration_us) {
+    uint16_t sr_code = 4; // 48 kHz default
+    switch (sample_rate_hz) {
+        case 8000:  sr_code = 0; break;
+        case 16000: sr_code = 1; break;
+        case 24000: sr_code = 2; break;
+        case 32000: sr_code = 3; break;
+        case 48000: sr_code = 4; break;
+        case 96000: sr_code = 5; break;
+        default:    sr_code = 4; break;
+    }
+    uint16_t dur_code = (frame_duration_us == 7500) ? 1 : 0;
+    return (sr_code & 0x07) | ((dur_code & 0x03) << 3);
+}
+
+static inline void decode_vsaf_flags(uint16_t flags, uint32_t* out_sr_hz, uint32_t* out_dur_us) {
+    uint16_t sr_code = flags & 0x07;
+    uint16_t dur_code = (flags >> 3) & 0x03;
+    if (out_sr_hz) {
+        switch (sr_code) {
+            case 0:  *out_sr_hz = 8000; break;
+            case 1:  *out_sr_hz = 16000; break;
+            case 2:  *out_sr_hz = 24000; break;
+            case 3:  *out_sr_hz = 32000; break;
+            case 4:  *out_sr_hz = 48000; break;
+            case 5:  *out_sr_hz = 96000; break;
+            default: *out_sr_hz = 48000; break;
+        }
+    }
+    if (out_dur_us) {
+        *out_dur_us = (dur_code == 1) ? 7500 : 10000;
+    }
+}
+
+static EspNowUnicastEngine* s_instance = nullptr;
+static TaskHandle_t s_audio_task_handle = nullptr;
+
+// Core 0 LC3 Secondary Encoder Worker (Dual-Core parallel encoding for ESP32-S3)
+struct Lc3EncodeJob {
+    const int16_t* pcm;
+    size_t samples;
+    uint8_t* out_lc3;
+    size_t out_max_len;
+    size_t* out_actual_len;
+    TaskHandle_t caller_task;
+};
+
+static TaskHandle_t s_lc3_worker_task_handle = nullptr;
+static volatile Lc3EncodeJob s_lc3_job = {};
+static Codec::Lc3CodecEngine* s_worker_codec_r = nullptr;
+
+static void lc3_encoder_worker_core0(void* pvParameters) {
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_worker_codec_r && s_lc3_job.pcm && s_lc3_job.out_lc3 && s_lc3_job.out_actual_len) {
+            s_worker_codec_r->encodeFrame(s_lc3_job.pcm, s_lc3_job.samples,
+                                          s_lc3_job.out_lc3, s_lc3_job.out_max_len,
+                                          s_lc3_job.out_actual_len);
+        }
+        if (s_lc3_job.caller_task) {
+            xTaskNotifyGive(s_lc3_job.caller_task);
+        }
+    }
+}
+
+// Thread-safe SPSC FIFO for SINK LC3 frames
+struct Lc3RxFrame {
+    uint8_t  data[MAX_LC3_FRAME_OCTETS];
+    uint8_t  len;
+    uint8_t  seq;
+    uint16_t sample_rate_hz;
+    uint16_t frame_duration_us;
+    uint32_t pts_us;
+    int64_t  rx_local_time_us;
+};
+
+static constexpr size_t LC3_RX_FIFO_CAPACITY = 24;
+static Lc3RxFrame s_rx_fifo[LC3_RX_FIFO_CAPACITY];
+static size_t s_rx_fifo_head = 0;
+static size_t s_rx_fifo_tail = 0;
+static size_t s_rx_fifo_count = 0;
+static portMUX_TYPE s_fifo_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t seq,
+                                     uint16_t sample_rate_hz, uint16_t frame_duration_us,
+                                     uint32_t pts_us, int64_t rx_local_time_us) {
+    if (!data || len == 0 || len > MAX_LC3_FRAME_OCTETS) return false;
+    taskENTER_CRITICAL(&s_fifo_mux);
+    if (s_rx_fifo_count >= LC3_RX_FIFO_CAPACITY) {
+        s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
+        s_rx_fifo_count--;
+    }
+    s_rx_fifo[s_rx_fifo_head].len = static_cast<uint8_t>(len);
+    s_rx_fifo[s_rx_fifo_head].seq = seq;
+    s_rx_fifo[s_rx_fifo_head].sample_rate_hz = sample_rate_hz;
+    s_rx_fifo[s_rx_fifo_head].frame_duration_us = frame_duration_us;
+    s_rx_fifo[s_rx_fifo_head].pts_us = pts_us;
+    s_rx_fifo[s_rx_fifo_head].rx_local_time_us = rx_local_time_us;
+    memcpy(s_rx_fifo[s_rx_fifo_head].data, data, len);
+    s_rx_fifo_head = (s_rx_fifo_head + 1) % LC3_RX_FIFO_CAPACITY;
+    s_rx_fifo_count++;
+    taskEXIT_CRITICAL(&s_fifo_mux);
+    return true;
+}
+
+static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t* out_seq = nullptr,
+                                    uint16_t* out_sample_rate = nullptr, uint16_t* out_frame_duration = nullptr,
+                                    uint32_t* out_pts = nullptr, int64_t* out_rx_time = nullptr) {
+    if (!out_data || !out_len) return false;
+    taskENTER_CRITICAL(&s_fifo_mux);
+    if (s_rx_fifo_count == 0) {
+        taskEXIT_CRITICAL(&s_fifo_mux);
+        return false;
+    }
+    *out_len = s_rx_fifo[s_rx_fifo_tail].len;
+    if (out_seq) *out_seq = s_rx_fifo[s_rx_fifo_tail].seq;
+    if (out_sample_rate) *out_sample_rate = s_rx_fifo[s_rx_fifo_tail].sample_rate_hz;
+    if (out_frame_duration) *out_frame_duration = s_rx_fifo[s_rx_fifo_tail].frame_duration_us;
+    if (out_pts) *out_pts = s_rx_fifo[s_rx_fifo_tail].pts_us;
+    if (out_rx_time) *out_rx_time = s_rx_fifo[s_rx_fifo_tail].rx_local_time_us;
+    memcpy(out_data, s_rx_fifo[s_rx_fifo_tail].data, *out_len);
+    s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
+    s_rx_fifo_count--;
+    taskEXIT_CRITICAL(&s_fifo_mux);
+    return true;
+}
+
+static inline void clear_rx_fifo() {
+    taskENTER_CRITICAL(&s_fifo_mux);
+    s_rx_fifo_head = 0;
+    s_rx_fifo_tail = 0;
+    s_rx_fifo_count = 0;
+    taskEXIT_CRITICAL(&s_fifo_mux);
+}
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+static void onEspNowSendCb(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
+    if (s_instance && tx_info) s_instance->onPacketSent(tx_info->des_addr, status);
+}
+static void onEspNowRecvCb(const esp_now_recv_info_t* recv_info, const uint8_t* data, int data_len) {
+    if (!s_instance || !recv_info || !data) return;
+    int8_t rssi = -127;
+    uint8_t rate = 0;
+    if (recv_info->rx_ctrl) {
+        rssi = recv_info->rx_ctrl->rssi;
+        rate = recv_info->rx_ctrl->rate;
+    }
+    s_instance->onPacketReceived(recv_info->src_addr, data, data_len, rssi, rate);
+}
+#else
+static void onEspNowSendCb(const uint8_t* mac_addr, esp_now_send_status_t status) {
+    if (s_instance) s_instance->onPacketSent(mac_addr, status);
+}
+static void onEspNowRecvCb(const uint8_t* mac_addr, const uint8_t* data, int data_len) {
+    if (!s_instance || !data) return;
+    s_instance->onPacketReceived(mac_addr, data, data_len, -127, 0);
+}
+#endif
+
+EspNowUnicastEngine::EspNowUnicastEngine(Codec::Lc3CodecEngine& lc3_codec,
+                                         Audio::ToneGenerator* tone_gen,
+                                         Hardware::I2sAudioDriver* i2s_dac)
+    : m_lc3_codec(lc3_codec),
+      m_tone_gen(tone_gen),
+      m_i2s_dac(i2s_dac),
+      m_node_role(NODE_ROLE_SINK),
+      m_node_id(CONFIG_ACTIVE_NODE_ID) {
+    s_instance = this;
+    memset(m_peers, 0, sizeof(m_peers));
+}
+
+EspNowUnicastEngine::~EspNowUnicastEngine() {
+    stop();
+    if (s_instance == this) s_instance = nullptr;
+}
+
+esp_err_t EspNowUnicastEngine::init(uint8_t role, uint8_t node_id, uint8_t wifi_channel) {
+    m_node_role = role;
+    m_node_id = node_id;
+
+    // Default tone frequencies
+    if (m_tone_gen) m_tone_gen->init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 440.0f, 110.0f, 440.0f, 50.0f);
+    m_tone_gen_r.init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 880.0f, 220.0f, 880.0f, 50.0f);
+
+    if (m_node_role == NODE_ROLE_SOURCE) {
+        m_lc3_codec.initEncoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
+        m_lc3_codec_r.initEncoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
+    } else {
+        m_lc3_codec.initDecoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
+    }
+
+    // Initial default peers (Left and Right speakers)
+    const uint8_t left_mac[6]  = {0xB0, 0xA6, 0x04, 0x99, 0x38, 0x44}; // Node 23
+    const uint8_t right_mac[6] = {0xB0, 0xA6, 0x04, 0x99, 0x18, 0xE4}; // Node 24
+
+    addPeer(left_mac, 0, "Sink-Left");
+    addPeer(right_mac, 1, "Sink-Right");
+
+    // Initialize Wi-Fi
+    if (!m_wifi_initialized) {
+        esp_err_t ret = nvs_flash_init();
+        if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            ret = nvs_flash_init();
+        }
+        ESP_ERROR_CHECK(ret);
+
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+
+        // Lock to specified Wi-Fi channel
+        ESP_ERROR_CHECK(esp_wifi_set_channel(wifi_channel, WIFI_SECOND_CHAN_NONE));
+
+        // Set transmit power (+9.0 dBm = 36 * 0.25 dBm)
+        esp_wifi_set_max_tx_power(36);
+
+        // Initialize ESP-NOW
+        ESP_ERROR_CHECK(esp_now_init());
+        ESP_ERROR_CHECK(esp_now_register_send_cb(onEspNowSendCb));
+        ESP_ERROR_CHECK(esp_now_register_recv_cb(onEspNowRecvCb));
+
+        // Configure default PHY rate (HT20 MCS1 = 13.0 Mbps)
+        setWifiPhyRate(WIFI_PHY_MODE_HT20, WIFI_PHY_RATE_MCS1_LGI);
+
+        m_wifi_initialized = true;
+    }
+
+    // Register active peers in ESP-NOW hardware table
+    for (int i = 0; i < m_peer_count; i++) {
+        if (m_peers[i].is_enabled) {
+            esp_now_peer_info_t peer_info = {};
+            memcpy(peer_info.peer_addr, m_peers[i].mac, 6);
+            peer_info.channel = wifi_channel;
+            peer_info.ifidx = WIFI_IF_STA;
+            peer_info.encrypt = false;
+            esp_now_add_peer(&peer_info);
+
+            esp_now_rate_config_t rate_cfg = {
+                .phymode = m_tx_phy_mode,
+                .rate = m_tx_phy_rate,
+                .ersu = false,
+                .dcm = false
+            };
+            esp_now_set_peer_rate_config(m_peers[i].mac, &rate_cfg);
+        }
+    }
+
+    transitionTo(NetworkState::IDLE);
+    return ESP_OK;
+}
+
+esp_err_t EspNowUnicastEngine::start() {
+    if (m_audio_task_running) return ESP_OK;
+
+    m_audio_task_running = true;
+    uint32_t stack_size = 10240;
+    UBaseType_t priority = 5;
+    BaseType_t core_id = (m_node_role == NODE_ROLE_SOURCE) ? 1 : 0;
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32)
+    if (m_node_role == NODE_ROLE_SOURCE && !s_lc3_worker_task_handle) {
+        s_worker_codec_r = &m_lc3_codec_r;
+        xTaskCreatePinnedToCore(lc3_encoder_worker_core0, "lc3_worker_c0", 10240, nullptr, 6, &s_lc3_worker_task_handle, 0);
+    }
+#endif
+
+    xTaskCreatePinnedToCore(audioTaskRoutine, "unicast_audio_tsk", stack_size, this, priority, &s_audio_task_handle, core_id);
+
+    if (m_node_role == NODE_ROLE_SOURCE) {
+        transitionTo(NetworkState::CAST);
+    } else {
+        transitionTo(NetworkState::SCANNING);
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t EspNowUnicastEngine::stop() {
+    m_audio_task_running = false;
+    transitionTo(NetworkState::IDLE);
+    return ESP_OK;
+}
+
+bool EspNowUnicastEngine::addPeer(const uint8_t* mac, uint8_t channel_id, const char* name) {
+    if (!mac) return false;
+    taskENTER_CRITICAL(&m_peer_mux);
+    for (int i = 0; i < m_peer_count; i++) {
+        if (memcmp(m_peers[i].mac, mac, 6) == 0) {
+            m_peers[i].channel_id = channel_id;
+            if (name) strncpy(m_peers[i].name, name, sizeof(m_peers[i].name) - 1);
+            m_peers[i].is_enabled = true;
+            m_peers[i].status = PeerStatus::ONLINE;
+            m_peers[i].consecutive_ack_fails = 0;
+            if (m_state == NetworkState::CAST) {
+                m_peers[i].session_start_time_us = esp_timer_get_time();
+            }
+            taskEXIT_CRITICAL(&m_peer_mux);
+            return true;
+        }
+    }
+    if (m_peer_count >= MAX_UNICAST_SINKS) {
+        taskEXIT_CRITICAL(&m_peer_mux);
+        return false;
+    }
+    int idx = m_peer_count++;
+    memcpy(m_peers[idx].mac, mac, 6);
+    m_peers[idx].channel_id = channel_id;
+    if (name) strncpy(m_peers[idx].name, name, sizeof(m_peers[idx].name) - 1);
+    else snprintf(m_peers[idx].name, sizeof(m_peers[idx].name), "Sink-%u", (unsigned int)(idx & 0x07));
+    m_peers[idx].is_enabled = true;
+    m_peers[idx].status = PeerStatus::ONLINE;
+    m_peers[idx].session_start_time_us = (m_state == NetworkState::CAST) ? esp_timer_get_time() : 0;
+    m_peers[idx].packets_sent = 0;
+    m_peers[idx].acks_received = 0;
+    m_peers[idx].ack_failures = 0;
+    m_peers[idx].consecutive_ack_fails = 0;
+    m_peers[idx].last_rssi = -127;
+    taskEXIT_CRITICAL(&m_peer_mux);
+
+    if (m_wifi_initialized) {
+        esp_now_peer_info_t peer_info = {};
+        memcpy(peer_info.peer_addr, mac, 6);
+        peer_info.channel = 1;
+        peer_info.ifidx = WIFI_IF_STA;
+        peer_info.encrypt = false;
+        esp_now_add_peer(&peer_info);
+
+        esp_now_rate_config_t rate_cfg = {
+            .phymode = m_tx_phy_mode,
+            .rate = m_tx_phy_rate,
+            .ersu = false,
+            .dcm = false
+        };
+        esp_now_set_peer_rate_config(mac, &rate_cfg);
+    }
+    return true;
+}
+
+bool EspNowUnicastEngine::removePeer(const uint8_t* mac) {
+    if (!mac) return false;
+    taskENTER_CRITICAL(&m_peer_mux);
+    for (int i = 0; i < m_peer_count; i++) {
+        if (memcmp(m_peers[i].mac, mac, 6) == 0) {
+            for (int j = i; j < m_peer_count - 1; j++) {
+                m_peers[j] = m_peers[j + 1];
+            }
+            m_peer_count--;
+            taskEXIT_CRITICAL(&m_peer_mux);
+            if (m_wifi_initialized) {
+                esp_now_del_peer(mac);
+            }
+            return true;
+        }
+    }
+    taskEXIT_CRITICAL(&m_peer_mux);
+    return false;
+}
+
+bool EspNowUnicastEngine::setPeerEnabled(const uint8_t* mac, bool enabled) {
+    if (!mac) return false;
+    taskENTER_CRITICAL(&m_peer_mux);
+    for (int i = 0; i < m_peer_count; i++) {
+        if (memcmp(m_peers[i].mac, mac, 6) == 0) {
+            m_peers[i].is_enabled = enabled;
+            m_peers[i].status = enabled ? PeerStatus::ONLINE : PeerStatus::DISABLED;
+            if (enabled) {
+                m_peers[i].consecutive_ack_fails = 0;
+                if (m_state == NetworkState::CAST) {
+                    m_peers[i].session_start_time_us = esp_timer_get_time();
+                }
+            }
+            taskEXIT_CRITICAL(&m_peer_mux);
+            return true;
+        }
+    }
+    taskEXIT_CRITICAL(&m_peer_mux);
+    return false;
+}
+
+int EspNowUnicastEngine::getPeerCount() const {
+    return m_peer_count;
+}
+
+const SinkPeerConfig* EspNowUnicastEngine::getPeer(int index) const {
+    if (index < 0 || index >= m_peer_count) return nullptr;
+    return &m_peers[index];
+}
+
+const SinkPeerConfig* EspNowUnicastEngine::getPeerByMac(const uint8_t* mac) const {
+    if (!mac) return nullptr;
+    for (int i = 0; i < m_peer_count; i++) {
+        if (memcmp(m_peers[i].mac, mac, 6) == 0) return &m_peers[i];
+    }
+    return nullptr;
+}
+
+void EspNowUnicastEngine::resetPeerStats() {
+    taskENTER_CRITICAL(&m_peer_mux);
+    for (int i = 0; i < m_peer_count; i++) {
+        m_peers[i].packets_sent = 0;
+        m_peers[i].acks_received = 0;
+        m_peers[i].ack_failures = 0;
+        m_peers[i].consecutive_ack_fails = 0;
+        m_peers[i].status = m_peers[i].is_enabled ? PeerStatus::ONLINE : PeerStatus::DISABLED;
+    }
+    taskEXIT_CRITICAL(&m_peer_mux);
+    m_tx_packets_total.store(0, std::memory_order_relaxed);
+    m_tx_acks_total.store(0, std::memory_order_relaxed);
+    m_tx_ack_fails_total.store(0, std::memory_order_relaxed);
+}
+
+esp_err_t EspNowUnicastEngine::setSampleRate(uint32_t sample_rate_hz) {
+    m_telemetry.sample_rate = sample_rate_hz;
+    if (m_node_role == NODE_ROLE_SOURCE) {
+        m_lc3_codec.reconfigureEncoder(sample_rate_hz, m_octets_per_frame, m_frame_duration_us);
+        m_lc3_codec_r.reconfigureEncoder(sample_rate_hz, m_octets_per_frame, m_frame_duration_us);
+    } else {
+        m_lc3_codec.reconfigureDecoder(sample_rate_hz, m_octets_per_frame, m_frame_duration_us);
+    }
+    if (m_i2s_dac) m_i2s_dac->reconfigureSampleRate(sample_rate_hz, m_frame_duration_us);
+    if (m_tone_gen) m_tone_gen->setSampleRate(sample_rate_hz);
+    m_tone_gen_r.setSampleRate(sample_rate_hz);
+    return ESP_OK;
+}
+
+esp_err_t EspNowUnicastEngine::setBitDepth(uint8_t bit_depth) {
+    m_telemetry.bit_depth = bit_depth;
+    if (m_i2s_dac) m_i2s_dac->setBitDepth(bit_depth);
+    return ESP_OK;
+}
+
+esp_err_t EspNowUnicastEngine::setFrameLen(uint16_t frame_len_octets) {
+    if (frame_len_octets > MAX_LC3_FRAME_OCTETS) return ESP_ERR_INVALID_ARG;
+    m_octets_per_frame = frame_len_octets;
+    m_telemetry.frame_len = frame_len_octets;
+    if (m_node_role == NODE_ROLE_SOURCE) {
+        m_lc3_codec.reconfigureEncoder(m_telemetry.sample_rate, m_octets_per_frame, m_frame_duration_us);
+        m_lc3_codec_r.reconfigureEncoder(m_telemetry.sample_rate, m_octets_per_frame, m_frame_duration_us);
+    } else {
+        m_lc3_codec.reconfigureDecoder(m_telemetry.sample_rate, m_octets_per_frame, m_frame_duration_us);
+    }
+    return ESP_OK;
+}
+
+esp_err_t EspNowUnicastEngine::setFrameDuration(uint32_t frame_duration_us) {
+    m_frame_duration_us = frame_duration_us;
+    m_telemetry.frame_duration_us = frame_duration_us;
+    if (m_node_role == NODE_ROLE_SOURCE) {
+        m_lc3_codec.reconfigureEncoder(m_telemetry.sample_rate, m_octets_per_frame, m_frame_duration_us);
+        m_lc3_codec_r.reconfigureEncoder(m_telemetry.sample_rate, m_octets_per_frame, m_frame_duration_us);
+    } else {
+        m_lc3_codec.reconfigureDecoder(m_telemetry.sample_rate, m_octets_per_frame, m_frame_duration_us);
+    }
+    return ESP_OK;
+}
+
+esp_err_t EspNowUnicastEngine::setWifiPhyRate(wifi_phy_mode_t phymode, wifi_phy_rate_t rate) {
+    m_tx_phy_mode = phymode;
+    m_tx_phy_rate = rate;
+    if (m_wifi_initialized) {
+        esp_now_rate_config_t rate_cfg = {
+            .phymode = phymode,
+            .rate = rate,
+            .ersu = false,
+            .dcm = false
+        };
+        for (int i = 0; i < m_peer_count; i++) {
+            if (m_peers[i].is_enabled) {
+                esp_now_set_peer_rate_config(m_peers[i].mac, &rate_cfg);
+            }
+        }
+        esp_wifi_config_80211_tx_rate(WIFI_IF_STA, rate);
+    }
+    return ESP_OK;
+}
+
+void EspNowUnicastEngine::onPacketSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
+    if (!mac_addr) {
+        if (status == ESP_NOW_SEND_SUCCESS) m_tx_acks_total.fetch_add(1, std::memory_order_relaxed);
+        else m_tx_ack_fails_total.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    taskENTER_CRITICAL(&m_peer_mux);
+    for (int i = 0; i < m_peer_count; i++) {
+        if (memcmp(m_peers[i].mac, mac_addr, 6) == 0) {
+            m_peers[i].packets_sent++;
+            if (status == ESP_NOW_SEND_SUCCESS) {
+                m_peers[i].acks_received++;
+                m_peers[i].consecutive_ack_fails = 0;
+                if (m_peers[i].is_enabled) {
+                    m_peers[i].status = PeerStatus::ONLINE;
+                }
+                m_tx_acks_total.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                m_peers[i].ack_failures++;
+                m_peers[i].consecutive_ack_fails++;
+                if (m_peers[i].consecutive_ack_fails >= 5) {
+                    m_peers[i].status = PeerStatus::OFFLINE;
+                }
+                m_tx_ack_fails_total.fetch_add(1, std::memory_order_relaxed);
+            }
+            break;
+        }
+    }
+    taskEXIT_CRITICAL(&m_peer_mux);
+}
+
+void EspNowUnicastEngine::onPacketReceived(const uint8_t* mac_addr, const uint8_t* data, int data_len, int8_t rssi, uint8_t rate) {
+    if (!data || data_len < sizeof(vsaf_unicast_header_t)) return;
+
+    const vsaf_unicast_header_t* hdr = reinterpret_cast<const vsaf_unicast_header_t*>(data);
+
+    m_last_rx_rssi.store(rssi, std::memory_order_relaxed);
+    m_last_rx_rate.store(rate, std::memory_order_relaxed);
+    m_rx_packets_total.fetch_add(1, std::memory_order_relaxed);
+    m_rx_packets_sec.fetch_add(1, std::memory_order_relaxed);
+
+    size_t payload_len = data_len - sizeof(vsaf_unicast_header_t);
+    if (payload_len == 0 || payload_len > MAX_LC3_FRAME_OCTETS) return;
+
+    int64_t rx_local_time_us = esp_timer_get_time();
+
+    if (hdr->octets == 0) {
+        // Reserved for future Control Packet handler (draft)
+        return;
+    }
+    if (!push_rx_lc3_frame(data + sizeof(vsaf_unicast_header_t), payload_len, hdr->seq,
+                           m_telemetry.sample_rate, m_frame_duration_us, hdr->pts_us, rx_local_time_us)) {
+        m_fifo_overflow.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        if (s_audio_task_handle) {
+            xTaskNotifyGive(s_audio_task_handle);
+        }
+    }
+}
+
+void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
+    if (m_state == new_state) return;
+    m_state = new_state;
+
+    if (new_state == NetworkState::CAST || new_state == NetworkState::STREAM) {
+        int64_t now_us = esp_timer_get_time();
+        m_session_start_time_us.store(now_us, std::memory_order_relaxed);
+        taskENTER_CRITICAL(&m_peer_mux);
+        for (int i = 0; i < m_peer_count; i++) {
+            if (m_peers[i].is_enabled) {
+                m_peers[i].session_start_time_us = now_us;
+            }
+        }
+        taskEXIT_CRITICAL(&m_peer_mux);
+    }
+
+    ESP_LOGI(TAG, "State Transition: %s -> %s", getStateString(),
+             (new_state == NetworkState::CAST) ? "CAST" :
+             (new_state == NetworkState::STREAM) ? "STREAM" :
+             (new_state == NetworkState::PREFILL) ? "PREFILL" :
+             (new_state == NetworkState::SCANNING) ? "SCANNING" : "IDLE");
+}
+
+const char* EspNowUnicastEngine::getStateString() const {
+    switch (m_state) {
+        case NetworkState::OFF:         return "OFF";
+        case NetworkState::IDLE:        return "IDLE";
+        case NetworkState::SCANNING:    return "SCANNING";
+        case NetworkState::PREFILL:     return "PREFILL";
+        case NetworkState::STREAM:      return "STREAM";
+        case NetworkState::CAST:        return "CAST";
+        default:                        return "UNKNOWN";
+    }
+}
+
+const char* EspNowUnicastEngine::getActiveCodecName() const {
+    return "LC3";
+}
+
+const char* EspNowUnicastEngine::getWifiPhyRateString() const {
+    switch (m_tx_phy_rate) {
+        case WIFI_PHY_RATE_MCS0_LGI: return "HT20 MCS0 (6.5M)";
+        case WIFI_PHY_RATE_MCS1_LGI: return "HT20 MCS1 (13.0M)";
+        case WIFI_PHY_RATE_MCS2_LGI: return "HT20 MCS2 (19.5M)";
+        case WIFI_PHY_RATE_MCS3_LGI: return "HT20 MCS3 (26.0M)";
+        case WIFI_PHY_RATE_6M:       return "OFDM 6M";
+        case WIFI_PHY_RATE_9M:       return "OFDM 9M";
+        case WIFI_PHY_RATE_12M:      return "OFDM 12M";
+        case WIFI_PHY_RATE_18M:      return "OFDM 18M";
+        case WIFI_PHY_RATE_24M:      return "OFDM 24M";
+        case WIFI_PHY_RATE_36M:      return "OFDM 36M";
+        case WIFI_PHY_RATE_48M:      return "OFDM 48M";
+        case WIFI_PHY_RATE_54M:      return "OFDM 54M";
+        default:                     return "CUSTOM";
+    }
+}
+
+void EspNowUnicastEngine::resetStreamingCounters() {
+    m_tx_packets_total.store(0, std::memory_order_relaxed);
+    m_tx_packets_sec.store(0, std::memory_order_relaxed);
+    m_tx_acks_total.store(0, std::memory_order_relaxed);
+    m_tx_ack_fails_total.store(0, std::memory_order_relaxed);
+    m_rx_packets_total.store(0, std::memory_order_relaxed);
+    m_rx_packets_sec.store(0, std::memory_order_relaxed);
+    resetPeerStats();
+}
+
+void EspNowUnicastEngine::resetErrorCounters() {
+    m_fifo_overflow.store(0, std::memory_order_relaxed);
+    m_fifo_underrun.store(0, std::memory_order_relaxed);
+    m_lc3_codec.resetPlcCount();
+    if (m_i2s_dac) m_i2s_dac->resetUnderrunCount();
+}
+
+void EspNowUnicastEngine::update10HzTimeOffsetStats() {
+    float med, rng;
+    bool valid;
+    m_time_offset_ring_buffer.computeStats(med, rng, valid);
+    m_cached_rb_median_ms.store(med, std::memory_order_relaxed);
+    m_cached_rb_range_ms.store(rng, std::memory_order_relaxed);
+    m_has_cached_offset_stats.store(valid, std::memory_order_relaxed);
+}
+
+void EspNowUnicastEngine::getTimeOffsetStats(float& out_ema_ms, float& out_rb_med_ms, float& out_rb_rng_ms, bool& out_has_stats) const {
+    out_ema_ms = static_cast<float>(m_master_time_offset_us) / 1000.0f;
+    out_rb_med_ms = m_cached_rb_median_ms.load(std::memory_order_relaxed);
+    out_rb_rng_ms = m_cached_rb_range_ms.load(std::memory_order_relaxed);
+    out_has_stats = m_has_cached_offset_stats.load(std::memory_order_relaxed);
+}
+
+uint64_t EspNowUnicastEngine::getMasterTimeMs() const {
+    int64_t now = esp_timer_get_time();
+    return static_cast<uint64_t>((now + m_master_time_offset_us) / 1000);
+}
+
+bool EspNowUnicastEngine::isMasterTimeValid() const {
+    return (m_last_sync_time_us.load(std::memory_order_relaxed) > 0);
+}
+
+void EspNowUnicastEngine::audioTaskRoutine(void* pvParameters) {
+    EspNowUnicastEngine* self = reinterpret_cast<EspNowUnicastEngine*>(pvParameters);
+    if (self->m_node_role == NODE_ROLE_SOURCE) {
+        self->runSourceLoop();
+    } else {
+        self->runSinkLoop();
+    }
+    vTaskDelete(nullptr);
+}
+
+void EspNowUnicastEngine::runSourceLoop() {
+    ESP_LOGI(TAG, "SOURCE Unicast Audio Task started on Core %d", xPortGetCoreID());
+
+    int16_t pcm_ch0[MAX_PCM_FRAME_SAMPLES];
+    int16_t pcm_ch1[MAX_PCM_FRAME_SAMPLES];
+    uint8_t lc3_ch0[MAX_LC3_FRAME_OCTETS];
+    uint8_t lc3_ch1[MAX_LC3_FRAME_OCTETS];
+    uint8_t tx_packet[sizeof(vsaf_unicast_header_t) + MAX_LC3_FRAME_OCTETS];
+
+    uint8_t seq = 0;
+    int64_t next_frame_time_us = esp_timer_get_time();
+
+    while (m_audio_task_running) {
+        int64_t now_us = esp_timer_get_time();
+        if (now_us < next_frame_time_us) {
+            int64_t wait_us = next_frame_time_us - now_us;
+            if (wait_us > 2000) {
+                vTaskDelay(pdMS_TO_TICKS((wait_us - 1500) / 1000));
+            }
+            while (esp_timer_get_time() < next_frame_time_us) {
+                esp_rom_delay_us(10);
+            }
+        } else if (now_us > next_frame_time_us + 20000) {
+            next_frame_time_us = now_us;
+        }
+        next_frame_time_us += m_frame_duration_us;
+
+        if (m_state != NetworkState::CAST) {
+            continue;
+        }
+
+        size_t samples_per_frame = (m_telemetry.sample_rate * m_frame_duration_us) / 1000000;
+        if (samples_per_frame > MAX_PCM_FRAME_SAMPLES) samples_per_frame = MAX_PCM_FRAME_SAMPLES;
+
+        // Generate synthetic stereo audio
+        if (m_tone_gen) m_tone_gen->generateFrame(pcm_ch0, samples_per_frame);
+        m_tone_gen_r.generateFrame(pcm_ch1, samples_per_frame);
+
+        // Encode audio channels with LC3 (Dual-Core Parallel on ESP32-S3)
+        int64_t enc_start = esp_timer_get_time();
+        size_t len_ch0 = 0, len_ch1 = 0;
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32)
+        if (s_lc3_worker_task_handle) {
+            s_lc3_job.pcm = pcm_ch1;
+            s_lc3_job.samples = samples_per_frame;
+            s_lc3_job.out_lc3 = lc3_ch1;
+            s_lc3_job.out_max_len = sizeof(lc3_ch1);
+            s_lc3_job.out_actual_len = &len_ch1;
+            s_lc3_job.caller_task = xTaskGetCurrentTaskHandle();
+            xTaskNotifyGive(s_lc3_worker_task_handle);
+
+            // Encode Left channel on Core 1 concurrently
+            m_lc3_codec.encodeFrame(pcm_ch0, samples_per_frame, lc3_ch0, sizeof(lc3_ch0), &len_ch0);
+
+            // Wait for Core 0 worker to finish Right channel
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+        } else {
+            m_lc3_codec.encodeFrame(pcm_ch0, samples_per_frame, lc3_ch0, sizeof(lc3_ch0), &len_ch0);
+            m_lc3_codec_r.encodeFrame(pcm_ch1, samples_per_frame, lc3_ch1, sizeof(lc3_ch1), &len_ch1);
+        }
+#else
+        m_lc3_codec.encodeFrame(pcm_ch0, samples_per_frame, lc3_ch0, sizeof(lc3_ch0), &len_ch0);
+        m_lc3_codec_r.encodeFrame(pcm_ch1, samples_per_frame, lc3_ch1, sizeof(lc3_ch1), &len_ch1);
+#endif
+        int64_t enc_end = esp_timer_get_time();
+        m_codec_duration_ring_buffer.push(static_cast<uint32_t>(enc_end - enc_start));
+
+        m_audio_meter.pushFramePcm(pcm_ch0, samples_per_frame);
+
+        // Microsecond Master Presentation Timestamp (50 ms buffer cushion)
+        uint32_t pts_us = static_cast<uint32_t>(now_us + CONFIG_ESPNOW_PRESENTATION_DELAY_US);
+
+        // Dispatch unicast packets to all enabled peers (safe snapshot outside critical section)
+        SinkPeerConfig peers_snap[MAX_UNICAST_SINKS];
+        int peer_count_snap = 0;
+
+        taskENTER_CRITICAL(&m_peer_mux);
+        peer_count_snap = m_peer_count;
+        for (int i = 0; i < peer_count_snap; i++) {
+            peers_snap[i] = m_peers[i];
+        }
+        taskEXIT_CRITICAL(&m_peer_mux);
+
+        for (int i = 0; i < peer_count_snap; i++) {
+            if (!peers_snap[i].is_enabled || peers_snap[i].status == PeerStatus::DISABLED) continue;
+
+            // Circuit Breaker: If peer is OFFLINE (>= 5 consecutive ACK failures),
+            // throttle to 2 Hz heartbeat probe (once per 50 frames / 500 ms) to eliminate 802.11 MAC retry backlog.
+            bool is_offline = (peers_snap[i].status == PeerStatus::OFFLINE || peers_snap[i].consecutive_ack_fails >= 5);
+            if (is_offline && (seq % 50) != 0) {
+                continue; // Skip 49 out of 50 frames while peer is offline (2 Hz probe)
+            }
+
+            vsaf_unicast_header_t* hdr = reinterpret_cast<vsaf_unicast_header_t*>(tx_packet);
+            hdr->seq = seq;
+            hdr->octets = static_cast<uint8_t>(m_octets_per_frame);
+            hdr->flags = encode_vsaf_flags(m_telemetry.sample_rate, m_frame_duration_us);
+            hdr->pts_us = static_cast<uint32_t>(pts_us);
+
+            const uint8_t* payload = (peers_snap[i].channel_id == 1) ? lc3_ch1 : lc3_ch0;
+            size_t payload_len = (peers_snap[i].channel_id == 1) ? len_ch1 : len_ch0;
+            if (payload_len > MAX_LC3_FRAME_OCTETS) payload_len = m_octets_per_frame;
+
+            memcpy(tx_packet + sizeof(vsaf_unicast_header_t), payload, payload_len);
+            size_t packet_size = sizeof(vsaf_unicast_header_t) + payload_len;
+
+            esp_err_t send_err = esp_now_send(peers_snap[i].mac, tx_packet, packet_size);
+            if (send_err == ESP_OK) {
+                m_tx_packets_total.fetch_add(1, std::memory_order_relaxed);
+                m_tx_packets_sec.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        seq++;
+    }
+}
+
+void EspNowUnicastEngine::runSinkLoop() {
+    ESP_LOGI(TAG, "SINK Unicast Audio Task started on Core %d", xPortGetCoreID());
+
+    int16_t decoded_pcm[MAX_PCM_FRAME_SAMPLES] = {0};
+    int16_t stereo_pcm[MAX_PCM_FRAME_SAMPLES * 2] = {0};
+    uint8_t current_lc3_buf[MAX_LC3_FRAME_OCTETS] = {0};
+    size_t actual_samples = 0;
+    size_t bytes_written = 0;
+    uint32_t consecutive_empty_frames = 0;
+
+    auto format_stereo = [&](const int16_t* src, size_t count) -> size_t {
+        for (size_t i = 0; i < count; ++i) {
+            stereo_pcm[2 * i]     = src[i];
+            stereo_pcm[2 * i + 1] = src[i];
+        }
+        return count * 2 * sizeof(int16_t);
+    };
+
+    while (m_audio_task_running) {
+        switch (m_state) {
+            case NetworkState::OFF:
+            case NetworkState::IDLE: {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                break;
+            }
+
+            case NetworkState::SCANNING: {
+                size_t buffered = s_rx_fifo_count;
+                if (buffered >= m_prefill_threshold_frames) {
+                    ESP_LOGI(TAG, "SINK: Prefill threshold reached (FIFO = %zu pkts). Transitioning to PREFILL...", buffered);
+                    transitionTo(NetworkState::PREFILL);
+                } else {
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30));
+                }
+                break;
+            }
+
+            case NetworkState::PREFILL: {
+                size_t lc3_len = 0;
+                uint8_t seq = 0;
+                uint16_t frame_sr = 0;
+                uint16_t frame_dur = 0;
+                uint32_t frame_pts = 0;
+                int64_t rx_time_us = 0;
+
+                // Preload Frame 0 (Descriptor 0)
+                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us) && lc3_len > 0) {
+                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
+                    m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+                    if (m_i2s_dac && actual_samples > 0) {
+                        size_t stereo_bytes = format_stereo(decoded_pcm, actual_samples);
+                        m_i2s_dac->preload(stereo_pcm, stereo_bytes, &bytes_written);
+                    }
+                    m_last_rx_seq = seq;
+                    m_has_last_rx_seq = true;
+
+                    // Initial time sync estimate based on 50ms presentation delay
+                    int32_t instant_offset_32 = static_cast<int32_t>(frame_pts - static_cast<uint32_t>(rx_time_us) - CONFIG_ESPNOW_PRESENTATION_DELAY_US);
+                    m_master_time_offset_us = instant_offset_32;
+                    m_time_offset_ring_buffer.push(static_cast<float>(instant_offset_32) / 1000.0f);
+                    m_last_sync_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
+                }
+
+                // Preload Frame 1 (Descriptor 1)
+                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us) && lc3_len > 0) {
+                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
+                    m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+                    if (m_i2s_dac && actual_samples > 0) {
+                        size_t stereo_bytes = format_stereo(decoded_pcm, actual_samples);
+                        m_i2s_dac->preload(stereo_pcm, stereo_bytes, &bytes_written);
+                    }
+                    m_last_rx_seq = seq;
+                    m_has_last_rx_seq = true;
+                }
+
+                // Start I2S hardware DAC clock (Playing dual preloaded descriptors)
+                if (m_i2s_dac) {
+                    m_i2s_dac->start();
+                }
+
+                consecutive_empty_frames = 0;
+                transitionTo(NetworkState::STREAM);
+                break;
+            }
+
+            case NetworkState::STREAM: {
+                uint32_t wait_timeout = (m_telemetry.frame_duration_us / 1000) * 2 + 5;
+                if (m_i2s_dac && m_i2s_dac->isRunning()) {
+                    m_i2s_dac->waitForDmaSlot(wait_timeout);
+                }
+
+                size_t lc3_len = 0;
+                uint8_t seq = 0;
+                uint16_t frame_sr = 0;
+                uint16_t frame_dur = 0;
+                uint32_t frame_pts = 0;
+                int64_t rx_time_us = 0;
+
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us);
+
+                // JIT absorption: wait up to 5 ms if FIFO is momentarily empty
+                if (!has_packet) {
+                    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5)) > 0) {
+                        has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us);
+                    }
+                }
+
+                if (has_packet && lc3_len > 0) {
+                    consecutive_empty_frames = 0;
+
+                    // Microsecond Phase Offset Update
+                    int32_t instant_offset_32 = static_cast<int32_t>(frame_pts - static_cast<uint32_t>(rx_time_us) - CONFIG_ESPNOW_PRESENTATION_DELAY_US);
+                    int64_t instant_offset = instant_offset_32;
+                    if (m_master_time_offset_us == 0) {
+                        m_master_time_offset_us = instant_offset;
+                    } else {
+                        m_master_time_offset_us = (m_master_time_offset_us * 95 + instant_offset * 5) / 100;
+                    }
+                    m_time_offset_ring_buffer.push(static_cast<float>(instant_offset) / 1000.0f);
+                    m_last_sync_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
+
+                    // Sequence gap / Packet loss check
+                    if (m_has_last_rx_seq) {
+                        uint8_t expected_seq = (m_last_rx_seq + 1) & 0xFF;
+                        if (seq != expected_seq) {
+                            uint8_t gap = (seq - expected_seq) & 0xFF;
+                            if (gap < 10) {
+                                for (uint8_t g = 0; g < gap; g++) {
+                                    size_t plc_samples = 0;
+                                    m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &plc_samples,
+                                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
+                                    if (m_i2s_dac && plc_samples > 0) {
+                                        size_t plc_bytes = format_stereo(decoded_pcm, plc_samples);
+                                        m_i2s_dac->write(stereo_pcm, plc_bytes, &bytes_written, 15);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    m_last_rx_seq = seq;
+                    m_has_last_rx_seq = true;
+
+                    // Decode frame
+                    int64_t dec_start = esp_timer_get_time();
+                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
+                                            m_telemetry.sample_rate, m_telemetry.frame_duration_us);
+                    int64_t dec_end = esp_timer_get_time();
+                    m_codec_duration_ring_buffer.push(static_cast<uint32_t>(dec_end - dec_start));
+
+                    m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
+
+                    if (m_i2s_dac && actual_samples > 0) {
+                        size_t stereo_bytes = format_stereo(decoded_pcm, actual_samples);
+                        m_i2s_dac->write(stereo_pcm, stereo_bytes, &bytes_written, 15);
+                    }
+                } else {
+                    // Packet Loss Concealment (PLC)
+                    consecutive_empty_frames++;
+                    if (consecutive_empty_frames >= m_watchdog_timeout_frames) {
+                        ESP_LOGW(TAG, "Watchdog timeout (%lu missing frames) -> SCANNING", (unsigned long)consecutive_empty_frames);
+                        transitionTo(NetworkState::SCANNING);
+                        clear_rx_fifo();
+                        if (m_i2s_dac) m_i2s_dac->stop();
+                    } else {
+                        size_t plc_samples = 0;
+                        m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &plc_samples,
+                                                m_telemetry.sample_rate, m_telemetry.frame_duration_us);
+                        if (m_i2s_dac && plc_samples > 0) {
+                            size_t plc_bytes = format_stereo(decoded_pcm, plc_samples);
+                            m_i2s_dac->write(stereo_pcm, plc_bytes, &bytes_written, 15);
+                        }
+                    }
+                }
+                break;
+            }
+
+            default:
+                vTaskDelay(pdMS_TO_TICKS(10));
+                break;
+        }
+    }
+}
+
+} // namespace AudioNet

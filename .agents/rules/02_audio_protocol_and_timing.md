@@ -11,9 +11,9 @@ trigger: always_on
 2. **Buffer and Packet Sizing**:
    - Max LC3 frame octets: 120 bytes. 
    - Max PCM samples per frame: 480 samples (10 ms @ 48 kHz).
-   - Ring buffers for I2S DMA must maintain at least 4x frame duration headroom (e.g., 40 ms buffer) with prefill threshold set to 5 frames (50 ms).
+   - I2S DMA must contain exactly two descriptors to minimize total audio latency.
+   - A LC3 FIFO between 802.11 RX and audio decode should absorb most of the temporal buffer.
 
 3. **Packet Loss Concealment (PLC)**:
    - SINK nodes must track missing sequence numbers.
-   - If frame N is missing but frame N-1 payload is present in packet N+1, decode the redundant frame.
-   - If both are missing, invoke `lc3_decode(..., NULL, pcm_out)` for standard PLC interpolation.
+   - If LC3 packets are missing, invoke `lc3_decode(..., NULL, pcm_out)` for standard PLC interpolation.

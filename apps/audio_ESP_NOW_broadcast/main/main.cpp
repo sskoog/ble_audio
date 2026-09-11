@@ -237,6 +237,55 @@ static void handle_ascii_command(const char* raw_line) {
             s_espnow_broadcast->triggerSimulatedPacketDrop();
             print_console("[OK] Simulated Packet Drop triggered for next frame\n");
         }
+    } else if (strncasecmp(line, "phy ", 4) == 0) {
+        const char* p = line + 4;
+        while (*p == ' ') p++;
+        wifi_phy_mode_t mode = WIFI_PHY_MODE_11G;
+        wifi_phy_rate_t rate = WIFI_PHY_RATE_12M;
+        const char* rate_name = "12 Mbps (OFDM)";
+        bool valid = true;
+
+        if (strcasecmp(p, "5.5m") == 0 || strcasecmp(p, "5.5") == 0 || strcasecmp(p, "5m") == 0) {
+            mode = WIFI_PHY_MODE_11B; rate = WIFI_PHY_RATE_5M_S; rate_name = "5.5 Mbps (802.11b CCK Short Preamble)";
+        } else if (strcasecmp(p, "6m") == 0 || strcasecmp(p, "6") == 0) {
+            mode = WIFI_PHY_MODE_11G; rate = WIFI_PHY_RATE_6M; rate_name = "6.0 Mbps (802.11g OFDM)";
+        } else if (strcasecmp(p, "6.5m") == 0 || strcasecmp(p, "6.5") == 0 || strcasecmp(p, "mc0") == 0 || strcasecmp(p, "mcs0") == 0) {
+            mode = WIFI_PHY_MODE_HT20; rate = WIFI_PHY_RATE_MCS0_LGI; rate_name = "6.5 Mbps (802.11n HT20 MCS0 LGI)";
+        } else if (strcasecmp(p, "7.2m") == 0 || strcasecmp(p, "7.2") == 0 || strcasecmp(p, "mc0s") == 0 || strcasecmp(p, "mcs0_sgi") == 0) {
+            mode = WIFI_PHY_MODE_HT20; rate = WIFI_PHY_RATE_MCS0_SGI; rate_name = "7.2 Mbps (802.11n HT20 MCS0 SGI)";
+        } else if (strcasecmp(p, "9m") == 0 || strcasecmp(p, "9") == 0) {
+            mode = WIFI_PHY_MODE_11G; rate = WIFI_PHY_RATE_9M; rate_name = "9.0 Mbps (802.11g OFDM)";
+        } else if (strcasecmp(p, "11m") == 0 || strcasecmp(p, "11") == 0) {
+            mode = WIFI_PHY_MODE_11B; rate = WIFI_PHY_RATE_11M_S; rate_name = "11.0 Mbps (802.11b CCK Short Preamble)";
+        } else if (strcasecmp(p, "12m") == 0 || strcasecmp(p, "12") == 0) {
+            mode = WIFI_PHY_MODE_11G; rate = WIFI_PHY_RATE_12M; rate_name = "12.0 Mbps (802.11g OFDM)";
+        } else if (strcasecmp(p, "13m") == 0 || strcasecmp(p, "13") == 0 || strcasecmp(p, "mc1") == 0 || strcasecmp(p, "mcs1") == 0) {
+            mode = WIFI_PHY_MODE_HT20; rate = WIFI_PHY_RATE_MCS1_LGI; rate_name = "13.0 Mbps (802.11n HT20 MCS1 LGI)";
+        } else if (strcasecmp(p, "14.4m") == 0 || strcasecmp(p, "14.4") == 0 || strcasecmp(p, "mc1s") == 0 || strcasecmp(p, "mcs1_sgi") == 0) {
+            mode = WIFI_PHY_MODE_HT20; rate = WIFI_PHY_RATE_MCS1_SGI; rate_name = "14.4 Mbps (802.11n HT20 MCS1 SGI)";
+        } else if (strcasecmp(p, "18m") == 0 || strcasecmp(p, "18") == 0) {
+            mode = WIFI_PHY_MODE_11G; rate = WIFI_PHY_RATE_18M; rate_name = "18.0 Mbps (802.11g OFDM)";
+        } else if (strcasecmp(p, "19.5m") == 0 || strcasecmp(p, "19.5") == 0 || strcasecmp(p, "mc2") == 0 || strcasecmp(p, "mcs2") == 0) {
+            mode = WIFI_PHY_MODE_HT20; rate = WIFI_PHY_RATE_MCS2_LGI; rate_name = "19.5 Mbps (802.11n HT20 MCS2 LGI)";
+        } else if (strcasecmp(p, "21.7m") == 0 || strcasecmp(p, "21.7") == 0 || strcasecmp(p, "mc2s") == 0 || strcasecmp(p, "mcs2_sgi") == 0) {
+            mode = WIFI_PHY_MODE_HT20; rate = WIFI_PHY_RATE_MCS2_SGI; rate_name = "21.7 Mbps (802.11n HT20 MCS2 SGI)";
+        } else if (strcasecmp(p, "24m") == 0 || strcasecmp(p, "24") == 0) {
+            mode = WIFI_PHY_MODE_11G; rate = WIFI_PHY_RATE_24M; rate_name = "24.0 Mbps (802.11g OFDM)";
+        } else {
+            valid = false;
+            print_console("[ERROR] Invalid PHY rate '%s'. Supported (5-25 Mbps): 5.5m, 6m, mc0 (6.5m), 7.2m, 9m, 11m, 12m, mc1 (13m), 14.4m, 18m, mc2 (19.5m), 21.7m, 24m\n", p);
+            ESP_LOGE(TAG, "Invalid PHY rate: %s", p);
+        }
+
+        if (valid && s_espnow_broadcast) {
+            esp_err_t err = s_espnow_broadcast->setWifiPhyRate(mode, rate);
+            if (err == ESP_OK) {
+                print_console("[OK] Wi-Fi & ESP-NOW PHY Rate set to %s\n", rate_name);
+                ESP_LOGW(TAG, "Wi-Fi & ESP-NOW PHY Rate set to: %s", rate_name);
+            } else {
+                print_console("[ERROR] Failed to set PHY rate: %s\n", esp_err_to_name(err));
+            }
+        }
     } else if (strcasecmp(line, "reset") == 0 || strcasecmp(line, "clear") == 0) {
         if (s_espnow_broadcast) {
             s_espnow_broadcast->resetErrorCounters();
@@ -352,9 +401,9 @@ static void console_task_routine(void* pvParameters) {
         }
 
         // Fast parse dynamic VSAF packets or ASCII CLI commands
-        while (ring_len >= 8) {
+        while (ring_len > 0) {
             // Check for VSAF Magic (0x1337 -> 0x37, 0x13 in little-endian)
-            if (ring_buf[0] == 0x37 && ring_buf[1] == 0x13) {
+            if (ring_len >= 2 && ring_buf[0] == 0x37 && ring_buf[1] == 0x13) {
                 size_t octets = (s_espnow_broadcast ? s_espnow_broadcast->getFrameLen() : 120);
                 size_t pkt_len = AudioNet::VSAF_HEADER_LEN + 2 * octets;
 

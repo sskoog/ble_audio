@@ -253,6 +253,27 @@ esp_err_t EspNowAudioBroadcast::setFrameDuration(uint32_t frame_duration_us) {
     return setAudioConfig(m_telemetry.sample_rate, 120, frame_duration_us);
 }
 
+esp_err_t EspNowAudioBroadcast::setWifiPhyRate(wifi_phy_mode_t phymode, wifi_phy_rate_t rate) {
+    m_tx_phy_mode = phymode;
+    m_tx_phy_rate = rate;
+    if (m_wifi_initialized) {
+        esp_now_rate_config_t rate_cfg = {
+            .phymode = phymode,
+            .rate = rate,
+            .ersu = false,
+            .dcm = false
+        };
+        esp_err_t err = esp_now_set_peer_rate_config(s_broadcast_mac, &rate_cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_now_set_peer_rate_config failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        esp_wifi_config_80211_tx_rate(WIFI_IF_STA, rate);
+        ESP_LOGI(TAG, "Wi-Fi & ESP-NOW PHY Rate configured: mode=%d, rate=%d", (int)phymode, (int)rate);
+    }
+    return ESP_OK;
+}
+
 void EspNowAudioBroadcast::processUsbVsafPacket(const uint8_t* data, size_t len) {
     if (m_node_role != NODE_ROLE_SOURCE) return;
     if (!data || len < (VSAF_HEADER_LEN + 40)) return;
@@ -328,7 +349,7 @@ esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     esp_wifi_config_11b_rate(WIFI_IF_STA, false); // Disable 11b 1Mbps slow rates
-    esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_12M);
+    esp_wifi_config_80211_tx_rate(WIFI_IF_STA, m_tx_phy_rate);
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(36)); // +9.00 dBm (36 * 0.25 dBm) for power efficiency and thermal control
     int8_t actual_tx_power = 0;
@@ -354,8 +375,8 @@ esp_err_t EspNowAudioBroadcast::enableWifiEspNow() {
     esp_now_add_peer(&bcast_peer);
 
     esp_now_rate_config_t rate_cfg = {
-        .phymode = WIFI_PHY_MODE_11G,
-        .rate = WIFI_PHY_RATE_12M,
+        .phymode = m_tx_phy_mode,
+        .rate = m_tx_phy_rate,
         .ersu = false,
         .dcm = false
     };
@@ -1032,13 +1053,12 @@ const char* EspNowAudioBroadcast::getActiveCodecName() const {
 }
 
 const char* EspNowAudioBroadcast::getWifiPhyRateString() const {
-    if (m_node_role == NODE_ROLE_SOURCE) {
-        return "24M";
-    }
-    if (m_state == NetworkState::OFF || m_state == NetworkState::IDLE) {
+    uint8_t rate = (m_node_role == NODE_ROLE_SOURCE)
+                   ? static_cast<uint8_t>(m_tx_phy_rate)
+                   : m_last_rx_rate.load(std::memory_order_relaxed);
+    if (m_node_role != NODE_ROLE_SOURCE && (m_state == NetworkState::OFF || m_state == NetworkState::IDLE)) {
         return " - ";
     }
-    uint8_t rate = m_last_rx_rate.load(std::memory_order_relaxed);
     switch (rate) {
         case WIFI_PHY_RATE_1M_L:   return " 1M";
         case WIFI_PHY_RATE_2M_L:   
