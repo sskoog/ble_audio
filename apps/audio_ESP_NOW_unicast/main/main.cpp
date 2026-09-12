@@ -10,6 +10,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 #include "esp_idf_version.h"
 #include "esp_mac.h"
 #include "nvs_flash.h"
@@ -478,6 +479,17 @@ extern "C" void app_main(void) {
 #endif
 
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    // 0. Configure Task Watchdog Timer (TWDT) to 1.0 second (1000 ms)
+    esp_task_wdt_config_t twdt_config = {
+        .timeout_ms = 1000,
+        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+        .trigger_panic = true,
+    };
+    if (esp_task_wdt_reconfigure(&twdt_config) != ESP_OK) {
+        esp_task_wdt_init(&twdt_config);
+    }
+    ESP_LOGI(TAG, "Task Watchdog Timer (TWDT) configured: 1.0s timeout (panic on failure).");
 
     ESP_LOGI(TAG, "==================================================");
     ESP_LOGI(TAG, "   ESP-NOW MULTI-UNICAST AUDIO STREAMING ENGINE   ");
