@@ -5,15 +5,15 @@ PC Real-Time LC3 Audio Streamer for audioESP-NOW Unicast Multi-Speaker Network
 ========================================================================================
 Encodes and streams LC3 audio packets directly from the host PC over USB-Serial JTAG to
 Node 16 (ESP32-S3 SOURCE in 'PC STRM' mode), which forwards:
-  - Channel 0 (Left @ 48 kHz LC3, 120B) -> Node 23 (ESP32-C6 Left SINK)
-  - Channel 5 (Subwoofer @ 8 kHz LC3, 80B via 200 Hz 4th-order LR-LP) -> Node 24 (ESP32-C6 Sub SINK)
+  - Channel 0: Left Channel @ 48 kHz LC3 (120B) -> Node 23 (ESP32-C6 Left Speaker)
+  - Channel 1: Right Channel @ 48 kHz LC3 (120B) -> Node 24 (ESP32-C6 Right Speaker)
 
 Audio Source Modes:
   1. 'wasapi' / 'cable' / 'device': Live capture of Windows PC audio (Spotify, YouTube, Games, VLC).
   2. 'loopback': Direct loopback capture of Windows default speaker output.
   3. 'mp3': MP3 playlist player from data/mp3 folder.
-  4. 'bass-test': Subwoofer crossover validation signal (50 Hz deep bass + 1 kHz melody).
-  5. 'synth' / 'lfo': 0.2 Hz LFO dual-channel sine sweep (220-880 Hz Left, 440-1760 Hz Right).
+  4. 'synth' / 'lfo': 0.2 Hz LFO dual-channel sine sweep (220-880 Hz Left, 440-1760 Hz Right).
+  5. 'stereo-test': 440 Hz Left, 880 Hz Right distinct test tones.
 """
 
 import sys
@@ -27,7 +27,6 @@ import threading
 import random
 import subprocess
 import numpy as np
-import scipy.signal
 
 # Add bumble app path for liblc3 wrapper
 BUMBLE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "usb_ble_bumble"))
@@ -70,13 +69,9 @@ except ImportError:
 
 VSAF_MAGIC = 0x1337
 SAMPLE_RATE_48K = 48000
-SAMPLE_RATE_8K = 8000
 FRAME_DURATION_US = 10000 # 10.0 ms
 SAMPLES_48K = 480
-SAMPLES_8K = 80
-OCTETS_LEFT_48K = 120
-OCTETS_SUB_8K = 80
-SUB_LP_CUTOFF_HZ = 200.0
+OCTETS_PER_FRAME_48K = 120 # 120 octets = 96 kbps per channel
 
 
 def auto_detect_source_port() -> str:
@@ -156,16 +151,8 @@ class PcUnicastStreamer:
         # Google liblc3 Encoders:
         # Left Encoder: 48 kHz, 10.0 ms frame duration (480 samples -> 120 octets)
         self.enc_left = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_48K)
-        # Subwoofer Encoder: 8 kHz, 10.0 ms frame duration (80 samples -> 80 octets)
-        self.enc_sub = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_8K)
-
-        # 4th-Order Linkwitz-Riley Lowpass Filter @ 200 Hz for Subwoofer
-        nyq = 0.5 * SAMPLE_RATE_48K
-        b_sub, a_sub = scipy.signal.butter(2, SUB_LP_CUTOFF_HZ / nyq, btype='low')
-        self.sub_b = b_sub
-        self.sub_a = a_sub
-        self.sub_zi1 = scipy.signal.lfilter_zi(b_sub, a_sub)
-        self.sub_zi2 = scipy.signal.lfilter_zi(b_sub, a_sub)
+        # Right Encoder: 48 kHz, 10.0 ms frame duration (480 samples -> 120 octets)
+        self.enc_right = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_48K)
 
         # MP3 Player state
         self.mp3_proc = None
@@ -175,8 +162,8 @@ class PcUnicastStreamer:
         self.lfo_phase = 0.0
         self.carrier_phase_l = 0.0
         self.carrier_phase_r = 0.0
-        self.bass_phase = 0.0
-        self.lead_phase = 0.0
+        self.stereo_phase_l = 0.0
+        self.stereo_phase_r = 0.0
 
     def open_serial(self):
         print(f"Connecting to SOURCE Dongle on {self.port} at {self.baud} baud...", flush=True)
@@ -228,7 +215,7 @@ class PcUnicastStreamer:
                 extra_settings=extra_settings
             )
             self.audio_stream.start()
-            print("Live audio capture active @ 48000 Hz / 100 fps.", flush=True)
+            print("Live audio capture active @ 48000 Hz Stereo / 100 fps.", flush=True)
 
         elif self.source_type == "mp3":
             self._init_mp3_player()
@@ -297,22 +284,18 @@ class PcUnicastStreamer:
         pcm_r = (np.sin(phase_r) * 0.6 * 32767.0).astype(np.int16)
         return np.column_stack([pcm_l, pcm_r])
 
-    def generate_bass_test_frame(self) -> np.ndarray:
-        """Generates 50 Hz deep bass on both channels + 1 kHz melody on Left."""
+    def generate_stereo_test_frame(self) -> np.ndarray:
+        """Generates 440 Hz on Left and 880 Hz on Right."""
         t = np.arange(SAMPLES_48K) / SAMPLE_RATE_48K
         dt = SAMPLES_48K / SAMPLE_RATE_48K
 
-        phase_bass = self.bass_phase + 2.0 * np.pi * 50.0 * t
-        self.bass_phase = (self.bass_phase + 2.0 * np.pi * 50.0 * dt) % (2.0 * np.pi)
+        phase_l = self.stereo_phase_l + 2.0 * np.pi * 440.0 * t
+        phase_r = self.stereo_phase_r + 2.0 * np.pi * 880.0 * t
+        self.stereo_phase_l = (self.stereo_phase_l + 2.0 * np.pi * 440.0 * dt) % (2.0 * np.pi)
+        self.stereo_phase_r = (self.stereo_phase_r + 2.0 * np.pi * 880.0 * dt) % (2.0 * np.pi)
 
-        phase_lead = self.lead_phase + 2.0 * np.pi * 1000.0 * t
-        self.lead_phase = (self.lead_phase + 2.0 * np.pi * 1000.0 * dt) % (2.0 * np.pi)
-
-        bass_sig = np.sin(phase_bass) * 0.5 * 32767.0
-        lead_sig = np.sin(phase_lead) * 0.3 * 32767.0
-
-        pcm_l = np.clip(bass_sig + lead_sig, -32768, 32767).astype(np.int16)
-        pcm_r = np.clip(bass_sig, -32768, 32767).astype(np.int16)
+        pcm_l = (np.sin(phase_l) * 0.6 * 32767.0).astype(np.int16)
+        pcm_r = (np.sin(phase_r) * 0.6 * 32767.0).astype(np.int16)
         return np.column_stack([pcm_l, pcm_r])
 
     def get_mp3_frame(self) -> np.ndarray:
@@ -339,13 +322,13 @@ class PcUnicastStreamer:
         self.is_running = True
 
         print("\n" + "=" * 90)
-        print("  HOST PC REAL-TIME LC3 UNICAST STREAMER -> NODE 16 (ESP32-S3 SOURCE)")
+        print("  HOST PC REAL-TIME LC3 STEREO UNICAST STREAMER -> NODE 16 (ESP32-S3 SOURCE)")
         print("  Routing:")
-        print("    - Channel 0: Left Channel @ 48 kHz LC3 (120B) -> Node 23 (Left Speaker)")
-        print("    - Channel 5: Subwoofer (200Hz LR4-LP) @ 8 kHz LC3 (80B) -> Node 24 (Subwoofer)")
+        print("    - Channel 0: Left Channel @ 48 kHz LC3 (120B)  -> Node 23 (Left Speaker)")
+        print("    - Channel 1: Right Channel @ 48 kHz LC3 (120B) -> Node 24 (Right Speaker)")
         print("=" * 90)
-        print("|  TIME   | FRAME |  TX RATE  | BITRATE   |           VU METERS (Left / Right / Sub)          |")
-        print("|---------+-------+-----------+-----------+---------------------------------------------------|")
+        print("|  TIME   | FRAME |  TX RATE  | BITRATE   |           VU METERS (Left / Right)            |")
+        print("|---------+-------+-----------+-----------+-----------------------------------------------|")
 
         seq = 0
         total_frames = 0
@@ -383,13 +366,13 @@ class PcUnicastStreamer:
                             pass
                     next_tick_ns += step_ns
                     pcm_frame = self.get_mp3_frame()
-                elif self.source_type == "bass-test":
+                elif self.source_type == "stereo-test":
                     now_ns = time.perf_counter_ns()
                     if now_ns < next_tick_ns:
                         while time.perf_counter_ns() < next_tick_ns:
                             pass
                     next_tick_ns += step_ns
-                    pcm_frame = self.generate_bass_test_frame()
+                    pcm_frame = self.generate_stereo_test_frame()
                 else: # synth / lfo
                     now_ns = time.perf_counter_ns()
                     if now_ns < next_tick_ns:
@@ -404,32 +387,23 @@ class PcUnicastStreamer:
 
                 # 2. Encode Left Channel (48 kHz LC3 -> 120 octets)
                 pcm_left = np.ascontiguousarray(pcm_frame[:, 0], dtype=np.int16)
-                lc3_left = self.enc_left.encode(pcm_left, OCTETS_LEFT_48K)
+                lc3_left = self.enc_left.encode(pcm_left, OCTETS_PER_FRAME_48K)
 
-                # 3. Subwoofer DSP & 8 kHz LC3 Encoding (80 octets)
-                sub_mono_f = (pcm_frame[:, 0].astype(np.float32) + pcm_frame[:, 1].astype(np.float32)) * 0.5
-                sub_filt1, self.sub_zi1 = scipy.signal.lfilter(self.sub_b, self.sub_a, sub_mono_f, zi=self.sub_zi1)
-                sub_filt2, self.sub_zi2 = scipy.signal.lfilter(self.sub_b, self.sub_a, sub_filt1, zi=self.sub_zi2)
-                # Decimate 48 kHz (480 samples) -> 8 kHz (80 samples)
-                sub_8k_pcm = scipy.signal.resample_poly(sub_filt2, 1, 6).astype(np.int16)
-                if len(sub_8k_pcm) < SAMPLES_8K:
-                    sub_8k_pcm = np.pad(sub_8k_pcm, (0, SAMPLES_8K - len(sub_8k_pcm)))
-                elif len(sub_8k_pcm) > SAMPLES_8K:
-                    sub_8k_pcm = sub_8k_pcm[:SAMPLES_8K]
-                sub_8k_pcm = np.ascontiguousarray(sub_8k_pcm, dtype=np.int16)
-                lc3_sub = self.enc_sub.encode(sub_8k_pcm, OCTETS_SUB_8K)
+                # 3. Encode Right Channel (48 kHz LC3 -> 120 octets)
+                pcm_right = np.ascontiguousarray(pcm_frame[:, 1], dtype=np.int16)
+                lc3_right = self.enc_right.encode(pcm_right, OCTETS_PER_FRAME_48K)
 
                 # 4. Assemble VSAF LC3 Packets:
                 # Header format (10B): Magic(uint16), Seq(uint8), Channel(uint8), Octets(uint8), Flags(uint8), PTS(uint32)
-                # flags: Bit 0..2: SR code (4 for 48k, 0 for 8k), Bit 3: Dur (0 for 10ms)
-                hdr_left = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 0, OCTETS_LEFT_48K, 4, pts_us)
-                pkt_left = hdr_left + lc3_left
+                # flags: Bit 0..2: SR code (4 for 48k), Bit 3: Dur (0 for 10ms)
+                hdr_left  = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 0, OCTETS_PER_FRAME_48K, 4, pts_us)
+                pkt_left  = hdr_left + lc3_left
 
-                hdr_sub  = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 5, OCTETS_SUB_8K, 0, pts_us)
-                pkt_sub  = hdr_sub + lc3_sub
+                hdr_right = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 1, OCTETS_PER_FRAME_48K, 4, pts_us)
+                pkt_right = hdr_right + lc3_right
 
-                # 5. Transmit both packets in one atomic USB batch (220 bytes total)
-                batch = pkt_left + pkt_sub
+                # 5. Transmit both packets in one atomic USB batch (260 bytes total)
+                batch = pkt_left + pkt_right
                 self.serial_conn.write(batch)
 
                 total_frames += 1
@@ -451,23 +425,19 @@ class PcUnicastStreamer:
                     rms1 = np.sqrt(np.mean(ch1 ** 2))
                     rms1_db = 20 * math.log10(rms1) if rms1 > 1e-5 else -99.9
 
-                    sub_rms = np.sqrt(np.mean((sub_filt2 / 32768.0) ** 2))
-                    rms_sub_db = 20 * math.log10(sub_rms) if sub_rms > 1e-5 else -99.9
-
                     elapsed = now - start_time
                     m, s = divmod(int(elapsed), 60)
                     time_str = f"{m:02d}:{s:02d}.{int((elapsed % 1) * 10)}"
 
-                    def vu_meter(val_db, width=6):
+                    def vu_meter(val_db, width=8):
                         if val_db < -60: return "." * width
                         frac = max(0.0, min(1.0, (val_db + 60.0) / 60.0))
                         bars = int(round(frac * width))
                         return "#" * bars + "." * (width - bars)
 
                     print(f"| {time_str:<8} | {total_frames:>5} | {fps_real:>6.1f}/s  | {kbps_real:>6.0f} kbps | "
-                          f"[{vu_meter(rms0_db)}] {rms0_db:>5.1f}dB  "
-                          f"[{vu_meter(rms1_db)}] {rms1_db:>5.1f}dB  "
-                          f"[{vu_meter(rms_sub_db)}] {rms_sub_db:>5.1f}dB |", flush=True)
+                          f"[{vu_meter(rms0_db)}] {rms0_db:>5.1f}dB   "
+                          f"[{vu_meter(rms1_db)}] {rms1_db:>5.1f}dB |", flush=True)
 
                     frames_since_stat = 0
                     last_stat_time = now
@@ -505,10 +475,10 @@ def list_devices():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PC Real-Time LC3 Audio Streamer for audioESP-NOW Unicast")
+    parser = argparse.ArgumentParser(description="PC Real-Time LC3 Stereo Audio Streamer for audioESP-NOW Unicast")
     parser.add_argument("--port", type=str, default="COM16", help="Target Dongle Port (default: COM16 or 'auto')")
     parser.add_argument("--baud", type=int, default=2000000, help="Serial Baud Rate (default: 2000000)")
-    parser.add_argument("--source", type=str, default="wasapi", choices=["wasapi", "cable", "device", "loopback", "mp3", "bass-test", "synth"],
+    parser.add_argument("--source", type=str, default="wasapi", choices=["wasapi", "cable", "device", "loopback", "mp3", "stereo-test", "synth"],
                         help="Audio Source Mode (default: wasapi)")
     parser.add_argument("--device", type=str, default="CABLE Output", help="Audio device query name for WASAPI/Cable capture")
     parser.add_argument("--list-devices", action="store_true", help="List all available audio input/output devices and exit")

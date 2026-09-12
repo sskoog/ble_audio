@@ -527,7 +527,7 @@ extern "C" void app_main(void) {
         if (base_mac[5] == 0x44 || base_mac[4] == 0x38) {
             s_unicast_engine->setTargetChannel(0); // Left speaker (Node 23)
         } else if (base_mac[5] == 0xE4 || base_mac[4] == 0x18) {
-            s_unicast_engine->setTargetChannel(5); // Subwoofer speaker (Node 24)
+            s_unicast_engine->setTargetChannel(1); // Right speaker (Node 24)
         } else {
             s_unicast_engine->setTargetChannel(0);
         }

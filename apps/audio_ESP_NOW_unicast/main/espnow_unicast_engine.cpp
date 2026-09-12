@@ -210,6 +210,10 @@ esp_err_t EspNowUnicastEngine::init(uint8_t role, uint8_t node_id, uint8_t wifi_
     if (m_tone_gen) m_tone_gen->init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 440.0f, 110.0f, 440.0f, 100.0f);
     m_tone_gen_r.init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 880.0f, 220.0f, 880.0f, 100.0f);
 
+    float init_vol_db = volume_u8_to_db(m_target_volume_u8.load());
+    m_current_gain_db = init_vol_db;
+    m_current_linear_gain = db_to_linear(init_vol_db);
+
     if (m_node_role == NODE_ROLE_SOURCE) {
         m_lc3_codec.initEncoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
         m_lc3_codec_r.initEncoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
@@ -229,7 +233,7 @@ esp_err_t EspNowUnicastEngine::init(uint8_t role, uint8_t node_id, uint8_t wifi_
         const uint8_t right_mac[6] = {0xB0, 0xA6, 0x04, 0x99, 0x18, 0xE4}; // Node 24
 
         addPeer(left_mac, 0, "Sink-Left");
-        addPeer(right_mac, 5, "Sink-Sub");
+        addPeer(right_mac, 1, "Sink-Right");
     }
 
     // Initialize Wi-Fi
@@ -1133,14 +1137,25 @@ void EspNowUnicastEngine::runSinkLoop() {
     int64_t last_hello_send_time_us = 0;
     uint8_t hello_seq = 0;
 
-    auto apply_volume_and_format_stereo = [&](int16_t* src, size_t count) -> size_t {
-        // 1. Slew Rate Limiter (96 dB/s in dB domain)
+    auto apply_volume_and_format_stereo = [&](int16_t* src, size_t count, bool is_first_frame = false) -> size_t {
         uint8_t target_u8 = m_target_volume_u8.load(std::memory_order_relaxed);
         float target_db = volume_u8_to_db(target_u8);
+        float target_linear = db_to_linear(target_db);
 
-        if (m_instant_volume_requested.exchange(false, std::memory_order_relaxed)) {
+        float start_linear;
+        float end_linear;
+
+        if (is_first_frame) {
+            // Smooth 10 ms soft-fade-in on the very first frame to eliminate any DAC startup click/pop/blast
+            start_linear = 0.0f;
+            end_linear = target_linear;
             m_current_gain_db = target_db;
-            m_current_linear_gain = db_to_linear(target_db);
+            m_current_linear_gain = target_linear;
+        } else if (m_instant_volume_requested.exchange(false, std::memory_order_relaxed)) {
+            m_current_gain_db = target_db;
+            m_current_linear_gain = target_linear;
+            start_linear = target_linear;
+            end_linear = target_linear;
         } else {
             float frame_sec = static_cast<float>(m_frame_duration_us) / 1000000.0f;
             float max_step_db = CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC * frame_sec; // 0.96 dB per 10ms
@@ -1151,30 +1166,22 @@ void EspNowUnicastEngine::runSinkLoop() {
                 m_current_gain_db -= max_step_db;
                 if (m_current_gain_db < target_db) m_current_gain_db = target_db;
             }
+            start_linear = m_current_linear_gain;
+            end_linear = db_to_linear(m_current_gain_db);
+            m_current_linear_gain = end_linear;
         }
 
-        float start_linear = m_current_linear_gain;
-        float end_linear = db_to_linear(m_current_gain_db);
-        m_current_linear_gain = end_linear;
-
-        // 2. Per-sample linear interpolation to eliminate zipper noise
-        if (start_linear < 0.9999f || end_linear < 0.9999f || start_linear > 1.0001f || end_linear > 1.0001f) {
-            float gain_step = (count > 1) ? ((end_linear - start_linear) / static_cast<float>(count)) : 0.0f;
-            float g = start_linear;
-            for (size_t i = 0; i < count; ++i) {
-                float s = static_cast<float>(src[i]) * g;
-                if (s > 32767.0f) s = 32767.0f;
-                else if (s < -32768.0f) s = -32768.0f;
-                int16_t sample_val = static_cast<int16_t>(s);
-                stereo_pcm[2 * i]     = sample_val;
-                stereo_pcm[2 * i + 1] = sample_val;
-                g += gain_step;
-            }
-        } else {
-            for (size_t i = 0; i < count; ++i) {
-                stereo_pcm[2 * i]     = src[i];
-                stereo_pcm[2 * i + 1] = src[i];
-            }
+        // Per-sample linear interpolation to eliminate zipper noise and pop
+        float gain_step = (count > 1) ? ((end_linear - start_linear) / static_cast<float>(count)) : 0.0f;
+        float g = start_linear;
+        for (size_t i = 0; i < count; ++i) {
+            float s = static_cast<float>(src[i]) * g;
+            if (s > 32767.0f) s = 32767.0f;
+            else if (s < -32768.0f) s = -32768.0f;
+            int16_t sample_val = static_cast<int16_t>(s);
+            stereo_pcm[2 * i]     = sample_val;
+            stereo_pcm[2 * i + 1] = sample_val;
+            g += gain_step;
         }
         return count * 2 * sizeof(int16_t);
     };
@@ -1237,7 +1244,7 @@ void EspNowUnicastEngine::runSinkLoop() {
 
                     m_audio_meter.pushFramePcm(decoded_pcm_raw, actual_samples);
                     if (m_i2s_dac && actual_samples > 0) {
-                        size_t stereo_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples);
+                        size_t stereo_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples, true);
                         m_i2s_dac->preload(stereo_pcm, stereo_bytes, &bytes_written);
                     }
                     m_last_rx_seq = seq;
@@ -1257,7 +1264,7 @@ void EspNowUnicastEngine::runSinkLoop() {
 
                     m_audio_meter.pushFramePcm(decoded_pcm_raw, actual_samples);
                     if (m_i2s_dac && actual_samples > 0) {
-                        size_t stereo_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples);
+                        size_t stereo_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples, true);
                         m_i2s_dac->preload(stereo_pcm, stereo_bytes, &bytes_written);
                     }
                     m_last_rx_seq = seq;

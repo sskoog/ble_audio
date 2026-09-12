@@ -410,8 +410,8 @@ private:
     // SINK Volume & Slew Limiter State
     std::atomic<uint8_t>       m_target_volume_u8{CONFIG_VOLUME_DEFAULT_U8};
     std::atomic<bool>          m_instant_volume_requested{false};
-    float                      m_current_gain_db = 0.0f;
-    float                      m_current_linear_gain = 1.0f;
+    float                      m_current_gain_db = -18.4f;
+    float                      m_current_linear_gain = 0.1202f;
 
     bool                       m_wifi_initialized = false;
     bool                       m_audio_task_running = false;
