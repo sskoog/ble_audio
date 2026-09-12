@@ -10,9 +10,10 @@ Node 16 (ESP32-S3 SOURCE in 'PC STRM' mode), which forwards:
 
 Audio Source Modes:
   1. 'wasapi' / 'cable' / 'device': Live capture of Windows PC audio (Spotify, YouTube, Games, VLC).
-  2. 'mp3': MP3 playlist player from data/mp3 folder.
-  3. 'bass-test': Subwoofer crossover validation signal (50 Hz deep bass + 1 kHz melody).
-  4. 'synth' / 'lfo': 0.2 Hz LFO dual-channel sine sweep (220-880 Hz Left, 440-1760 Hz Right).
+  2. 'loopback': Direct loopback capture of Windows default speaker output.
+  3. 'mp3': MP3 playlist player from data/mp3 folder.
+  4. 'bass-test': Subwoofer crossover validation signal (50 Hz deep bass + 1 kHz melody).
+  5. 'synth' / 'lfo': 0.2 Hz LFO dual-channel sine sweep (220-880 Hz Left, 440-1760 Hz Right).
 """
 
 import sys
@@ -36,7 +37,6 @@ if BUMBLE_DIR not in sys.path:
 try:
     import lc3_encoder
 except ImportError:
-    # Try local directory or relative paths
     alt_dirs = [
         r"C:\Git_ble_audio\apps\usb_ble_bumble",
         os.path.join(os.path.dirname(__file__), "..", "..", "apps", "usb_ble_bumble")
@@ -93,11 +93,30 @@ def auto_detect_source_port() -> str:
 
 
 def find_audio_device(name_query: str = "cable output", prefer_input: bool = True):
-    """Discovers audio device index matching name query."""
+    """
+    Discovers audio device index matching name query, prioritizing WASAPI (Host API 2).
+    """
     devices = sd.query_devices()
-    query = name_query.lower()
-    
-    # 1. Look for matching input device
+    query = (name_query or "cable").lower()
+
+    # If query is an explicit integer ID
+    try:
+        dev_id = int(name_query)
+        if 0 <= dev_id < len(devices):
+            return dev_id, devices[dev_id]
+    except (ValueError, TypeError):
+        pass
+
+    # 1. Look for matching WASAPI (hostapi 2) device
+    for idx, d in enumerate(devices):
+        dname = d['name'].lower()
+        if d.get('hostapi') == 2 and query in dname:
+            if prefer_input and d['max_input_channels'] > 0:
+                return idx, d
+            elif not prefer_input and d['max_output_channels'] > 0:
+                return idx, d
+
+    # 2. Look for any matching device
     for idx, d in enumerate(devices):
         dname = d['name'].lower()
         if query in dname:
@@ -106,7 +125,7 @@ def find_audio_device(name_query: str = "cable output", prefer_input: bool = Tru
             elif not prefer_input and d['max_output_channels'] > 0:
                 return idx, d
 
-    # 2. Fallback to default
+    # 3. Fallback to default input
     default_id = sd.default.device[0 if prefer_input else 1]
     if default_id is not None and default_id >= 0:
         return default_id, devices[default_id]
@@ -114,37 +133,12 @@ def find_audio_device(name_query: str = "cable output", prefer_input: bool = Tru
     return 0, devices[0]
 
 
-class Resampler:
-    """Rational Polyphase Resampler (e.g. 44.1 kHz -> 48.0 kHz)."""
-    def __init__(self, in_rate: int, out_rate: int):
-        self.in_rate = in_rate
-        self.out_rate = out_rate
-        gcd = math.gcd(in_rate, out_rate)
-        self.up = out_rate // gcd
-        self.down = in_rate // gcd
-
-    def resample(self, data: np.ndarray, target_samples: int) -> np.ndarray:
-        if self.in_rate == self.out_rate and len(data) == target_samples:
-            return data
-        if len(data) == 0:
-            return np.zeros((target_samples, data.shape[1] if data.ndim > 1 else 1), dtype=data.dtype)
-        
-        res = scipy.signal.resample_poly(data, self.up, self.down, axis=0)
-        if len(res) < target_samples:
-            pad_shape = list(res.shape)
-            pad_shape[0] = target_samples - len(res)
-            res = np.vstack([res, np.zeros(pad_shape, dtype=res.dtype)])
-        elif len(res) > target_samples:
-            res = res[:target_samples]
-        return res
-
-
 class PcUnicastStreamer:
     def __init__(
         self,
         port: str = "COM16",
         baud: int = 2000000,
-        source_type: str = "synth",
+        source_type: str = "wasapi",
         audio_device_name: str = "CABLE Output",
         mp3_folder: str = "data/mp3"
     ):
@@ -158,12 +152,11 @@ class PcUnicastStreamer:
         self.is_running = False
         self.audio_stream = None
         self.audio_queue = queue.Queue(maxsize=100)
-        self.resampler = None
 
         # Google liblc3 Encoders:
-        # Left Encoder: 48 kHz, 10.0 ms frame duration
+        # Left Encoder: 48 kHz, 10.0 ms frame duration (480 samples -> 120 octets)
         self.enc_left = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_48K)
-        # Subwoofer Encoder: 8 kHz, 10.0 ms frame duration
+        # Subwoofer Encoder: 8 kHz, 10.0 ms frame duration (80 samples -> 80 octets)
         self.enc_sub = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_8K)
 
         # 4th-Order Linkwitz-Riley Lowpass Filter @ 200 Hz for Subwoofer
@@ -207,17 +200,15 @@ class PcUnicastStreamer:
             raise
 
     def start_audio_source(self):
-        if self.source_type in ("wasapi", "cable", "device"):
-            dev_id, dev_info = find_audio_device(self.audio_device_name, prefer_input=True)
-            native_sr = int(dev_info.get('default_samplerate', 48000))
-            native_ch = max(int(dev_info.get('max_input_channels', 2)), 2)
-            block_size = int(native_sr * (FRAME_DURATION_US / 1000000.0))
+        if self.source_type in ("wasapi", "cable", "device", "loopback"):
+            is_loopback = (self.source_type == "loopback")
+            prefer_input = not is_loopback
+            dev_id, dev_info = find_audio_device(self.audio_device_name, prefer_input=prefer_input)
 
-            print(f"Opening Audio Input on: [{dev_id}] '{dev_info['name']}' ({native_sr} Hz, {native_ch} ch)...", flush=True)
-            if native_sr != SAMPLE_RATE_48K:
-                self.resampler = Resampler(native_sr, SAMPLE_RATE_48K)
-            else:
-                self.resampler = None
+            max_in = dev_info.get('max_input_channels', 0)
+            use_wasapi_loopback = is_loopback or (max_in == 0)
+
+            print(f"Opening WASAPI Audio {'Loopback' if use_wasapi_loopback else 'Input'} on: [{dev_id}] '{dev_info['name']}' (48000 Hz, 2 ch)...", flush=True)
 
             def callback(indata, frames, time_info, status):
                 try:
@@ -225,27 +216,19 @@ class PcUnicastStreamer:
                 except queue.Full:
                     pass
 
-            if dev_info['max_input_channels'] > 0:
-                self.audio_stream = sd.InputStream(
-                    device=dev_id,
-                    channels=min(native_ch, 2),
-                    samplerate=native_sr,
-                    dtype='float32',
-                    blocksize=block_size,
-                    callback=callback
-                )
-            else:
-                self.audio_stream = sd.InputStream(
-                    device=dev_id,
-                    channels=2,
-                    samplerate=native_sr,
-                    dtype='float32',
-                    blocksize=block_size,
-                    callback=callback,
-                    extra_settings=sd.WasapiSettings(loopback=True)
-                )
+            extra_settings = sd.WasapiSettings(loopback=True) if use_wasapi_loopback else None
+
+            self.audio_stream = sd.InputStream(
+                device=dev_id,
+                channels=2,
+                samplerate=SAMPLE_RATE_48K,
+                dtype='int16',
+                blocksize=SAMPLES_48K,
+                callback=callback,
+                extra_settings=extra_settings
+            )
             self.audio_stream.start()
-            print("Live audio capture active.", flush=True)
+            print("Live audio capture active @ 48000 Hz / 100 fps.", flush=True)
 
         elif self.source_type == "mp3":
             self._init_mp3_player()
@@ -259,7 +242,7 @@ class PcUnicastStreamer:
                 if f.lower().endswith(valid_exts) and os.path.isfile(os.path.join(self.mp3_folder, f))
             ]
         if not self.mp3_playlist:
-            print(f"[WARN] No MP3 files found in '{self.mp3_folder}'. Falling back to synth mode.")
+            print(f"[WARN] No audio files found in '{self.mp3_folder}'. Falling back to synth mode.")
             self.source_type = "synth"
             return
         self._play_next_mp3_track()
@@ -321,26 +304,33 @@ class PcUnicastStreamer:
 
         phase_bass = self.bass_phase + 2.0 * np.pi * 50.0 * t
         self.bass_phase = (self.bass_phase + 2.0 * np.pi * 50.0 * dt) % (2.0 * np.pi)
-        bass_pcm = np.sin(phase_bass) * 0.7 * 32767.0
 
         phase_lead = self.lead_phase + 2.0 * np.pi * 1000.0 * t
         self.lead_phase = (self.lead_phase + 2.0 * np.pi * 1000.0 * dt) % (2.0 * np.pi)
-        lead_pcm = np.sin(phase_lead) * 0.4 * 32767.0
 
-        pcm_l = np.clip(bass_pcm + lead_pcm, -32768, 32767).astype(np.int16)
-        pcm_r = np.clip(bass_pcm, -32768, 32767).astype(np.int16)
+        bass_sig = np.sin(phase_bass) * 0.5 * 32767.0
+        lead_sig = np.sin(phase_lead) * 0.3 * 32767.0
+
+        pcm_l = np.clip(bass_sig + lead_sig, -32768, 32767).astype(np.int16)
+        pcm_r = np.clip(bass_sig, -32768, 32767).astype(np.int16)
         return np.column_stack([pcm_l, pcm_r])
 
     def get_mp3_frame(self) -> np.ndarray:
-        frame_bytes = SAMPLES_48K * 2 * 2
-        if not self.mp3_proc:
+        if not self.mp3_proc or not self.mp3_proc.stdout:
             return np.zeros((SAMPLES_48K, 2), dtype=np.int16)
+
+        frame_bytes = SAMPLES_48K * 2 * 2
         raw_bytes = self.mp3_proc.stdout.read(frame_bytes)
+
         if len(raw_bytes) < frame_bytes:
             self._play_next_mp3_track()
-            raw_bytes = self.mp3_proc.stdout.read(frame_bytes) if self.mp3_proc else b""
-            if len(raw_bytes) < frame_bytes:
-                return np.zeros((SAMPLES_48K, 2), dtype=np.int16)
+            if self.mp3_proc and self.mp3_proc.stdout:
+                extra = self.mp3_proc.stdout.read(frame_bytes - len(raw_bytes))
+                raw_bytes += extra
+
+        if len(raw_bytes) < frame_bytes:
+            raw_bytes += bytes(frame_bytes - len(raw_bytes))
+
         return np.frombuffer(raw_bytes, dtype=np.int16).reshape((SAMPLES_48K, 2))
 
     def run(self, test_duration_sec: float = None):
@@ -348,51 +338,35 @@ class PcUnicastStreamer:
         self.start_audio_source()
         self.is_running = True
 
-        print("=" * 86)
-        print("   PC REAL-TIME LC3 AUDIO STREAMER FOR audioESP-NOW UNICAST NETWORK")
-        print("=" * 86)
-        print(f"  Target Dongle   : {self.port} @ {self.baud} baud (Node 16 ESP32-S3 SOURCE)")
-        print(f"  Audio Source    : {self.source_type.upper()} ({self.audio_device_name if self.source_type in ('wasapi','cable','device') else ''})")
-        print(f"  Left SINK       : Node 23 (ESP32-C6) -> Channel 0 @ 48 kHz LC3 ({OCTETS_LEFT_48K}B = 96 kbps)")
-        print(f"  Subwoofer SINK  : Node 24 (ESP32-C6) -> Channel 5 @ 8 kHz LC3 ({OCTETS_SUB_8K}B = 64 kbps, 200Hz LP)")
-        print(f"  VSAF USB Framing: Ch 0 (130B) + Ch 5 (90B) = 220 Bytes/frame (100 fps = 176 kbps)")
-        print("=" * 86)
+        print("\n" + "=" * 90)
+        print("  HOST PC REAL-TIME LC3 UNICAST STREAMER -> NODE 16 (ESP32-S3 SOURCE)")
+        print("  Routing:")
+        print("    - Channel 0: Left Channel @ 48 kHz LC3 (120B) -> Node 23 (Left Speaker)")
+        print("    - Channel 5: Subwoofer (200Hz LR4-LP) @ 8 kHz LC3 (80B) -> Node 24 (Subwoofer)")
+        print("=" * 90)
+        print("|  TIME   | FRAME |  TX RATE  | BITRATE   |           VU METERS (Left / Right / Sub)          |")
+        print("|---------+-------+-----------+-----------+---------------------------------------------------|")
 
-        table_div  = "+----------+-------+----------+-----------+-------------------------------------+"
-        table_hdr1 = "| Time     | Total | Cadence  | Line Rate |          Audio RMS (dBFS)           |"
-        table_hdr2 = "|          | Pkts  | (pkts/s) | (kbps)    |   Left Ch      Right Ch     Subwoofer |"
-        print(table_div, flush=True)
-        print(table_hdr1, flush=True)
-        print(table_hdr2, flush=True)
-        print(table_div, flush=True)
-
-        start_time = time.perf_counter()
-        next_tick_ns = time.perf_counter_ns()
-        step_ns = int(FRAME_DURATION_US * 1000)
-
-        total_frames = 0
-        frames_since_stat = 0
-        last_stat_time = time.perf_counter()
         seq = 0
+        total_frames = 0
+        start_time = time.perf_counter()
+        last_stat_time = start_time
+        frames_since_stat = 0
 
-        # Prime initial buffer cushion for WASAPI capture
-        if self.audio_stream is not None:
-            time.sleep(0.04)
+        # Frame pacer for generated / mp3 modes
+        step_ns = 10000000 # 10.0 ms
+        next_tick_ns = time.perf_counter_ns() + step_ns
 
         try:
             while self.is_running:
                 if test_duration_sec is not None and (time.perf_counter() - start_time) >= test_duration_sec:
+                    print(f"\nCompleted test duration ({test_duration_sec}s). Stopping.")
                     break
 
-                # 1. Acquire 10 ms Stereo PCM Frame
+                # 1. Acquire 10 ms Stereo PCM Frame (480 samples x 2 channels int16)
                 if self.audio_stream is not None:
                     try:
-                        raw_data = self.audio_queue.get(timeout=0.03)
-                        if self.resampler:
-                            resampled = self.resampler.resample(raw_data, SAMPLES_48K)
-                        else:
-                            resampled = raw_data
-                        pcm_frame = (np.clip(resampled, -1.0, 1.0) * 32767.0).astype(np.int16)
+                        pcm_frame = self.audio_queue.get(timeout=0.03)
                         if pcm_frame.ndim == 1:
                             pcm_frame = np.column_stack([pcm_frame, pcm_frame])
                         if pcm_frame.shape[0] < SAMPLES_48K:
@@ -429,7 +403,7 @@ class PcUnicastStreamer:
                 seq = (seq + 1) & 0xFF
 
                 # 2. Encode Left Channel (48 kHz LC3 -> 120 octets)
-                pcm_left = pcm_frame[:, 0]
+                pcm_left = np.ascontiguousarray(pcm_frame[:, 0], dtype=np.int16)
                 lc3_left = self.enc_left.encode(pcm_left, OCTETS_LEFT_48K)
 
                 # 3. Subwoofer DSP & 8 kHz LC3 Encoding (80 octets)
@@ -442,6 +416,7 @@ class PcUnicastStreamer:
                     sub_8k_pcm = np.pad(sub_8k_pcm, (0, SAMPLES_8K - len(sub_8k_pcm)))
                 elif len(sub_8k_pcm) > SAMPLES_8K:
                     sub_8k_pcm = sub_8k_pcm[:SAMPLES_8K]
+                sub_8k_pcm = np.ascontiguousarray(sub_8k_pcm, dtype=np.int16)
                 lc3_sub = self.enc_sub.encode(sub_8k_pcm, OCTETS_SUB_8K)
 
                 # 4. Assemble VSAF LC3 Packets:
@@ -516,16 +491,34 @@ class PcUnicastStreamer:
         print("[Streamer] Shutdown complete.")
 
 
+def list_devices():
+    devices = sd.query_devices()
+    print("\nAvailable Audio Devices:")
+    for idx, d in enumerate(devices):
+        hostapi = d.get('hostapi', 0)
+        api_name = "WASAPI" if hostapi == 2 else "MME" if hostapi == 0 else f"API{hostapi}"
+        in_ch = d.get('max_input_channels', 0)
+        out_ch = d.get('max_output_channels', 0)
+        sr = int(d.get('default_samplerate', 0))
+        print(f"  [{idx:2d}] {d['name']:<45} ({api_name:<6}) | In: {in_ch:2d} | Out: {out_ch:2d} | {sr} Hz")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description="PC Real-Time LC3 Audio Streamer for audioESP-NOW Unicast")
     parser.add_argument("--port", type=str, default="COM16", help="Target Dongle Port (default: COM16 or 'auto')")
     parser.add_argument("--baud", type=int, default=2000000, help="Serial Baud Rate (default: 2000000)")
-    parser.add_argument("--source", type=str, default="wasapi", choices=["wasapi", "cable", "device", "mp3", "bass-test", "synth"],
+    parser.add_argument("--source", type=str, default="wasapi", choices=["wasapi", "cable", "device", "loopback", "mp3", "bass-test", "synth"],
                         help="Audio Source Mode (default: wasapi)")
     parser.add_argument("--device", type=str, default="CABLE Output", help="Audio device query name for WASAPI/Cable capture")
+    parser.add_argument("--list-devices", action="store_true", help="List all available audio input/output devices and exit")
     parser.add_argument("--mp3-folder", type=str, default="data/mp3", help="Folder containing MP3 audio files (default: data/mp3)")
     parser.add_argument("--duration", type=float, default=None, help="Streaming duration in seconds (optional, runs indefinitely if omitted)")
     args = parser.parse_args()
+
+    if args.list_devices:
+        list_devices()
+        sys.exit(0)
 
     streamer = PcUnicastStreamer(
         port=args.port,

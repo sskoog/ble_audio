@@ -74,12 +74,16 @@ class LC3Encoder:
         """
         Encodes a 1D NumPy array of int16 PCM samples (length must be self.num_samples)
         into an LC3 frame of length `num_bytes`.
+        Guarantees C-contiguous 1D int16 array layout before calling C API.
         """
-        if pcm_data.dtype != np.int16:
-            pcm_data = pcm_data.astype(np.int16)
+        # Ensure contiguous 1D int16 array (critical for slices like pcm_frame[:, 0])
+        if not isinstance(pcm_data, np.ndarray) or pcm_data.dtype != np.int16 or not pcm_data.flags.c_contiguous:
+            pcm_data = np.ascontiguousarray(pcm_data, dtype=np.int16)
 
-        if len(pcm_data) != self.num_samples:
-            raise ValueError(f"Expected {self.num_samples} samples, got {len(pcm_data)}")
+        if pcm_data.ndim != 1 or len(pcm_data) != self.num_samples:
+            pcm_data = pcm_data.ravel()
+            if len(pcm_data) != self.num_samples:
+                raise ValueError(f"Expected {self.num_samples} samples, got {len(pcm_data)}")
 
         # Output buffer
         out_buf = ctypes.create_string_buffer(num_bytes)
