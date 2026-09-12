@@ -270,7 +270,8 @@ static void handle_ascii_command(const char* raw_line) {
         char sr_str[16] = {0};
         if (sscanf(line + 3, "%15s", sr_str) == 1 && s_unicast_engine) {
             uint32_t sr = 48000;
-            if (strcasecmp(sr_str, "16k") == 0 || strcasecmp(sr_str, "16000") == 0) sr = 16000;
+            if (strcasecmp(sr_str, "8k") == 0 || strcasecmp(sr_str, "8000") == 0) sr = 8000;
+            else if (strcasecmp(sr_str, "16k") == 0 || strcasecmp(sr_str, "16000") == 0) sr = 16000;
             else if (strcasecmp(sr_str, "24k") == 0 || strcasecmp(sr_str, "24000") == 0) sr = 24000;
             else if (strcasecmp(sr_str, "32k") == 0 || strcasecmp(sr_str, "32000") == 0) sr = 32000;
             else if (strcasecmp(sr_str, "48k") == 0 || strcasecmp(sr_str, "48000") == 0) sr = 48000;

@@ -381,6 +381,7 @@ public:
 
 private:
     static void audioTaskRoutine(void* pvParameters);
+    static void i2sStartTimerCallback(void* arg);
     void runSourceLoop();
     void runSinkLoop();
 
@@ -417,6 +418,7 @@ private:
 
     bool                       m_wifi_initialized = false;
     bool                       m_audio_task_running = false;
+    esp_timer_handle_t         m_i2s_start_timer = nullptr;
     uint8_t                    m_last_rx_seq = 0;
     bool                       m_has_last_rx_seq = false;
 

@@ -240,6 +240,11 @@ EspNowUnicastEngine::EspNowUnicastEngine(Codec::Lc3CodecEngine& lc3_codec,
 
 EspNowUnicastEngine::~EspNowUnicastEngine() {
     stop();
+    if (m_i2s_start_timer) {
+        esp_timer_stop(m_i2s_start_timer);
+        esp_timer_delete(m_i2s_start_timer);
+        m_i2s_start_timer = nullptr;
+    }
     if (s_instance == this) s_instance = nullptr;
 }
 
@@ -266,6 +271,12 @@ esp_err_t EspNowUnicastEngine::init(uint8_t role, uint8_t node_id, uint8_t wifi_
         m_sub_lr4_filter.init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, CONFIG_ESPNOW_SUB_LP_HZ);
     } else {
         m_lc3_codec.initDecoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
+
+        esp_timer_create_args_t timer_args = {};
+        timer_args.callback = &i2sStartTimerCallback;
+        timer_args.arg = this;
+        timer_args.name = "i2s_start";
+        esp_timer_create(&timer_args, &m_i2s_start_timer);
     }
 
     // Default known peers for SOURCE (initially OFFLINE until SINK_HELLO is received)
@@ -970,6 +981,13 @@ void EspNowUnicastEngine::audioTaskRoutine(void* pvParameters) {
     vTaskDelete(nullptr);
 }
 
+void EspNowUnicastEngine::i2sStartTimerCallback(void* arg) {
+    auto* self = reinterpret_cast<EspNowUnicastEngine*>(arg);
+    if (self && self->m_i2s_dac) {
+        self->m_i2s_dac->start();
+    }
+}
+
 void EspNowUnicastEngine::runSourceLoop() {
     int16_t pcm_ch0[MAX_PCM_FRAME_SAMPLES];
     int16_t pcm_ch1[MAX_PCM_FRAME_SAMPLES];
@@ -1374,18 +1392,13 @@ void EspNowUnicastEngine::runSinkLoop() {
                         m_last_rx_seq = seq_2;
                     }
 
-                    // Precise microsecond wait until presentation time
+                    // Set up high precision timer to start clocks exactly at presentation time
                     int64_t target_start_local_us = presentation_time_us - m_master_time_offset_us;
                     int64_t wait_us = target_start_local_us - esp_timer_get_time();
-                    if (wait_us > 2000) {
-                        vTaskDelay(pdMS_TO_TICKS((wait_us - 1000) / 1000));
-                    }
-                    while (esp_timer_get_time() < target_start_local_us) {
-                        esp_rom_delay_us(1);
-                    }
-
-                    // Start I2S hardware DAC clock at exact microsecond presentation time
-                    if (m_i2s_dac) {
+                    if (wait_us > 0) {
+                        esp_timer_stop(m_i2s_start_timer); // Cancel any pending timer
+                        esp_timer_start_once(m_i2s_start_timer, wait_us);
+                    } else if (m_i2s_dac) {
                         m_i2s_dac->start();
                     }
 
@@ -1397,8 +1410,15 @@ void EspNowUnicastEngine::runSinkLoop() {
             }
 
             case NetworkState::STREAM: {
+                if (m_i2s_dac && !m_i2s_dac->isRunning()) {
+                    // Wait for the high-precision timer to start the I2S clocks.
+                    // Do not process PLC or watchdog until the stream actually starts.
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5));
+                    break;
+                }
+
                 uint32_t wait_timeout = (m_telemetry.frame_duration_us / 1000) * 2 + 5;
-                if (m_i2s_dac && m_i2s_dac->isRunning()) {
+                if (m_i2s_dac) {
                     m_i2s_dac->waitForDmaSlot(wait_timeout);
                 }
 
@@ -1442,6 +1462,11 @@ void EspNowUnicastEngine::runSinkLoop() {
                         if (m_i2s_dac) {
                             m_i2s_dac->reconfigureSampleRate(frame_sr, frame_dur);
                         }
+                        ESP_LOGW(TAG, "Sample rate changed to %u Hz. Transitioning to PREFILL.", frame_sr);
+                        clear_rx_fifo();
+                        m_state = NetworkState::PREFILL;
+                        ESP_LOGI(TAG, "State Transition: STRM -> PREFILL");
+                        break;
                     }
 
                     // Sequence gap / Packet loss check

@@ -181,6 +181,15 @@ class PcUnicastStreamer:
             time.sleep(0.1)
             self.serial_conn.reset_input_buffer()
             self.serial_conn.reset_output_buffer()
+            print(f"Waiting 3.5s for SOURCE node to boot after DTR toggle...", flush=True)
+            time.sleep(3.5)
+            # Ensure it is in PC STREAM mode and started
+            print("Sending 'pc' and 'start' commands...", flush=True)
+            self.serial_conn.write(b"pc\r\n")
+            time.sleep(0.5)
+            self.serial_conn.write(b"start\r\n")
+            time.sleep(1.0)
+            self.serial_conn.reset_input_buffer()
             print(f"SUCCESS: Connected to {self.port}!", flush=True)
         except Exception as e:
             print(f"[ERROR] Failed to open serial port '{self.port}': {e}", flush=True)
