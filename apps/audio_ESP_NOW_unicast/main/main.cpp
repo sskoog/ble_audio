@@ -372,27 +372,98 @@ static void handle_ascii_command(const char* raw_line) {
     }
 }
 
-// Background CLI Reader Task on Core 0
+// Background High-Speed USB / UART Binary Stream & CLI Reader Task on Core 0
 static void usb_serial_cli_task(void* pvParameters) {
-    char rx_buf[128];
-    size_t rx_idx = 0;
+    char line_buf[128];
+    size_t line_idx = 0;
+    static uint8_t ring_buf[8192];
+    size_t ring_len = 0;
 
+    // 1. Install USB-SERIAL-JTAG driver with 4KB buffer
+    usb_serial_jtag_driver_config_t jtag_cfg = {
+        .tx_buffer_size = 512,
+        .rx_buffer_size = 4096,
+    };
+    usb_serial_jtag_driver_install(&jtag_cfg);
+
+    // 2. Install UART0 driver (2MBaud)
+    int uart_baud = 2000000;
+    uart_config_t uart_cfg = {
+        .baud_rate = uart_baud,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .rx_flow_ctrl_thresh = 0,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    uart_param_config(UART_NUM_0, &uart_cfg);
+    uart_driver_install(UART_NUM_0, 4096, 512, 0, NULL, 0);
+
+    print_console("\n[CONSOLE READY] CLI and Binary PCM Stream input active on USB-Serial and UART0 (%d baud).\n", uart_baud);
+
+    uint8_t rx_buf[1024];
     while (true) {
-        int ch = getchar();
-        if (ch != EOF && ch >= 0) {
-            if (ch == '\r' || ch == '\n') {
-                if (rx_idx > 0) {
-                    rx_buf[rx_idx] = '\0';
-                    handle_ascii_command(rx_buf);
-                    rx_idx = 0;
-                }
-            } else if (ch == '\b' || ch == 127) {
-                if (rx_idx > 0) rx_idx--;
-            } else if (rx_idx < sizeof(rx_buf) - 1) {
-                rx_buf[rx_idx++] = static_cast<char>(ch);
+        // Read available bytes from USB-Serial-JTAG
+        int n_usb = usb_serial_jtag_read_bytes(rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(1));
+        if (n_usb > 0) {
+            if (ring_len + n_usb <= sizeof(ring_buf)) {
+                memcpy(ring_buf + ring_len, rx_buf, n_usb);
+                ring_len += n_usb;
             }
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        // Read available bytes from UART0
+        int n_uart = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), 0);
+        if (n_uart > 0) {
+            if (ring_len + n_uart <= sizeof(ring_buf)) {
+                memcpy(ring_buf + ring_len, rx_buf, n_uart);
+                ring_len += n_uart;
+            }
+        }
+
+        // Fast parse binary PCM frames or ASCII CLI commands
+        while (ring_len > 0) {
+            // Check for USB PCM Magic (0x5043 -> 'P', 'C' in little-endian ASCII)
+            if (ring_len >= 2 && ((ring_buf[0] == 0x43 && ring_buf[1] == 0x50) || (ring_buf[0] == 0x50 && ring_buf[1] == 0x43))) {
+                // USB PCM Header: 8 Bytes + 480 stereo samples (1920 bytes) = 1928 bytes
+                size_t pcm_pkt_len = 8 + (MAX_PCM_FRAME_SAMPLES * 2 * sizeof(int16_t)); // 1928 bytes
+                if (ring_len >= pcm_pkt_len) {
+                    if (s_unicast_engine) {
+                        const int16_t* pcm_data = reinterpret_cast<const int16_t*>(ring_buf + 8);
+                        s_unicast_engine->processUsbPcmPacket(pcm_data, MAX_PCM_FRAME_SAMPLES);
+                    }
+                    if (ring_len > pcm_pkt_len) {
+                        memmove(ring_buf, ring_buf + pcm_pkt_len, ring_len - pcm_pkt_len);
+                    }
+                    ring_len -= pcm_pkt_len;
+                    line_idx = 0;
+                    continue;
+                } else {
+                    // Waiting for remaining bytes of full PCM frame
+                    break;
+                }
+            } else {
+                // Process ASCII CLI character
+                char c = static_cast<char>(ring_buf[0]);
+                if (c == '\r' || c == '\n') {
+                    if (line_idx > 0) {
+                        line_buf[line_idx] = '\0';
+                        handle_ascii_command(line_buf);
+                        line_idx = 0;
+                    }
+                } else if (c == '\b' || c == 0x7F) {
+                    if (line_idx > 0) line_idx--;
+                } else if (c >= 32 && c <= 126) {
+                    if (line_idx < sizeof(line_buf) - 1) {
+                        line_buf[line_idx++] = c;
+                    }
+                }
+                if (ring_len > 1) {
+                    memmove(ring_buf, ring_buf + 1, ring_len - 1);
+                }
+                ring_len -= 1;
+            }
         }
     }
 }

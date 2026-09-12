@@ -706,6 +706,29 @@ void EspNowUnicastEngine::onPacketReceived(const uint8_t* mac_addr, const uint8_
     }
 }
 
+
+void EspNowUnicastEngine::processUsbPcmPacket(const int16_t* stereo_pcm, size_t samples_per_channel) {
+    if (m_node_role != NODE_ROLE_SOURCE || !stereo_pcm) return;
+    if (samples_per_channel > MAX_PCM_FRAME_SAMPLES) samples_per_channel = MAX_PCM_FRAME_SAMPLES;
+
+    if (m_state != NetworkState::CAST) {
+        transitionTo(NetworkState::CAST);
+    }
+
+    int current_read = m_usb_pcm_read_buf.load(std::memory_order_relaxed);
+    int write_idx = 1 - current_read;
+    memcpy(m_usb_pcm_buf[write_idx], stereo_pcm, samples_per_channel * 2 * sizeof(int16_t));
+    m_usb_pcm_read_buf.store(write_idx, std::memory_order_release);
+    m_usb_pcm_has_new.store(true, std::memory_order_release);
+
+    m_last_usb_packet_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
+    m_usb_stream_active.store(true, std::memory_order_relaxed);
+}
+
+void EspNowUnicastEngine::processUsbVsafPacket(const uint8_t* data, size_t len) {
+    // VSAF LC3 Ingestion hook
+}
+
 void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
     if (m_state == new_state) return;
     m_state = new_state;
@@ -882,9 +905,23 @@ void EspNowUnicastEngine::runSourceLoop() {
         size_t samples_per_frame = (m_telemetry.sample_rate * m_frame_duration_us) / 1000000;
         if (samples_per_frame > MAX_PCM_FRAME_SAMPLES) samples_per_frame = MAX_PCM_FRAME_SAMPLES;
 
-        // Generate synthetic stereo audio
-        if (m_tone_gen) m_tone_gen->generateFrame(pcm_ch0, samples_per_frame);
-        m_tone_gen_r.generateFrame(pcm_ch1, samples_per_frame);
+        // Audio Ingest: Pull from USB PCM Stream if active (< 500 ms), otherwise fallback to internal synth
+        int64_t last_usb_us = m_last_usb_packet_time_us.load(std::memory_order_relaxed);
+        bool usb_active = (last_usb_us > 0) && ((now_us - last_usb_us) < 500000);
+        m_usb_stream_active.store(usb_active, std::memory_order_relaxed);
+
+        if (usb_active && m_usb_pcm_has_new.exchange(false, std::memory_order_acquire)) {
+            int read_idx = m_usb_pcm_read_buf.load(std::memory_order_relaxed);
+            const int16_t* usb_stereo = m_usb_pcm_buf[read_idx];
+            for (size_t i = 0; i < samples_per_frame; i++) {
+                pcm_ch0[i] = usb_stereo[2 * i];     // Left channel
+                pcm_ch1[i] = usb_stereo[2 * i + 1]; // Right channel
+            }
+        } else if (!usb_active) {
+            // Internal synthetic tone generator
+            if (m_tone_gen) m_tone_gen->generateFrame(pcm_ch0, samples_per_frame);
+            m_tone_gen_r.generateFrame(pcm_ch1, samples_per_frame);
+        }
 
         // Snapshot registered peers
         SinkPeerConfig peers_snap[MAX_UNICAST_SINKS];

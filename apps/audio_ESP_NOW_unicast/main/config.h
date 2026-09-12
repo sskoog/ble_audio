@@ -49,7 +49,7 @@ extern "C" {
 
 // Subwoofer Channel Configuration
 #ifndef CONFIG_ESPNOW_SUB_LP_HZ
-#define CONFIG_ESPNOW_SUB_LP_HZ 100.0f // 4th-order Linkwitz-Riley LP cutoff frequency in Hz
+#define CONFIG_ESPNOW_SUB_LP_HZ 200.0f // 4th-order Linkwitz-Riley LP cutoff frequency in Hz
 #endif
 
 #ifndef CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ
@@ -68,11 +68,11 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_VOLUME_MAX_DB
-#define CONFIG_VOLUME_MAX_DB -10.0f   // Maximum volume in dB (step 255)
+#define CONFIG_VOLUME_MAX_DB -10.0f   // Maximum volume in dB
 #endif
 
 #ifndef CONFIG_VOLUME_DEFAULT_U8
-#define CONFIG_VOLUME_DEFAULT_U8 255 // Default power-on volume
+#define CONFIG_VOLUME_DEFAULT_U8 200 // Default power-on volume
 #endif
 
 #ifndef CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC

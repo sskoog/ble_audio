@@ -223,6 +223,7 @@ public:
     uint8_t getTargetChannel() const { return m_target_channel; }
 
     // Real-Time USB Audio Stream Ingestion (SOURCE node)
+    void processUsbPcmPacket(const int16_t* stereo_pcm, size_t samples_per_channel);
     void processUsbVsafPacket(const uint8_t* data, size_t len);
     bool isUsbStreamActive() const { return m_usb_stream_active.load(std::memory_order_relaxed); }
 
@@ -353,6 +354,10 @@ private:
     // Ingest State (SOURCE node)
     std::atomic<bool>          m_is_stereo{true};
     std::atomic<bool>          m_usb_stream_active{false};
+    int16_t                    m_usb_pcm_buf[2][MAX_PCM_FRAME_SAMPLES * 2] = {};
+    std::atomic<int>           m_usb_pcm_write_buf{0};
+    std::atomic<int>           m_usb_pcm_read_buf{0};
+    std::atomic<bool>          m_usb_pcm_has_new{false};
     std::atomic<int64_t>       m_last_usb_packet_time_us{0};
 
     std::atomic<uint32_t>      m_tx_packets_total{0};
