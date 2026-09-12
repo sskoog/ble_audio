@@ -830,7 +830,13 @@ void EspNowUnicastEngine::processUsbVsafPacket(const uint8_t* data, size_t len) 
 
 void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
     if (m_state == new_state) return;
+    NetworkState old_state = m_state;
+    const char* old_str = getStateString();
     m_state = new_state;
+    const char* new_str = getStateString();
+
+    printf("\n[STATE CHANGE] %s ---> %s (Node %u)\n", old_str, new_str, m_node_id);
+    fflush(stdout);
 
     // Reset error and PLC counters on stream activation
     if (new_state == NetworkState::CAST || new_state == NetworkState::STREAM || new_state == NetworkState::PREFILL || new_state == NetworkState::PC_STREAM) {
@@ -1396,10 +1402,10 @@ void EspNowUnicastEngine::runSinkLoop() {
                     m_i2s_dac->waitForDmaSlot(wait_timeout);
                 }
 
-                // Buffer depth regulation: keep RX FIFO strictly locked at 2-3 frames (~20-30 ms)
-                // Discard excess stale backlog to prevent latency drift across SINKs
+                // Buffer depth regulation: allow 50 ms presentation cushion (5 frames) with headroom
+                // Discard excess stale backlog (> 120 ms) to prevent runaway latency drift
                 taskENTER_CRITICAL(&s_fifo_mux);
-                while (s_rx_fifo_count > 4) {
+                while (s_rx_fifo_count > 12) {
                     s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
                     s_rx_fifo_count--;
                     m_fifo_overflow.fetch_add(1, std::memory_order_relaxed);

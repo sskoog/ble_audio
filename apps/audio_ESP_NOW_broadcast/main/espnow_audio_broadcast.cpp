@@ -753,17 +753,14 @@ void EspNowAudioBroadcast::runSinkLoop() {
                         }
                     }
 
-                    // Adaptive FIFO cushion monitoring (Normal cushion: 3..10 frames in 24-capacity FIFO)
-                    size_t fifo_cnt = get_rx_fifo_count();
-                    if (fifo_cnt > 18) {
-                        // Extreme buffer overflow protection only (e.g. prolonged pause/resume)
-                        size_t drop_len = 0;
-                        uint8_t drop_seq = 0;
-                        uint16_t drop_sr = 0, drop_dur = 0;
-                        uint32_t drop_pts = 0;
-                        pop_rx_lc3_frame(current_lc3_buf, &drop_len, &drop_seq, &drop_sr, &drop_dur, &drop_pts);
-                        m_clock_sync_micro_adjust_count.fetch_add(1, std::memory_order_relaxed);
+                    // Strict FIFO cushion regulation: prevent clock drift buildup (> 4 frames)
+                    taskENTER_CRITICAL(&s_fifo_mux);
+                    while (s_rx_fifo_count > 4) {
+                        s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
+                        s_rx_fifo_count--;
+                        m_fifo_overflow.fetch_add(1, std::memory_order_relaxed);
                     }
+                    taskEXIT_CRITICAL(&s_fifo_mux);
 
                     int64_t dec_start_us = esp_timer_get_time();
                     m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm, MAX_PCM_FRAME_SAMPLES, &actual_samples,
@@ -773,28 +770,8 @@ void EspNowAudioBroadcast::runSinkLoop() {
 
                     m_audio_meter.pushFramePcm(decoded_pcm, actual_samples);
 
-                    // ================= MICRO-SAMPLE PHASE LOCKED LOOP (PLL) =================
-                    // Compute expected playout time vs actual DMA presentation time
-                    int64_t target_playout_master_us = static_cast<int64_t>(frame_pts) + 30000;
-                    int64_t target_playout_local_us = target_playout_master_us - m_master_time_offset_us;
-                    int64_t now_local_us = esp_timer_get_time();
-                    int64_t est_render_local_us = now_local_us + m_telemetry.frame_duration_us;
-                    int64_t phase_err_us = est_render_local_us - target_playout_local_us;
-
-                    size_t output_samples = actual_samples;
-                    if (phase_err_us > 250 && output_samples > 10) {
-                        // SINK is playing late (> 250 us): drop 1 sample to gently advance phase
-                        output_samples--;
-                        m_clock_sync_micro_adjust_count.fetch_add(1, std::memory_order_relaxed);
-                    } else if (phase_err_us < -250 && output_samples < MAX_PCM_FRAME_SAMPLES - 1) {
-                        // SINK is playing early (< -250 us): repeat 1 sample to gently retard phase
-                        decoded_pcm[output_samples] = decoded_pcm[output_samples - 1];
-                        output_samples++;
-                        m_clock_sync_micro_adjust_count.fetch_add(1, std::memory_order_relaxed);
-                    }
-
                     if (m_i2s_dac && m_i2s_dac->isInitialized()) {
-                        auto pcm_out = format_stereo_pcm(decoded_pcm, output_samples, vol_scale);
+                        auto pcm_out = format_stereo_pcm(decoded_pcm, actual_samples, vol_scale);
                         m_i2s_dac->write(pcm_out.first, pcm_out.second, &bytes_written, 15);
                     }
                 } else {
@@ -946,6 +923,8 @@ void EspNowAudioBroadcast::transitionTo(NetworkState new_state) {
     m_state = new_state;
     const char* new_str = getStateString();
 
+    printf("\n[STATE CHANGE] %s ---> %s (Node %u)\n", old_str, new_str, m_node_id);
+    fflush(stdout);
     ESP_LOGI(TAG, "State Machine Transition: [%s] ---> [%s]", old_str, new_str);
 
     // If transitioning OUT of STREAMING (e.g. broadcast ended or loss of signal), reset error counters
