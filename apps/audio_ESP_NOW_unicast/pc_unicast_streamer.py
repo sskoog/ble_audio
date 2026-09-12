@@ -381,7 +381,7 @@ class PcUnicastStreamer:
                     next_tick_ns += step_ns
                     pcm_frame = self.generate_synth_frame()
 
-                pts_us = int((time.perf_counter() + 0.05) * 1000000) & 0xFFFFFFFF
+                master_time_us = int(time.perf_counter() * 1000000) & 0xFFFFFFFF
                 current_seq = seq & 0xFF
                 seq = (seq + 1) & 0xFF
 
@@ -394,12 +394,13 @@ class PcUnicastStreamer:
                 lc3_right = self.enc_right.encode(pcm_right, OCTETS_PER_FRAME_48K)
 
                 # 4. Assemble VSAF LC3 Packets:
-                # Header format (10B): Magic(uint16), Seq(uint8), Channel(uint8), Octets(uint8), Flags(uint8), PTS(uint32)
-                # flags: Bit 0..2: SR code (4 for 48k), Bit 3: Dur (0 for 10ms)
-                hdr_left  = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 0, OCTETS_PER_FRAME_48K, 4, pts_us)
+                # Header format (10B): Magic(uint16), Seq(uint8), Channel(uint8), Octets(uint8), Flags(uint8), MasterTime(uint32)
+                # flags: Bit 0..2: SR code (4 for 48k), Bit 3: Dur (0 for 10ms), Bit 5..7: Delay code (3 for 50ms -> 3<<5 = 96)
+                flags_48k = 4 | (3 << 5)  # 100 (0x64)
+                hdr_left  = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 0, OCTETS_PER_FRAME_48K, flags_48k, master_time_us)
                 pkt_left  = hdr_left + lc3_left
 
-                hdr_right = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 1, OCTETS_PER_FRAME_48K, 4, pts_us)
+                hdr_right = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 1, OCTETS_PER_FRAME_48K, flags_48k, master_time_us)
                 pkt_right = hdr_right + lc3_right
 
                 # 5. Transmit both packets in one atomic USB batch (260 bytes total)

@@ -240,9 +240,6 @@ esp_err_t I2sAudioDriver::preload(const void* src, size_t size, size_t* bytes_wr
 
 esp_err_t I2sAudioDriver::write(const void* src, size_t size, size_t* bytes_written, uint32_t timeout_ms) {
     if (!m_tx_handle || !src) return ESP_ERR_INVALID_STATE;
-    if (!m_is_running) {
-        start();
-    }
     esp_err_t ret = i2s_channel_write(m_tx_handle, src, size, bytes_written, pdMS_TO_TICKS(timeout_ms));
     if (ret != ESP_OK) {
         m_underrun_count.fetch_add(1, std::memory_order_relaxed);

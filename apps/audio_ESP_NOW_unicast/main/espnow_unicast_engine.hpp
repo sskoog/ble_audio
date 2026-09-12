@@ -66,8 +66,8 @@ typedef struct {
     uint8_t  octets;     // Byte 1: 0 = Control / Handshake, 20..200 = LC3 Audio payload length
     union {
         struct {
-            uint16_t flags;      // Bytes 2..3: Bit 0..2: SR (8k=0, 16k=1, 24k=2, 32k=3, 48k=4, 96k=5), Bit 3..4: Dur (10ms)
-            uint32_t pts_us;     // Bytes 4..7: Presentation Time Stamp (us timeline, 32-bit aligned)
+            uint16_t flags;           // Bytes 2..3: Bit 0..2: SR, Bit 3..4: Dur, Bit 5..7: Pres Delay code (20..200ms)
+            uint32_t master_time_us;  // Bytes 4..7: Exact Master timestamp at transmission (us)
         } audio;
         struct {
             uint8_t  opcode;     // Byte 2: ControlOpcode (e.g. VOLUME_SET = 0x04)
@@ -82,12 +82,12 @@ typedef vsaf_packet_t vsaf_unicast_header_t;
 
 // USB LC3 Ingest Header (10 Bytes)
 typedef struct {
-    uint16_t magic;      // 0x1337 (VSAF USB Magic)
-    uint8_t  seq;        // Sequence number (0..255)
-    uint8_t  channel_id; // Target Channel: 0 = Left, 1 = Right, 5 = Subwoofer
-    uint8_t  octets;     // LC3 payload length (e.g. 120 for Left @ 48kHz, 80 for Sub @ 8kHz)
-    uint8_t  flags;      // Bit 0..2: SR code (0:8k, 4:48k), Bit 3: Dur (0:10ms)
-    uint32_t pts_us;     // Presentation timestamp in microseconds
+    uint16_t magic;           // 0x1337 (VSAF USB Magic)
+    uint8_t  seq;             // Sequence number (0..255)
+    uint8_t  channel_id;      // Target Channel: 0 = Left, 1 = Right, 5 = Subwoofer
+    uint8_t  octets;          // LC3 payload length (e.g. 120 for Left @ 48kHz, 80 for Sub @ 8kHz)
+    uint8_t  flags;           // Bit 0..2: SR code, Bit 3: Dur, Bit 5..7: Pres delay code
+    uint32_t master_time_us;  // Master timestamp in microseconds
 } vsaf_usb_header_t;
 #pragma pack(pop)
 
@@ -96,7 +96,7 @@ struct UsbLc3Frame {
     uint8_t  seq;
     uint8_t  octets;
     uint16_t flags;
-    uint32_t pts_us;
+    uint32_t master_time_us;
     uint8_t  data[MAX_LC3_FRAME_OCTETS];
 };
 

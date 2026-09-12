@@ -24,7 +24,35 @@ static inline float db_to_linear(float gain_db) {
     return std::pow(10.0f, gain_db / 20.0f);
 }
 
-static inline uint16_t encode_vsaf_flags(uint32_t sample_rate_hz, uint32_t frame_duration_us) {
+static inline uint8_t delay_ms_to_code(uint16_t delay_ms) {
+    switch (delay_ms) {
+        case 20:  return 0;
+        case 30:  return 1;
+        case 40:  return 2;
+        case 50:  return 3;
+        case 60:  return 4;
+        case 80:  return 5;
+        case 100: return 6;
+        case 200: return 7;
+        default:  return 3; // 50 ms default
+    }
+}
+
+static inline uint16_t code_to_delay_ms(uint8_t code) {
+    switch (code & 0x07) {
+        case 0: return 20;
+        case 1: return 30;
+        case 2: return 40;
+        case 3: return 50;
+        case 4: return 60;
+        case 5: return 80;
+        case 6: return 100;
+        case 7: return 200;
+        default: return 50;
+    }
+}
+
+static inline uint16_t encode_vsaf_flags(uint32_t sample_rate_hz, uint32_t frame_duration_us, uint16_t delay_ms = 50) {
     uint16_t sr_code = 4; // 48 kHz default
     switch (sample_rate_hz) {
         case 8000:  sr_code = 0; break;
@@ -36,12 +64,14 @@ static inline uint16_t encode_vsaf_flags(uint32_t sample_rate_hz, uint32_t frame
         default:    sr_code = 4; break;
     }
     uint16_t dur_code = (frame_duration_us == 7500) ? 1 : 0;
-    return (sr_code & 0x07) | ((dur_code & 0x03) << 3);
+    uint16_t delay_code = delay_ms_to_code(delay_ms);
+    return (sr_code & 0x07) | ((dur_code & 0x03) << 3) | ((delay_code & 0x07) << 5);
 }
 
-static inline void decode_vsaf_flags(uint16_t flags, uint32_t* out_sr_hz, uint32_t* out_dur_us) {
+static inline void decode_vsaf_flags(uint16_t flags, uint32_t* out_sr_hz, uint32_t* out_dur_us, uint16_t* out_delay_ms = nullptr) {
     uint16_t sr_code = flags & 0x07;
     uint16_t dur_code = (flags >> 3) & 0x03;
+    uint16_t delay_code = (flags >> 5) & 0x07;
     if (out_sr_hz) {
         switch (sr_code) {
             case 0:  *out_sr_hz = 8000; break;
@@ -55,6 +85,9 @@ static inline void decode_vsaf_flags(uint16_t flags, uint32_t* out_sr_hz, uint32
     }
     if (out_dur_us) {
         *out_dur_us = (dur_code == 1) ? 7500 : 10000;
+    }
+    if (out_delay_ms) {
+        *out_delay_ms = code_to_delay_ms(delay_code);
     }
 }
 
@@ -98,7 +131,8 @@ struct Lc3RxFrame {
     uint8_t  seq;
     uint16_t sample_rate_hz;
     uint16_t frame_duration_us;
-    uint32_t pts_us;
+    uint16_t presentation_delay_ms;
+    uint32_t master_time_us;
     int64_t  rx_local_time_us;
 };
 
@@ -111,40 +145,47 @@ static portMUX_TYPE s_fifo_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline bool push_rx_lc3_frame(const uint8_t* data, size_t len, uint8_t seq,
                                      uint16_t sample_rate_hz, uint16_t frame_duration_us,
-                                     uint32_t pts_us, int64_t rx_local_time_us) {
+                                     uint16_t presentation_delay_ms,
+                                     uint32_t master_time_us, int64_t rx_local_time_us) {
     if (!data || len == 0 || len > MAX_LC3_FRAME_OCTETS) return false;
+    bool overflow = false;
     taskENTER_CRITICAL(&s_fifo_mux);
     if (s_rx_fifo_count >= LC3_RX_FIFO_CAPACITY) {
         s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
         s_rx_fifo_count--;
+        overflow = true;
     }
     s_rx_fifo[s_rx_fifo_head].len = static_cast<uint8_t>(len);
     s_rx_fifo[s_rx_fifo_head].seq = seq;
     s_rx_fifo[s_rx_fifo_head].sample_rate_hz = sample_rate_hz;
     s_rx_fifo[s_rx_fifo_head].frame_duration_us = frame_duration_us;
-    s_rx_fifo[s_rx_fifo_head].pts_us = pts_us;
+    s_rx_fifo[s_rx_fifo_head].presentation_delay_ms = presentation_delay_ms;
+    s_rx_fifo[s_rx_fifo_head].master_time_us = master_time_us;
     s_rx_fifo[s_rx_fifo_head].rx_local_time_us = rx_local_time_us;
     memcpy(s_rx_fifo[s_rx_fifo_head].data, data, len);
     s_rx_fifo_head = (s_rx_fifo_head + 1) % LC3_RX_FIFO_CAPACITY;
     s_rx_fifo_count++;
     taskEXIT_CRITICAL(&s_fifo_mux);
-    return true;
+    return !overflow;
 }
 
 static inline bool pop_rx_lc3_frame(uint8_t* out_data, size_t* out_len, uint8_t* out_seq = nullptr,
                                      uint16_t* out_sample_rate = nullptr, uint16_t* out_frame_duration = nullptr,
-                                     uint32_t* out_pts = nullptr, int64_t* out_rx_time = nullptr) {
+                                     uint16_t* out_presentation_delay_ms = nullptr,
+                                     uint32_t* out_master_time_us = nullptr, int64_t* out_rx_time = nullptr) {
     if (!out_data || !out_len) return false;
     taskENTER_CRITICAL(&s_fifo_mux);
     if (s_rx_fifo_count == 0) {
         taskEXIT_CRITICAL(&s_fifo_mux);
+        *out_len = 0;
         return false;
     }
     *out_len = s_rx_fifo[s_rx_fifo_tail].len;
     if (out_seq) *out_seq = s_rx_fifo[s_rx_fifo_tail].seq;
     if (out_sample_rate) *out_sample_rate = s_rx_fifo[s_rx_fifo_tail].sample_rate_hz;
     if (out_frame_duration) *out_frame_duration = s_rx_fifo[s_rx_fifo_tail].frame_duration_us;
-    if (out_pts) *out_pts = s_rx_fifo[s_rx_fifo_tail].pts_us;
+    if (out_presentation_delay_ms) *out_presentation_delay_ms = s_rx_fifo[s_rx_fifo_tail].presentation_delay_ms;
+    if (out_master_time_us) *out_master_time_us = s_rx_fifo[s_rx_fifo_tail].master_time_us;
     if (out_rx_time) *out_rx_time = s_rx_fifo[s_rx_fifo_tail].rx_local_time_us;
     memcpy(out_data, s_rx_fifo[s_rx_fifo_tail].data, *out_len);
     s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
@@ -722,10 +763,23 @@ void EspNowUnicastEngine::onPacketReceived(const uint8_t* mac_addr, const uint8_
 
     uint32_t packet_sr = 48000;
     uint32_t packet_dur = 10000;
-    decode_vsaf_flags(hdr->audio.flags, &packet_sr, &packet_dur);
+    uint16_t packet_delay_ms = 50;
+    decode_vsaf_flags(hdr->audio.flags, &packet_sr, &packet_dur, &packet_delay_ms);
+
+    // Calculate delta between master_time_us and local reception time
+    int32_t instant_offset_32 = static_cast<int32_t>(static_cast<int64_t>(hdr->audio.master_time_us) - rx_local_time_us);
+    int64_t instant_offset = instant_offset_32;
+
+    if (m_master_time_offset_us == 0) {
+        m_master_time_offset_us = instant_offset;
+    } else {
+        m_master_time_offset_us = (m_master_time_offset_us * 95 + instant_offset * 5) / 100;
+    }
+    m_time_offset_ring_buffer.push(static_cast<float>(instant_offset) / 1000.0f);
+    m_last_sync_time_us.store(rx_local_time_us, std::memory_order_relaxed);
 
     if (!push_rx_lc3_frame(data + sizeof(vsaf_unicast_header_t), payload_len, hdr->seq,
-                           packet_sr, packet_dur, hdr->audio.pts_us, rx_local_time_us)) {
+                           packet_sr, packet_dur, packet_delay_ms, hdr->audio.master_time_us, rx_local_time_us)) {
         m_fifo_overflow.fetch_add(1, std::memory_order_relaxed);
     } else {
         if (s_audio_task_handle) {
@@ -759,7 +813,7 @@ void EspNowUnicastEngine::processUsbVsafPacket(const uint8_t* data, size_t len) 
     frame.seq = hdr->seq;
     frame.octets = hdr->octets;
     frame.flags = hdr->flags;
-    frame.pts_us = hdr->pts_us;
+    frame.master_time_us = hdr->master_time_us;
     memcpy(frame.data, data + sizeof(vsaf_usb_header_t), payload_len);
 
     taskENTER_CRITICAL(&m_usb_fifo_mux);
@@ -1015,7 +1069,7 @@ void EspNowUnicastEngine::runSourceLoop() {
                 hdr->audio.flags = (ch == SUB_CHANNEL_ID) ?
                                     encode_vsaf_flags(CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ, m_frame_duration_us) :
                                     encode_vsaf_flags(m_telemetry.sample_rate, m_frame_duration_us);
-                hdr->audio.pts_us = pts_us;
+                hdr->audio.master_time_us = now_us;
 
                 memcpy(tx_packet + sizeof(vsaf_unicast_header_t), frame.data, frame.octets);
                 size_t packet_size = sizeof(vsaf_unicast_header_t) + frame.octets;
@@ -1091,7 +1145,7 @@ void EspNowUnicastEngine::runSourceLoop() {
 
             vsaf_unicast_header_t* hdr = reinterpret_cast<vsaf_unicast_header_t*>(tx_packet);
             hdr->seq = seq;
-            hdr->audio.pts_us = static_cast<uint32_t>(pts_us);
+            hdr->audio.master_time_us = now_us;
 
             const uint8_t* payload = nullptr;
             size_t payload_len = 0;
@@ -1236,11 +1290,37 @@ void EspNowUnicastEngine::runSinkLoop() {
                 uint8_t seq = 0;
                 uint16_t frame_sr = 0;
                 uint16_t frame_dur = 0;
-                uint32_t frame_pts = 0;
+                uint16_t presentation_delay_ms = 50;
+                uint32_t master_time_us = 0;
                 int64_t rx_time_us = 0;
 
-                // Preload Frame 0 (Descriptor 0)
-                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us) && lc3_len > 0) {
+                bool found_future_packet = false;
+
+                while (!found_future_packet) {
+                    if (s_rx_fifo_count == 0) {
+                        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5));
+                        if (s_rx_fifo_count == 0) {
+                            break;
+                        }
+                    }
+
+                    if (!pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur,
+                                          &presentation_delay_ms, &master_time_us, &rx_time_us) || lc3_len == 0) {
+                        break;
+                    }
+
+                    int64_t now_local_us = esp_timer_get_time();
+                    int64_t master_time_estimate_us = now_local_us + m_master_time_offset_us;
+                    int64_t presentation_time_us = static_cast<int64_t>(master_time_us) + (static_cast<int64_t>(presentation_delay_ms) * 1000LL);
+
+                    if (presentation_time_us <= master_time_estimate_us) {
+                        // Presentation time is in the past -> discard stale packet and pop next
+                        continue;
+                    }
+
+                    // Packet found with presentation time in the future!
+                    found_future_packet = true;
+
                     if (frame_sr != m_telemetry.sample_rate || frame_dur != m_telemetry.frame_duration_us) {
                         m_telemetry.sample_rate = frame_sr;
                         m_telemetry.frame_duration_us = frame_dur;
@@ -1251,9 +1331,9 @@ void EspNowUnicastEngine::runSinkLoop() {
                         }
                     }
 
+                    // Decode frame 0 and load in first DMA descriptor
                     m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm_raw, MAX_PCM_FRAME_SAMPLES, &actual_samples,
                                             frame_sr, frame_dur);
-
                     m_audio_meter.pushFramePcm(decoded_pcm_raw, actual_samples);
                     if (m_i2s_dac && actual_samples > 0) {
                         size_t stereo_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples, true);
@@ -1262,34 +1342,51 @@ void EspNowUnicastEngine::runSinkLoop() {
                     m_last_rx_seq = seq;
                     m_has_last_rx_seq = true;
 
-                    // Initial time sync estimate based on 50ms presentation delay
-                    int32_t instant_offset_32 = static_cast<int32_t>(frame_pts - static_cast<uint32_t>(rx_time_us) - CONFIG_ESPNOW_PRESENTATION_DELAY_US);
-                    m_master_time_offset_us = instant_offset_32;
-                    m_time_offset_ring_buffer.push(static_cast<float>(instant_offset_32) / 1000.0f);
-                    m_last_sync_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
-                }
+                    // Pop the next LC3 packet (if available, wait up to 5 ms) and load second DMA descriptor
+                    size_t lc3_len_2 = 0;
+                    uint8_t seq_2 = 0;
+                    uint16_t frame_sr_2 = 0, frame_dur_2 = 0, delay_ms_2 = 0;
+                    uint32_t master_time_2 = 0;
+                    int64_t rx_time_2 = 0;
 
-                // Preload Frame 1 (Descriptor 1)
-                if (pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us) && lc3_len > 0) {
-                    m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len, decoded_pcm_raw, MAX_PCM_FRAME_SAMPLES, &actual_samples,
-                                            frame_sr, frame_dur);
-
-                    m_audio_meter.pushFramePcm(decoded_pcm_raw, actual_samples);
-                    if (m_i2s_dac && actual_samples > 0) {
-                        size_t stereo_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples, true);
-                        m_i2s_dac->preload(stereo_pcm, stereo_bytes, &bytes_written);
+                    if (!pop_rx_lc3_frame(current_lc3_buf, &lc3_len_2, &seq_2, &frame_sr_2, &frame_dur_2,
+                                          &delay_ms_2, &master_time_2, &rx_time_2)) {
+                        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5));
+                        pop_rx_lc3_frame(current_lc3_buf, &lc3_len_2, &seq_2, &frame_sr_2, &frame_dur_2,
+                                         &delay_ms_2, &master_time_2, &rx_time_2);
                     }
-                    m_last_rx_seq = seq;
-                    m_has_last_rx_seq = true;
-                }
 
-                // Start I2S hardware DAC clock (Playing dual preloaded descriptors)
-                if (m_i2s_dac) {
-                    m_i2s_dac->start();
-                }
+                    if (lc3_len_2 > 0) {
+                        size_t actual_samples_2 = 0;
+                        m_lc3_codec.decodeFrame(current_lc3_buf, lc3_len_2, decoded_pcm_raw, MAX_PCM_FRAME_SAMPLES, &actual_samples_2,
+                                                frame_sr_2, frame_dur_2);
+                        m_audio_meter.pushFramePcm(decoded_pcm_raw, actual_samples_2);
+                        if (m_i2s_dac && actual_samples_2 > 0) {
+                            size_t stereo_bytes_2 = apply_volume_and_format_stereo(decoded_pcm_raw, actual_samples_2, false);
+                            m_i2s_dac->preload(stereo_pcm, stereo_bytes_2, &bytes_written);
+                        }
+                        m_last_rx_seq = seq_2;
+                    }
 
-                consecutive_empty_frames = 0;
-                transitionTo(NetworkState::STREAM);
+                    // Precise microsecond wait until presentation time
+                    int64_t target_start_local_us = presentation_time_us - m_master_time_offset_us;
+                    int64_t wait_us = target_start_local_us - esp_timer_get_time();
+                    if (wait_us > 2000) {
+                        vTaskDelay(pdMS_TO_TICKS((wait_us - 1000) / 1000));
+                    }
+                    while (esp_timer_get_time() < target_start_local_us) {
+                        esp_rom_delay_us(1);
+                    }
+
+                    // Start I2S hardware DAC clock at exact microsecond presentation time
+                    if (m_i2s_dac) {
+                        m_i2s_dac->start();
+                    }
+
+                    consecutive_empty_frames = 0;
+                    transitionTo(NetworkState::STREAM);
+                    break;
+                }
                 break;
             }
 
@@ -1313,15 +1410,18 @@ void EspNowUnicastEngine::runSinkLoop() {
                 uint8_t seq = 0;
                 uint16_t frame_sr = 0;
                 uint16_t frame_dur = 0;
-                uint32_t frame_pts = 0;
+                uint16_t presentation_delay_ms = 50;
+                uint32_t master_time_us = 0;
                 int64_t rx_time_us = 0;
 
-                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us);
+                bool has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur,
+                                                   &presentation_delay_ms, &master_time_us, &rx_time_us);
 
                 // JIT absorption: wait up to 5 ms if FIFO is momentarily empty
                 if (!has_packet) {
                     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5)) > 0) {
-                        has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur, &frame_pts, &rx_time_us);
+                        has_packet = pop_rx_lc3_frame(current_lc3_buf, &lc3_len, &seq, &frame_sr, &frame_dur,
+                                                       &presentation_delay_ms, &master_time_us, &rx_time_us);
                     }
                 }
 
@@ -1337,17 +1437,6 @@ void EspNowUnicastEngine::runSinkLoop() {
                             m_i2s_dac->reconfigureSampleRate(frame_sr, frame_dur);
                         }
                     }
-
-                    // Microsecond Phase Offset Update
-                    int32_t instant_offset_32 = static_cast<int32_t>(frame_pts - static_cast<uint32_t>(rx_time_us) - CONFIG_ESPNOW_PRESENTATION_DELAY_US);
-                    int64_t instant_offset = instant_offset_32;
-                    if (m_master_time_offset_us == 0) {
-                        m_master_time_offset_us = instant_offset;
-                    } else {
-                        m_master_time_offset_us = (m_master_time_offset_us * 95 + instant_offset * 5) / 100;
-                    }
-                    m_time_offset_ring_buffer.push(static_cast<float>(instant_offset) / 1000.0f);
-                    m_last_sync_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
 
                     // Sequence gap / Packet loss check
                     if (m_has_last_rx_seq) {
@@ -1367,7 +1456,8 @@ void EspNowUnicastEngine::runSinkLoop() {
                                 s_rx_fifo[s_rx_fifo_tail].seq = seq;
                                 s_rx_fifo[s_rx_fifo_tail].sample_rate_hz = frame_sr;
                                 s_rx_fifo[s_rx_fifo_tail].frame_duration_us = frame_dur;
-                                s_rx_fifo[s_rx_fifo_tail].pts_us = frame_pts;
+                                s_rx_fifo[s_rx_fifo_tail].presentation_delay_ms = presentation_delay_ms;
+                                s_rx_fifo[s_rx_fifo_tail].master_time_us = master_time_us;
                                 s_rx_fifo[s_rx_fifo_tail].rx_local_time_us = rx_time_us;
                                 memcpy(s_rx_fifo[s_rx_fifo_tail].data, current_lc3_buf, lc3_len);
                                 s_rx_fifo_count++;
