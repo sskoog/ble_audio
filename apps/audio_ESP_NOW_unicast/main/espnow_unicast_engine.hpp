@@ -246,6 +246,7 @@ public:
     const SinkPeerConfig* getPeerByMac(const uint8_t* mac) const;
     void resetPeerStats();
     int  getPeerCount() const { return m_peer_count; }
+    void getNodeStatusString(char* out_buf, size_t max_len) const;
 
     // Volume Control & Slew Limiter
     void setVolume(uint8_t vol_u8, bool instant = false);

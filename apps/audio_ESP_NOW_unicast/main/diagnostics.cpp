@@ -41,7 +41,7 @@ static const char* getState5Char(AudioNet::NetworkState state) {
         case AudioNet::NetworkState::OFF:          return "OFF  ";
         case AudioNet::NetworkState::IDLE:         return "IDLE ";
         case AudioNet::NetworkState::SCANNING:     return "SCAN ";
-        case AudioNet::NetworkState::PREFILL:      return "PREF ";
+        case AudioNet::NetworkState::PREFILL:      return "FILL ";
         case AudioNet::NetworkState::STREAM:       return "STRM ";
         case AudioNet::NetworkState::CAST:         return "CAST ";
         case AudioNet::NetworkState::PC_STREAM:    return "PC_ST";
@@ -56,8 +56,8 @@ static const char* getChannelStr(uint8_t ch) {
         case 2:  return "CNTR";
         case 3:  return "LSUR";
         case 4:  return "RSUR";
-        case 5:  return "SUB ";
-        default: return "CH ? ";
+        case 5:  return "SUB";
+        default: return "CH?";
     }
 }
 
@@ -231,9 +231,8 @@ void SystemDiagnostics::tick() {
         char mid_block[64];
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
-            // SOURCE specifics
-            int peer_count = m_unicast_engine.getPeerCount();
-            snprintf(role_col_str, sizeof(role_col_str), "%2d/%d", peer_count, MAX_UNICAST_SINKS);
+            // SOURCE specifics: Node status string (e.g. '1OOOO1' for 6 slots: Ch 0..5)
+            m_unicast_engine.getNodeStatusString(role_col_str, sizeof(role_col_str));
 
             size_t usb_q_len = m_unicast_engine.getUsbQueueLength();
             char usb_q_str[8];
@@ -274,8 +273,8 @@ void SystemDiagnostics::tick() {
                      " %3.3s  %3.3s  %4.4s  %4.4s %3.3s  %3.3s ",
                      usb_q_str, usb_ovr_str, tx_pkts_str, ack_pct_str, ack_fails_str, usb_udr_str);
         } else {
-            // SINK specifics
-            snprintf(role_col_str, sizeof(role_col_str), "%-4.4s", getChannelStr(m_unicast_engine.getTargetChannel()));
+            // SINK specifics: Target Channel string
+            snprintf(role_col_str, sizeof(role_col_str), "%-6.6s", getChannelStr(m_unicast_engine.getTargetChannel()));
 
             char gain_sw_str[8];
             uint8_t vol_u8 = m_unicast_engine.getVolume();
@@ -359,7 +358,7 @@ void SystemDiagnostics::tick() {
         snprintf(title_str, sizeof(title_str), " %s [%s] ", cfg->device_name, (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK");
         size_t title_len = strlen(title_str);
 
-        size_t total_inner = 158;
+        size_t total_inner = 160;
         size_t left_pad = (total_inner > title_len) ? (total_inner - title_len) / 2 : 0;
         size_t right_pad = (total_inner > title_len) ? (total_inner - title_len - left_pad) : 0;
 
@@ -375,7 +374,7 @@ void SystemDiagnostics::tick() {
 
         char row_buf[256];
         snprintf(row_buf, sizeof(row_buf),
-                 "| %2d  %2d  %3u | %-5.5s | %-4.4s | %4.4s %02u %-3.3s |%s|%s|%s|",
+                 "| %2d  %2d  %3u | %-5.5s | %-6.6s | %4.4s %02u %-3.3s |%s|%s|%s|",
                  cpu_load_pct, (int)(temp_c + 0.5f), (unsigned)cpu_freq_mhz,
                  getState5Char(m_unicast_engine.getState()),
                  role_col_str,
@@ -387,11 +386,11 @@ void SystemDiagnostics::tick() {
         if ((m_header_counter % 10) == 0) {
             printf("%s\n", border_line);
             if (cfg->node_role == NODE_ROLE_SOURCE) {
-                printf("|    CPU      | STATE | PEER |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | USB_FIFO  PKTS  ACK%% FAIL UDR |         TIME & SYNCHRONIZATION (ms)    |\n");
-                printf("|  %%   C  MHz |       | ACT  | GAIN Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   | len  OVR   1/s   tot  tot tot |  Local  Master  EMA_offs RB_med RB_rng |\n");
+                printf("|    CPU      | STATE | NODES  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | USB_FIFO  PKTS  ACK%% FAIL UDR |         TIME & SYNCHRONIZATION (ms)    |\n");
+                printf("|  %%   C  MHz |       | 012345 | GAIN Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   | len  OVR   1/s   tot  tot tot |  Local  Master  EMA_offs RB_med RB_rng |\n");
             } else {
-                printf("|    CPU      | STATE |  CH  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | AMP dB  PKTS  PLC  DMA  FIFO  |         TIME & SYNCHRONIZATION (ms)    |\n");
-                printf("|  %%   C  MHz |       |      | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   |  SW  HW   1/s  tot  UDR   UDR |  Local  Master  EMA_offs RB_med RB_rng |\n");
+                printf("|    CPU      | STATE |  CHAN  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | AMP dB  PKTS  PLC  DMA  FIFO  |         TIME & SYNCHRONIZATION (ms)    |\n");
+                printf("|  %%   C  MHz |       |        | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   |  SW  HW   1/s  tot  UDR   UDR |  Local  Master  EMA_offs RB_med RB_rng |\n");
             }
         }
         printf("%s\n", row_buf);

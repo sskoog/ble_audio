@@ -37,7 +37,7 @@ static const char* getState5Char(AudioNet::NetworkState state) {
         case AudioNet::NetworkState::OFF:          return "OFF  ";
         case AudioNet::NetworkState::IDLE:         return "IDLE ";
         case AudioNet::NetworkState::SCANNING:     return "SCAN ";
-        case AudioNet::NetworkState::PREFILL:      return "PREF ";
+        case AudioNet::NetworkState::PREFILL:      return "FILL ";
         case AudioNet::NetworkState::STREAMING:    return "STRM ";
         case AudioNet::NetworkState::BROADCASTING: return "BROAD";
         default:                                   return "UNKWN";

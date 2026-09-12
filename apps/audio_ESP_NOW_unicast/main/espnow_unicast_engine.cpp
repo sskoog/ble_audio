@@ -436,9 +436,7 @@ bool EspNowUnicastEngine::addOrUpdatePeerFromHello(const uint8_t* mac, uint8_t c
                 m_peers[i].session_start_time_us = esp_timer_get_time();
             }
             taskEXIT_CRITICAL(&m_peer_mux);
-            ESP_LOGI(TAG, "SINK Handshake Attached: MAC %02X:%02X:%02X:%02X:%02X:%02X -> Channel %u (%s) ONLINE",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], channel_id,
-                     (channel_id == 0) ? "Left" : (channel_id == 1) ? "Right" : (channel_id == 5) ? "Subwoofer" : "Surround");
+            
             return true;
         }
     }
@@ -477,9 +475,7 @@ bool EspNowUnicastEngine::addOrUpdatePeerFromHello(const uint8_t* mac, uint8_t c
         };
         esp_now_set_peer_rate_config(mac, &rate_cfg);
     }
-    ESP_LOGI(TAG, "New SINK Registered & Attached: MAC %02X:%02X:%02X:%02X:%02X:%02X -> Channel %u (%s) ONLINE",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], channel_id,
-             (channel_id == 0) ? "Left" : (channel_id == 1) ? "Right" : (channel_id == 5) ? "Subwoofer" : "Surround");
+    
     return true;
 }
 
@@ -535,6 +531,30 @@ const SinkPeerConfig* EspNowUnicastEngine::getPeerByMac(const uint8_t* mac) cons
         if (memcmp(m_peers[i].mac, mac, 6) == 0) return &m_peers[i];
     }
     return nullptr;
+}
+
+void EspNowUnicastEngine::getNodeStatusString(char* out_buf, size_t max_len) const {
+    if (!out_buf || max_len < 7) return;
+
+    // Channels: 0: Left, 1: Right, 2: Center, 3: Left Surround, 4: Right Surround, 5: Subwoofer
+    char statuses[7] = "OOOOOO"; // Default all 6 channels to Offline
+
+    taskENTER_CRITICAL((portMUX_TYPE*)&m_peer_mux);
+    for (int i = 0; i < m_peer_count; i++) {
+        uint8_t ch = m_peers[i].channel_id;
+        if (ch < 6) {
+            if (!m_peers[i].is_enabled || m_peers[i].status == PeerStatus::DISABLED) {
+                statuses[ch] = 'D';
+            } else if (m_peers[i].status == PeerStatus::ONLINE) {
+                statuses[ch] = '1';
+            } else {
+                statuses[ch] = 'O';
+            }
+        }
+    }
+    taskEXIT_CRITICAL((portMUX_TYPE*)&m_peer_mux);
+
+    snprintf(out_buf, max_len, "%s", statuses);
 }
 
 void EspNowUnicastEngine::resetPeerStats() {
@@ -671,8 +691,7 @@ void EspNowUnicastEngine::onPacketReceived(const uint8_t* mac_addr, const uint8_
                 }
             }
             taskEXIT_CRITICAL(&m_peer_mux);
-            ESP_LOGI(TAG, "SINK Detached (BYE): MAC %02X:%02X:%02X:%02X:%02X:%02X -> OFFLINE",
-                     mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+            
         } else if (hdr->ctrl.opcode == static_cast<uint8_t>(ControlOpcode::VOLUME_SET)) {
             // Volume Command from SOURCE
             if (hdr->ctrl.channel_id == 0xFF || hdr->ctrl.channel_id == m_target_channel) {
