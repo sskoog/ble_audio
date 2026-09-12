@@ -1305,6 +1305,7 @@ void EspNowUnicastEngine::runSinkLoop() {
                 while (s_rx_fifo_count > 4) {
                     s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
                     s_rx_fifo_count--;
+                    m_fifo_overflow.fetch_add(1, std::memory_order_relaxed);
                 }
                 taskEXIT_CRITICAL(&s_fifo_mux);
 

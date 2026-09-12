@@ -272,7 +272,7 @@ void SystemDiagnostics::tick() {
             snprintf(usb_udr_str, sizeof(usb_udr_str), "%3lu", (unsigned long)usb_udr);
 
             snprintf(mid_block, sizeof(mid_block),
-                     " %3.3s  %3.3s  %4.4s  %4.4s %3.3s  %3.3s ",
+                     " %3.3s  %3.3s   %4.4s  %4.4s  %3.3s  %3.3s ",
                      usb_q_str, usb_ovr_str, tx_pkts_str, ack_pct_str, ack_fails_str, usb_udr_str);
         } else {
             // SINK specifics: Target Channel string
@@ -314,11 +314,15 @@ void SystemDiagnostics::tick() {
             }
 
             char fifo_udr_str[8];
-            snprintf(fifo_udr_str, sizeof(fifo_udr_str), "%4lu", (unsigned long)fifo_ud);
+            snprintf(fifo_udr_str, sizeof(fifo_udr_str), "%3lu", (unsigned long)fifo_ud);
+
+            uint32_t fifo_ovr = m_unicast_engine.getFifoOverflowCount();
+            char fifo_ovr_str[8];
+            snprintf(fifo_ovr_str, sizeof(fifo_ovr_str), "%3lu", (unsigned long)fifo_ovr);
 
             snprintf(mid_block, sizeof(mid_block),
-                     " %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %4.4s ",
-                     gain_sw_str, gain_hw_str, pkts_str, plc_str, dma_udr_str, fifo_udr_str);
+                     " %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %3.3s  %3.3s ",
+                     gain_sw_str, gain_hw_str, pkts_str, plc_str, dma_udr_str, fifo_udr_str, fifo_ovr_str);
         }
 
         uint32_t t_local = static_cast<uint32_t>((esp_timer_get_time() / 1000ULL) % 1000000ULL);
@@ -388,11 +392,11 @@ void SystemDiagnostics::tick() {
         if ((m_header_counter % 10) == 0) {
             printf("%s\n", border_line);
             if (cfg->node_role == NODE_ROLE_SOURCE) {
-                printf("|    CPU      | STATE | NODES  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | USB_FIFO  PKTS  ACK%% FAIL UDR |         TIME & SYNCHRONIZATION (ms)    |\n");
-                printf("|  %%   C  MHz |       | 012345 | GAIN Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   | len  OVR   1/s   tot  tot tot |  Local  Master  EMA_offs RB_med RB_rng |\n");
+                printf("|    CPU      | STATE | NODES  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | USB_FIFO     PKTS  ACK%%  FAIL UDR |         TIME & SYNCHRONIZATION (ms)    |\n");
+                printf("|  %%   C  MHz |       | 012345 | GAIN Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   | len  OVR      1/s   tot   tot tot |  Local  Master  EMA_offs RB_med RB_rng |\n");
             } else {
-                printf("|    CPU      | STATE |  CHAN  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | AMP dB  PKTS  PLC  DMA  FIFO  |         TIME & SYNCHRONIZATION (ms)    |\n");
-                printf("|  %%   C  MHz |       |        | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   |  SW  HW   1/s  tot  UDR   UDR |  Local  Master  EMA_offs RB_med RB_rng |\n");
+                printf("|    CPU      | STATE |  CHAN  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | AMP dB   PKTS  PLC  DMA   FIFO    |         TIME & SYNCHRONIZATION (ms)    |\n");
+                printf("|  %%   C  MHz |       |        | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   |  SW  HW   1/s  tot  UDR  UDR  OVR |  Local  Master  EMA_offs RB_med RB_rng |\n");
             }
         }
         printf("%s\n", row_buf);
