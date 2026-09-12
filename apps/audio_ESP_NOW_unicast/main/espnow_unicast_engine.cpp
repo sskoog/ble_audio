@@ -440,7 +440,12 @@ bool EspNowUnicastEngine::addOrUpdatePeerFromHello(const uint8_t* mac, uint8_t c
                 m_peers[i].session_start_time_us = esp_timer_get_time();
             }
             taskEXIT_CRITICAL(&m_peer_mux);
-            
+
+            if (channel_id < MAX_UNICAST_SINKS) {
+                taskENTER_CRITICAL(&m_usb_fifo_mux);
+                m_usb_lc3_fifo[channel_id].clear();
+                taskEXIT_CRITICAL(&m_usb_fifo_mux);
+            }
             return true;
         }
     }
@@ -979,24 +984,31 @@ void EspNowUnicastEngine::runSourceLoop() {
         if (m_state == NetworkState::PC_STREAM) {
             uint32_t pts_us = static_cast<uint32_t>(now_us + CONFIG_ESPNOW_PRESENTATION_DELAY_US);
 
+            // 1. Lockstep pop: Pop 1 frame from ALL channel FIFOs simultaneously (advancing online and offline channels together)
+            UsbLc3Frame channel_frames[MAX_UNICAST_SINKS];
+            bool has_channel_frame[MAX_UNICAST_SINKS] = {false};
+
+            taskENTER_CRITICAL(&m_usb_fifo_mux);
+            for (uint8_t ch = 0; ch < MAX_UNICAST_SINKS; ch++) {
+                has_channel_frame[ch] = m_usb_lc3_fifo[ch].pop(channel_frames[ch]);
+            }
+            taskEXIT_CRITICAL(&m_usb_fifo_mux);
+
+            // 2. Dispatch to registered ONLINE peers (offline channels were popped and discarded above)
             for (int i = 0; i < peer_count_snap; i++) {
+                uint8_t ch = peers_snap[i].channel_id;
+                if (ch >= MAX_UNICAST_SINKS || !has_channel_frame[ch]) {
+                    if (peers_snap[i].is_enabled && peers_snap[i].status == PeerStatus::ONLINE) {
+                        m_usb_underrun_count.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    continue;
+                }
+
                 if (!peers_snap[i].is_enabled || peers_snap[i].status != PeerStatus::ONLINE) {
                     continue;
                 }
 
-                uint8_t ch = peers_snap[i].channel_id;
-                UsbLc3Frame frame = {};
-                bool has_frame = false;
-
-                taskENTER_CRITICAL(&m_usb_fifo_mux);
-                has_frame = m_usb_lc3_fifo[ch].pop(frame);
-                taskEXIT_CRITICAL(&m_usb_fifo_mux);
-
-                if (!has_frame) {
-                    m_usb_underrun_count.fetch_add(1, std::memory_order_relaxed);
-                    continue;
-                }
-
+                const auto& frame = channel_frames[ch];
                 vsaf_unicast_header_t* hdr = reinterpret_cast<vsaf_unicast_header_t*>(tx_packet);
                 hdr->seq = frame.seq;
                 hdr->octets = frame.octets;

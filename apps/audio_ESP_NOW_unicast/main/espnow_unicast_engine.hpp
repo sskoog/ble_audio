@@ -100,7 +100,7 @@ struct UsbLc3Frame {
     uint8_t  data[MAX_LC3_FRAME_OCTETS];
 };
 
-#define USB_LC3_FIFO_CAPACITY 16
+#define USB_LC3_FIFO_CAPACITY 8
 
 class UsbLc3Fifo {
 public:
@@ -108,7 +108,9 @@ public:
 
     bool push(const UsbLc3Frame& frame) {
         if (m_count >= USB_LC3_FIFO_CAPACITY) {
-            return false;
+            // Drop oldest frame on overrun to preserve live temporal alignment
+            m_tail = (m_tail + 1) % USB_LC3_FIFO_CAPACITY;
+            m_count--;
         }
         m_frames[m_head] = frame;
         m_head = (m_head + 1) % USB_LC3_FIFO_CAPACITY;
