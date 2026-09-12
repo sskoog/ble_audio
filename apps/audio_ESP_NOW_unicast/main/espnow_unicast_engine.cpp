@@ -803,6 +803,7 @@ const char* EspNowUnicastEngine::getStateString() const {
         case NetworkState::PREFILL:     return "PREFILL";
         case NetworkState::STREAM:      return "STREAM";
         case NetworkState::CAST:        return "CAST";
+        case NetworkState::PC_STREAM:   return "PC STRM";
         default:                        return "UNKNOWN";
     }
 }

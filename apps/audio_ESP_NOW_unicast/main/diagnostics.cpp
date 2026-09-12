@@ -3,11 +3,12 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
-
-static const char* TAG = "DIAGNOSTICS";
 
 namespace Diagnostics {
 
@@ -31,28 +32,32 @@ void SystemDiagnostics::init() {
     if (err == ESP_OK) {
         temperature_sensor_enable(m_temp_sensor);
     } else {
-        ESP_LOGW(TAG, "On-chip temperature sensor init failed: %s", esp_err_to_name(err));
         m_temp_sensor = nullptr;
     }
 }
 
-static inline void format_uptime(int64_t start_time_us, char* out_buf, size_t buf_size) {
-    if (start_time_us <= 0) {
-        snprintf(out_buf, buf_size, "00:00");
-        return;
+static const char* getState5Char(AudioNet::NetworkState state) {
+    switch (state) {
+        case AudioNet::NetworkState::OFF:          return "OFF  ";
+        case AudioNet::NetworkState::IDLE:         return "IDLE ";
+        case AudioNet::NetworkState::SCANNING:     return "SCAN ";
+        case AudioNet::NetworkState::PREFILL:      return "PREF ";
+        case AudioNet::NetworkState::STREAM:       return "STRM ";
+        case AudioNet::NetworkState::CAST:         return "CAST ";
+        case AudioNet::NetworkState::PC_STREAM:    return "PC_ST";
+        default:                                   return "UNKWN";
     }
-    int64_t now_us = esp_timer_get_time();
-    int64_t elapsed_sec = (now_us - start_time_us) / 1000000;
-    if (elapsed_sec < 0) elapsed_sec = 0;
+}
 
-    uint32_t mins = static_cast<uint32_t>(elapsed_sec / 60);
-    uint32_t secs = static_cast<uint32_t>(elapsed_sec % 60);
-    if (mins >= 60) {
-        uint32_t hours = mins / 60;
-        mins %= 60;
-        snprintf(out_buf, buf_size, "%02lu:%02lu:%02lu", (unsigned long)hours, (unsigned long)mins, (unsigned long)secs);
-    } else {
-        snprintf(out_buf, buf_size, "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
+static const char* getChannelStr(uint8_t ch) {
+    switch (ch) {
+        case 0:  return "LEFT";
+        case 1:  return "RGHT";
+        case 2:  return "CNTR";
+        case 3:  return "LSUR";
+        case 4:  return "RSUR";
+        case 5:  return "SUB ";
+        default: return "CH ? ";
     }
 }
 
@@ -81,144 +86,317 @@ void SystemDiagnostics::tick() {
 #elif defined(CONFIG_IDF_TARGET_ESP32C6)
         cpu_freq_mhz = 160;
 #endif
-        uint32_t free_heap_kb = static_cast<uint32_t>(esp_get_free_heap_size() / 1024);
+
+        uint32_t dma_udr = m_unicast_engine.getDmaUnderrunCount();
+        uint32_t plc_count = m_unicast_engine.getPlcCount();
+        uint32_t fifo_ud = m_unicast_engine.getFifoUnderrunCount();
+
+        uint32_t delta_dma = (dma_udr >= m_last_dma_udr) ? (dma_udr - m_last_dma_udr) : 0;
+        uint32_t delta_fifo = (fifo_ud >= m_last_fifo_udr) ? (fifo_ud - m_last_fifo_udr) : 0;
+        m_last_dma_udr = dma_udr;
+        m_last_fifo_udr = fifo_ud;
+
+        // FreeRTOS CPU load measurement sampled over the 1-second interval
+        int cpu_load_pct = m_cpu_pct;
+#if (configGENERATE_RUN_TIME_STATS == 1 && configUSE_TRACE_FACILITY == 1)
+        UBaseType_t task_count = uxTaskGetNumberOfTasks();
+        if (task_count > 0) {
+            TaskStatus_t* task_status_array = static_cast<TaskStatus_t*>(pvPortMalloc(task_count * sizeof(TaskStatus_t)));
+            if (task_status_array) {
+                uint32_t total_runtime_dummy = 0;
+                UBaseType_t num_tasks = uxTaskGetSystemState(task_status_array, task_count, &total_runtime_dummy);
+                uint32_t total_tasks_runtime = 0;
+                uint32_t idle_runtime = 0;
+                for (UBaseType_t i = 0; i < num_tasks; ++i) {
+                    total_tasks_runtime += task_status_array[i].ulRunTimeCounter;
+                    if (strncmp(task_status_array[i].pcTaskName, "IDLE", 4) == 0) {
+                        idle_runtime += task_status_array[i].ulRunTimeCounter;
+                    }
+                }
+                vPortFree(task_status_array);
+
+                if (m_has_prev_runtime) {
+                    uint32_t delta_total = total_tasks_runtime - m_last_total_runtime;
+                    uint32_t delta_idle = idle_runtime - m_last_idle_runtime;
+                    if (delta_total > 0 && delta_idle <= delta_total) {
+                        uint32_t active_time = delta_total - delta_idle;
+                        cpu_load_pct = static_cast<int>((static_cast<uint64_t>(active_time) * 100ULL + (delta_total / 2)) / delta_total);
+                        if (cpu_load_pct > 100) cpu_load_pct = 100;
+                        if (cpu_load_pct < 0) cpu_load_pct = 0;
+                        m_cpu_pct = cpu_load_pct;
+                    }
+                } else {
+                    m_has_prev_runtime = true;
+                }
+                m_last_total_runtime = total_tasks_runtime;
+                m_last_idle_runtime = idle_runtime;
+            }
+        }
+#endif
+
+        if (cfg->node_role == NODE_ROLE_SINK &&
+            m_unicast_engine.getState() == AudioNet::NetworkState::STREAM &&
+            (delta_dma > 0 || plc_count > 0 || delta_fifo > 0)) {
+            m_status_led.triggerUnderrunFlash(200);
+        }
+
+        bool is_audio_active = (m_unicast_engine.getState() == AudioNet::NetworkState::STREAM ||
+                                m_unicast_engine.getState() == AudioNet::NetworkState::CAST ||
+                                m_unicast_engine.getState() == AudioNet::NetworkState::PC_STREAM ||
+                                m_unicast_engine.getState() == AudioNet::NetworkState::PREFILL);
+
+        float rms_db = is_audio_active ? m_unicast_engine.getAudioFrameRMS_dBFS() : -INFINITY;
+        float peak_db = is_audio_active ? m_unicast_engine.getAudioPeak_dBFS() : -INFINITY;
+
+        char rms_str[8], peak_str[8];
+        if (!is_audio_active || std::isinf(rms_db) || rms_db <= -95.0f) {
+            snprintf(rms_str, sizeof(rms_str), "  off");
+        } else {
+            snprintf(rms_str, sizeof(rms_str), "%5.1f", rms_db);
+        }
+
+        if (!is_audio_active || std::isinf(peak_db) || peak_db <= -95.0f) {
+            snprintf(peak_str, sizeof(peak_str), "  off");
+        } else {
+            snprintf(peak_str, sizeof(peak_str), "%5.1f", peak_db);
+        }
+
+        // 1. Read WiFi Channel dynamically from WiFi hardware
+        uint8_t wifi_ch = cfg->default_channel;
+        wifi_second_chan_t second_ch = WIFI_SECOND_CHAN_NONE;
+        uint8_t current_hw_ch = 0;
+        if (esp_wifi_get_channel(&current_hw_ch, &second_ch) == ESP_OK && current_hw_ch > 0) {
+            wifi_ch = current_hw_ch;
+        }
+
+        // 2. Read WiFi RSSI / TX Gain dynamically
+        char rssi_str[8];
+        if (cfg->node_role == NODE_ROLE_SOURCE) {
+            int8_t actual_tx_power = 0;
+            if (esp_wifi_get_max_tx_power(&actual_tx_power) == ESP_OK) {
+                snprintf(rssi_str, sizeof(rssi_str), "%+4.1f", actual_tx_power * 0.25f);
+            } else {
+                snprintf(rssi_str, sizeof(rssi_str), "+9.0");
+            }
+        } else if (m_unicast_engine.getState() == AudioNet::NetworkState::OFF ||
+                   m_unicast_engine.getState() == AudioNet::NetworkState::IDLE) {
+            snprintf(rssi_str, sizeof(rssi_str), "  - ");
+        } else {
+            int8_t rssi_val = m_unicast_engine.getLastRssi();
+            if (rssi_val <= -120) {
+                snprintf(rssi_str, sizeof(rssi_str), "  - ");
+            } else {
+                snprintf(rssi_str, sizeof(rssi_str), "%4d", rssi_val);
+            }
+        }
+
+        // 3. Read WiFi PHY rate dynamically
+        const char* phy_str = m_unicast_engine.getWifiPhyRateString();
+
+        // 4. Read Audio Codec dynamically from audio pipeline
+        const char* enc_str = m_unicast_engine.getActiveCodecName();
+
+        // 5. Sample Rate (SR kHz)
+        char sr_str[8];
+        if (is_audio_active) {
+            snprintf(sr_str, sizeof(sr_str), "%4.0f", stream.sample_rate / 1000.0f);
+        } else {
+            snprintf(sr_str, sizeof(sr_str), "  - ");
+        }
+
+        // 6. Packet Duration (PD ms)
+        char pd_str[8];
+        if (is_audio_active) {
+            snprintf(pd_str, sizeof(pd_str), "%s", (stream.frame_duration_us == 10000) ? " 10" : "7.5");
+        } else {
+            snprintf(pd_str, sizeof(pd_str), " - ");
+        }
+
+        // 7. Codec Execution Duration (Avg & Pk in ms from 10-element SPSC ring buffer)
+        float codec_avg_ms = 0.0f;
+        float codec_peak_ms = 0.0f;
+        bool has_codec_data = false;
+        m_unicast_engine.getCodecDurationStats(codec_avg_ms, codec_peak_ms, has_codec_data);
+
+        char codec_avg_str[8], codec_pk_str[8];
+        if (has_codec_data && is_audio_active) {
+            snprintf(codec_avg_str, sizeof(codec_avg_str), "%5.2f", codec_avg_ms);
+            snprintf(codec_pk_str, sizeof(codec_pk_str), "%5.2f", codec_peak_ms);
+        } else {
+            snprintf(codec_avg_str, sizeof(codec_avg_str), "  -  ");
+            snprintf(codec_pk_str, sizeof(codec_pk_str), "  -  ");
+        }
+
+        char role_col_str[8];
+        char mid_block[64];
 
         if (cfg->node_role == NODE_ROLE_SOURCE) {
-            // SOURCE Telemetry
-            uint32_t tx_sec = m_unicast_engine.getAndResetTxPacketsSec();
-            uint32_t tx_total = m_unicast_engine.getTxPacketsTotal();
+            // SOURCE specifics
+            int peer_count = m_unicast_engine.getPeerCount();
+            snprintf(role_col_str, sizeof(role_col_str), "%2d/%d", peer_count, MAX_UNICAST_SINKS);
+
+            size_t usb_q_len = m_unicast_engine.getUsbQueueLength();
+            char usb_q_str[8];
+            snprintf(usb_q_str, sizeof(usb_q_str), "%3u", (unsigned int)usb_q_len);
+
+            uint32_t usb_ovr = m_unicast_engine.getUsbOverrunCount();
+            char usb_ovr_str[8];
+            snprintf(usb_ovr_str, sizeof(usb_ovr_str), "%3lu", (unsigned long)usb_ovr);
+
+            uint32_t raw_tx_pkts = m_unicast_engine.getAndResetTxPacketsSec();
+            uint32_t tx_pkts_sec = static_cast<uint32_t>((static_cast<uint64_t>(raw_tx_pkts) * 1000000ULL) / elapsed_us);
+            char tx_pkts_str[8];
+            if (!is_audio_active && raw_tx_pkts == 0) {
+                snprintf(tx_pkts_str, sizeof(tx_pkts_str), "   -");
+            } else {
+                snprintf(tx_pkts_str, sizeof(tx_pkts_str), "%4lu", (unsigned long)tx_pkts_sec);
+            }
+
             uint32_t acks_total = m_unicast_engine.getTxAcksTotal();
             uint32_t ack_fails = m_unicast_engine.getTxAckFailsTotal();
-            int peer_count = m_unicast_engine.getPeerCount();
-
-            float codec_avg_ms = 0.0f, codec_max_ms = 0.0f;
-            bool codec_has_data = false;
-            m_unicast_engine.getCodecDurationStats(codec_avg_ms, codec_max_ms, codec_has_data);
-
-            printf("\n======================== SOURCE MULTI-UNICAST TELEMETRY ========================\n");
-            printf(" State: %-10s | PHY: %-15s | CH: 1 | Pwr: +9.0dBm | Temp: %4.1fC\n",
-                   m_unicast_engine.getStateString(),
-                   m_unicast_engine.getWifiPhyRateString(),
-                   temp_c);
-            printf(" CPU: %luMHz (Dual Core) | Heap: %lukB | LC3: %luHz/%ums (%uB) | Enc: %4.2fms\n",
-                   (unsigned long)cpu_freq_mhz,
-                   (unsigned long)free_heap_kb,
-                   (unsigned long)stream.sample_rate,
-                   (unsigned int)(stream.frame_duration_us / 1000),
-                   (unsigned int)stream.frame_len,
-                   codec_avg_ms);
-            uint32_t usb_underrun = m_unicast_engine.getUsbUnderrunCount();
-            uint32_t usb_overrun = m_unicast_engine.getUsbOverrunCount();
-            size_t usb_q_len = m_unicast_engine.getUsbQueueLength();
-            printf(" Active SINKs: %d/%d | Total TX: %lu (%lu pkt/s) | ACKs: %lu | Fails: %lu\n",
-                   peer_count, MAX_UNICAST_SINKS,
-                   (unsigned long)tx_total, (unsigned long)tx_sec,
-                   (unsigned long)acks_total, (unsigned long)ack_fails);
-            printf(" USB Ingest FIFO: %u pkts | Underrun: %lu | Overrun: %lu\n",
-                   (unsigned int)usb_q_len,
-                   (unsigned long)usb_underrun,
-                   (unsigned long)usb_overrun);
-            printf("+---------+-------------------+----+-------+--------+----------+--------+--------+\n");
-            printf("| NAME    | MAC               | CH | STATE | UPTIME | SENT/TX  | ACK %%  | RSSI   |\n");
-            printf("+---------+-------------------+----+-------+--------+----------+--------+--------+\n");
-
-            for (int i = 0; i < peer_count; i++) {
-                const auto* p = m_unicast_engine.getPeer(i);
-                if (!p) continue;
-
-                char uptime_str[16];
-                format_uptime(p->session_start_time_us, uptime_str, sizeof(uptime_str));
-
-                float ack_pct = 100.0f;
-                uint32_t total_attempts = p->acks_received + p->ack_failures;
-                if (total_attempts > 0) {
-                    ack_pct = (static_cast<float>(p->acks_received) * 100.0f) / static_cast<float>(total_attempts);
-                }
-
-                const char* state_str = "DIS";
-                if (!p->is_enabled || p->status == AudioNet::PeerStatus::DISABLED) {
-                    state_str = "DIS";
-                } else if (p->status == AudioNet::PeerStatus::OFFLINE || p->consecutive_ack_fails >= 5) {
-                    state_str = "OFFL";
-                } else {
-                    state_str = "EN";
-                }
-
-                if (p->last_rssi <= -100) {
-                    printf("| %-9s | %02X:%02X:%02X:%02X:%02X:%02X | %2u | %-5s | %-6s | %8lu | %5.1f%% |   N/A  |\n",
-                           p->name,
-                           p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5],
-                           p->channel_id,
-                           state_str,
-                           uptime_str,
-                           (unsigned long)p->packets_sent,
-                           ack_pct);
-                } else {
-                    printf("| %-9s | %02X:%02X:%02X:%02X:%02X:%02X | %2u | %-5s | %-6s | %8lu | %5.1f%% | %3ddBm |\n",
-                           p->name,
-                           p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5],
-                           p->channel_id,
-                           state_str,
-                           uptime_str,
-                           (unsigned long)p->packets_sent,
-                           ack_pct,
-                           p->last_rssi);
-                }
-            }
-            printf("+---------+-------------------+----+-------+--------+----------+--------+--------+\n");
-        } else {
-            // SINK Telemetry
-            uint32_t rx_sec = m_unicast_engine.getAndResetRxPacketsSec();
-            uint32_t rx_total = m_unicast_engine.getRxPacketsTotal();
-            uint32_t fifo_underrun = m_unicast_engine.getFifoUnderrunCount();
-            uint32_t dma_underrun = m_unicast_engine.getDmaUnderrunCount();
-            uint32_t plc_count = m_unicast_engine.getPlcCount();
-            int8_t rssi = m_unicast_engine.getLastRssi();
-
-            float ema_offs_ms = 0.0f, rb_med_ms = 0.0f, rb_rng_ms = 0.0f;
-            bool has_offset_stats = false;
-            m_unicast_engine.getTimeOffsetStats(ema_offs_ms, rb_med_ms, rb_rng_ms, has_offset_stats);
-
-            char uptime_str[16];
-            format_uptime(m_unicast_engine.getSessionStartTimeUs(), uptime_str, sizeof(uptime_str));
-
-            float rms_dbfs = m_unicast_engine.getAudioFrameRMS_dBFS();
-            float peak_dbfs = m_unicast_engine.getAudioPeak_dBFS();
-
-            uint8_t vol_u8 = m_unicast_engine.getVolume();
-            float vol_db = m_unicast_engine.getTargetVolumeDb();
-            char vol_str[24];
-            if (vol_u8 == 0) {
-                snprintf(vol_str, sizeof(vol_str), "MUTE (0/255)");
+            uint32_t total_attempts = acks_total + ack_fails;
+            char ack_pct_str[8];
+            if (total_attempts > 0) {
+                float ack_pct = (static_cast<float>(acks_total) * 100.0f) / static_cast<float>(total_attempts);
+                snprintf(ack_pct_str, sizeof(ack_pct_str), "%3.0f%%", ack_pct);
             } else {
-                snprintf(vol_str, sizeof(vol_str), "%u/255 (%+5.1fdB)", vol_u8, vol_db);
+                snprintf(ack_pct_str, sizeof(ack_pct_str), "100%%");
             }
 
-            printf("\n========================= SINK MULTI-UNICAST TELEMETRY =========================\n");
-            printf(" Role: SINK (Node %d) | Target CH: %d (%s) | State: %-9s | Uptime: %s\n",
-                   cfg->node_id,
-                   m_unicast_engine.getTargetChannel(),
-                   (m_unicast_engine.getTargetChannel() == 0) ? "Left" : (m_unicast_engine.getTargetChannel() == 1) ? "Right" : (m_unicast_engine.getTargetChannel() == 5) ? "Subwoofer" : "Surround",
-                   m_unicast_engine.getStateString(),
-                   uptime_str);
-            printf(" PHY: %-15s | RSSI: %3ddBm | Temp: %4.1fC | Heap: %lukB | Slew: %4.0fdB/s\n",
-                   m_unicast_engine.getWifiPhyRateString(),
-                   rssi, temp_c, (unsigned long)free_heap_kb,
-                   CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC);
-            printf(" Volume: %-18s | MAX98357A Gain: +%ddB\n",
-                   vol_str, m_unicast_engine.getHardwareGainDb());
-            printf(" LC3: %luHz/%ums (%uB) | RMS: %5.1f dBFS | Peak: %5.1f dBFS\n",
-                   (unsigned long)stream.sample_rate,
-                   (unsigned int)(stream.frame_duration_us / 1000),
-                   (unsigned int)stream.frame_len,
-                   rms_dbfs, peak_dbfs);
-            printf(" RX: %lu pkt (%lu/s) | FIFO Underrun: %lu | DMA Underrun: %lu | PLC: %lu\n",
-                   (unsigned long)rx_total, (unsigned long)rx_sec,
-                   (unsigned long)fifo_underrun, (unsigned long)dma_underrun, (unsigned long)plc_count);
-            printf(" Clock Sync: EMA_offs: %+6.2fms | RB_med: %+6.2fms | Jitter_rng: %5.2fms\n",
-                   ema_offs_ms, rb_med_ms, rb_rng_ms);
-            printf("================================================================================\n");
+            char ack_fails_str[8];
+            snprintf(ack_fails_str, sizeof(ack_fails_str), "%3lu", (unsigned long)ack_fails);
+
+            uint32_t usb_udr = m_unicast_engine.getUsbUnderrunCount();
+            char usb_udr_str[8];
+            snprintf(usb_udr_str, sizeof(usb_udr_str), "%3lu", (unsigned long)usb_udr);
+
+            snprintf(mid_block, sizeof(mid_block),
+                     " %3.3s  %3.3s  %4.4s  %4.4s %3.3s  %3.3s ",
+                     usb_q_str, usb_ovr_str, tx_pkts_str, ack_pct_str, ack_fails_str, usb_udr_str);
+        } else {
+            // SINK specifics
+            snprintf(role_col_str, sizeof(role_col_str), "%-4.4s", getChannelStr(m_unicast_engine.getTargetChannel()));
+
+            char gain_sw_str[8];
+            uint8_t vol_u8 = m_unicast_engine.getVolume();
+            if (!is_audio_active || vol_u8 == 0) {
+                snprintf(gain_sw_str, sizeof(gain_sw_str), " - ");
+            } else {
+                int gain_sw_db = static_cast<int>(std::round(m_unicast_engine.getTargetVolumeDb()));
+                snprintf(gain_sw_str, sizeof(gain_sw_str), "%3d", gain_sw_db);
+            }
+
+            char gain_hw_str[8];
+            if (!m_unicast_engine.hasLocalAudioOutput()) {
+                snprintf(gain_hw_str, sizeof(gain_hw_str), " -");
+            } else {
+                snprintf(gain_hw_str, sizeof(gain_hw_str), "%+3d", m_unicast_engine.getHardwareGainDb());
+            }
+
+            char pkts_str[8];
+            uint32_t raw_rx_pkts = m_unicast_engine.getAndResetRxPacketsSec();
+            uint32_t rx_pkts_sec = static_cast<uint32_t>((static_cast<uint64_t>(raw_rx_pkts) * 1000000ULL) / elapsed_us);
+            if (!is_audio_active && raw_rx_pkts == 0) {
+                snprintf(pkts_str, sizeof(pkts_str), "   -");
+            } else {
+                snprintf(pkts_str, sizeof(pkts_str), "%4lu", (unsigned long)rx_pkts_sec);
+            }
+
+            char plc_str[8];
+            snprintf(plc_str, sizeof(plc_str), "%3lu", (unsigned long)plc_count);
+
+            char dma_udr_str[8];
+            if (!m_unicast_engine.hasLocalAudioOutput()) {
+                snprintf(dma_udr_str, sizeof(dma_udr_str), " - ");
+            } else {
+                snprintf(dma_udr_str, sizeof(dma_udr_str), "%3lu", (unsigned long)dma_udr);
+            }
+
+            char fifo_udr_str[8];
+            snprintf(fifo_udr_str, sizeof(fifo_udr_str), "%4lu", (unsigned long)fifo_ud);
+
+            snprintf(mid_block, sizeof(mid_block),
+                     " %3.3s %3.3s  %4.4s  %3.3s  %3.3s  %4.4s ",
+                     gain_sw_str, gain_hw_str, pkts_str, plc_str, dma_udr_str, fifo_udr_str);
         }
+
+        uint32_t t_local = static_cast<uint32_t>((esp_timer_get_time() / 1000ULL) % 1000000ULL);
+        char master_time_str[12];
+        if (m_unicast_engine.isMasterTimeValid()) {
+            uint32_t t_master = static_cast<uint32_t>(m_unicast_engine.getMasterTimeMs() % 1000000ULL);
+            snprintf(master_time_str, sizeof(master_time_str), "%6lu", (unsigned long)t_master);
+        } else {
+            snprintf(master_time_str, sizeof(master_time_str), "   -  ");
+        }
+
+        // Time Offset Diagnostics (EMA_offs, RB_med, RB_rng)
+        float ema_ms = 0.0f, rb_med_ms = 0.0f, rb_rng_ms = 0.0f;
+        bool has_offset_stats = false;
+        m_unicast_engine.getTimeOffsetStats(ema_ms, rb_med_ms, rb_rng_ms, has_offset_stats);
+
+        char ema_str[8], med_str[8], rng_str[8];
+        if (has_offset_stats && cfg->node_role == NODE_ROLE_SINK) {
+            snprintf(ema_str, sizeof(ema_str), "%+5.2f", ema_ms);
+            snprintf(med_str, sizeof(med_str), "%+5.2f", rb_med_ms);
+            snprintf(rng_str, sizeof(rng_str), "%5.2f", rb_rng_ms);
+        } else {
+            snprintf(ema_str, sizeof(ema_str), "  -  ");
+            snprintf(med_str, sizeof(med_str), "  -  ");
+            snprintf(rng_str, sizeof(rng_str), "  -  ");
+        }
+
+        char audio_block[64];
+        snprintf(audio_block, sizeof(audio_block),
+                 "  %-3.3s  %5.5s %5.5s  %4.4s  %3.3s %5.5s %5.5s ",
+                 enc_str, rms_str, peak_str, sr_str, pd_str, codec_avg_str, codec_pk_str);
+
+        char time_sync_block[64];
+        snprintf(time_sync_block, sizeof(time_sync_block),
+                 " %6lu  %6.6s   %5.5s   %5.5s  %5.5s  ",
+                 (unsigned long)t_local, master_time_str, ema_str, med_str, rng_str);
+
+        char title_str[64];
+        snprintf(title_str, sizeof(title_str), " %s [%s] ", cfg->device_name, (cfg->node_role == NODE_ROLE_SOURCE) ? "SOURCE" : "SINK");
+        size_t title_len = strlen(title_str);
+
+        size_t total_inner = 158;
+        size_t left_pad = (total_inner > title_len) ? (total_inner - title_len) / 2 : 0;
+        size_t right_pad = (total_inner > title_len) ? (total_inner - title_len - left_pad) : 0;
+
+        char border_line[192];
+        int pos = 0;
+        border_line[pos++] = '+';
+        for (size_t i = 0; i < left_pad; ++i) border_line[pos++] = '=';
+        memcpy(border_line + pos, title_str, title_len);
+        pos += title_len;
+        for (size_t i = 0; i < right_pad; ++i) border_line[pos++] = '=';
+        border_line[pos++] = '+';
+        border_line[pos++] = '\0';
+
+        char row_buf[256];
+        snprintf(row_buf, sizeof(row_buf),
+                 "| %2d  %2d  %3u | %-5.5s | %-4.4s | %4.4s %02u %-3.3s |%s|%s|%s|",
+                 cpu_load_pct, (int)(temp_c + 0.5f), (unsigned)cpu_freq_mhz,
+                 getState5Char(m_unicast_engine.getState()),
+                 role_col_str,
+                 rssi_str, (unsigned)wifi_ch, phy_str,
+                 audio_block,
+                 mid_block,
+                 time_sync_block);
+
+        if ((m_header_counter % 10) == 0) {
+            printf("%s\n", border_line);
+            if (cfg->node_role == NODE_ROLE_SOURCE) {
+                printf("|    CPU      | STATE | PEER |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | USB_FIFO  PKTS  ACK%% FAIL UDR |         TIME & SYNCHRONIZATION (ms)    |\n");
+                printf("|  %%   C  MHz |       | ACT  | GAIN Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   | len  OVR   1/s   tot  tot tot |  Local  Master  EMA_offs RB_med RB_rng |\n");
+            } else {
+                printf("|    CPU      | STATE |  CH  |    WIFI     | AUDIO     dBFS      SR   PD    CODEC ms  | AMP dB  PKTS  PLC  DMA  FIFO  |         TIME & SYNCHRONIZATION (ms)    |\n");
+                printf("|  %%   C  MHz |       |      | RSSI Ch PHY |  Enc    RMS   Pk   kHz   ms   Avg   Pk   |  SW  HW   1/s  tot  UDR   UDR |  Local  Master  EMA_offs RB_med RB_rng |\n");
+            }
+        }
+        printf("%s\n", row_buf);
+        fflush(stdout);
+        m_header_counter++;
     }
 }
 
