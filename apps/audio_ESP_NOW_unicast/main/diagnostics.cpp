@@ -107,10 +107,17 @@ void SystemDiagnostics::tick() {
                    (unsigned int)(stream.frame_duration_us / 1000),
                    (unsigned int)stream.frame_len,
                    codec_avg_ms);
+            uint32_t usb_underrun = m_unicast_engine.getUsbUnderrunCount();
+            uint32_t usb_overrun = m_unicast_engine.getUsbOverrunCount();
+            size_t usb_q_len = m_unicast_engine.getUsbQueueLength();
             printf(" Active SINKs: %d/%d | Total TX: %lu (%lu pkt/s) | ACKs: %lu | Fails: %lu\n",
                    peer_count, MAX_UNICAST_SINKS,
                    (unsigned long)tx_total, (unsigned long)tx_sec,
                    (unsigned long)acks_total, (unsigned long)ack_fails);
+            printf(" USB Ingest FIFO: %u pkts | Underrun: %lu | Overrun: %lu\n",
+                   (unsigned int)usb_q_len,
+                   (unsigned long)usb_underrun,
+                   (unsigned long)usb_overrun);
             printf("+---------+-------------------+----+-------+--------+----------+--------+--------+\n");
             printf("| NAME    | MAC               | CH | STATE | UPTIME | SENT/TX  | ACK %%  | RSSI   |\n");
             printf("+---------+-------------------+----+-------+--------+----------+--------+--------+\n");

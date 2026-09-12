@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 ========================================================================================
-PC Real-Time LC3 & PCM Audio Streamer for audioESP-NOW Unicast Multi-Speaker Network
+PC Real-Time LC3 Audio Streamer for audioESP-NOW Unicast Multi-Speaker Network
 ========================================================================================
-Streams high-fidelity stereo audio directly from the host PC over USB-Serial JTAG to
-Node 16 (ESP32-S3 SOURCE), which automatically encodes and unicasts:
-  - Channel 0 (Left @ 48 kHz LC3) -> Node 23 (ESP32-C6 Left SINK)
-  - Channel 5 (Subwoofer @ 8 kHz LC3) -> Node 24 (ESP32-C6 Sub SINK via 4th-order Linkwitz-Riley LP @ 200 Hz)
+Encodes and streams LC3 audio packets directly from the host PC over USB-Serial JTAG to
+Node 16 (ESP32-S3 SOURCE in 'PC STRM' mode), which forwards:
+  - Channel 0 (Left @ 48 kHz LC3, 120B) -> Node 23 (ESP32-C6 Left SINK)
+  - Channel 5 (Subwoofer @ 8 kHz LC3, 80B via 200 Hz 4th-order LR-LP) -> Node 24 (ESP32-C6 Sub SINK)
 
 Audio Source Modes:
   1. 'wasapi' / 'cable' / 'device': Live capture of Windows PC audio (Spotify, YouTube, Games, VLC).
@@ -28,6 +28,33 @@ import subprocess
 import numpy as np
 import scipy.signal
 
+# Add bumble app path for liblc3 wrapper
+BUMBLE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "usb_ble_bumble"))
+if BUMBLE_DIR not in sys.path:
+    sys.path.insert(0, BUMBLE_DIR)
+
+try:
+    import lc3_encoder
+except ImportError:
+    # Try local directory or relative paths
+    alt_dirs = [
+        r"C:\Git_ble_audio\apps\usb_ble_bumble",
+        os.path.join(os.path.dirname(__file__), "..", "..", "apps", "usb_ble_bumble")
+    ]
+    imported = False
+    for ad in alt_dirs:
+        if os.path.exists(ad) and ad not in sys.path:
+            sys.path.insert(0, ad)
+            try:
+                import lc3_encoder
+                imported = True
+                break
+            except ImportError:
+                pass
+    if not imported:
+        print("[ERROR] Could not import lc3_encoder. Ensure liblc3.dll is present in apps/usb_ble_bumble.")
+        raise
+
 try:
     import sounddevice as sd
 except ImportError:
@@ -41,11 +68,15 @@ except ImportError:
     print("[ERROR] pyserial module is required. Run: pip install pyserial")
     raise
 
-USB_PCM_MAGIC = 0x5043 # 'PC' in ASCII
-SAMPLE_RATE_HZ = 48000
+VSAF_MAGIC = 0x1337
+SAMPLE_RATE_48K = 48000
+SAMPLE_RATE_8K = 8000
 FRAME_DURATION_US = 10000 # 10.0 ms
-SAMPLES_PER_FRAME = 480
-FRAME_BYTES = SAMPLES_PER_FRAME * 2 * 2 # 1920 bytes stereo 16-bit PCM
+SAMPLES_48K = 480
+SAMPLES_8K = 80
+OCTETS_LEFT_48K = 120
+OCTETS_SUB_8K = 80
+SUB_LP_CUTOFF_HZ = 200.0
 
 
 def auto_detect_source_port() -> str:
@@ -75,7 +106,7 @@ def find_audio_device(name_query: str = "cable output", prefer_input: bool = Tru
             elif not prefer_input and d['max_output_channels'] > 0:
                 return idx, d
 
-    # 2. Fallback to default output / input device
+    # 2. Fallback to default
     default_id = sd.default.device[0 if prefer_input else 1]
     if default_id is not None and default_id >= 0:
         return default_id, devices[default_id]
@@ -126,8 +157,22 @@ class PcUnicastStreamer:
         self.serial_conn = None
         self.is_running = False
         self.audio_stream = None
-        self.audio_queue = queue.Queue(maxsize=50)
+        self.audio_queue = queue.Queue(maxsize=100)
         self.resampler = None
+
+        # Google liblc3 Encoders:
+        # Left Encoder: 48 kHz, 10.0 ms frame duration
+        self.enc_left = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_48K)
+        # Subwoofer Encoder: 8 kHz, 10.0 ms frame duration
+        self.enc_sub = lc3_encoder.LC3Encoder(FRAME_DURATION_US, SAMPLE_RATE_8K)
+
+        # 4th-Order Linkwitz-Riley Lowpass Filter @ 200 Hz for Subwoofer
+        nyq = 0.5 * SAMPLE_RATE_48K
+        b_sub, a_sub = scipy.signal.butter(2, SUB_LP_CUTOFF_HZ / nyq, btype='low')
+        self.sub_b = b_sub
+        self.sub_a = a_sub
+        self.sub_zi1 = scipy.signal.lfilter_zi(b_sub, a_sub)
+        self.sub_zi2 = scipy.signal.lfilter_zi(b_sub, a_sub)
 
         # MP3 Player state
         self.mp3_proc = None
@@ -139,14 +184,6 @@ class PcUnicastStreamer:
         self.carrier_phase_r = 0.0
         self.bass_phase = 0.0
         self.lead_phase = 0.0
-
-        # Subwoofer Linkwitz-Riley filter simulation for dashboard metering
-        nyq = 0.5 * SAMPLE_RATE_HZ
-        b_sub, a_sub = scipy.signal.butter(2, 200.0 / nyq, btype='low')
-        self.sub_b = b_sub
-        self.sub_a = a_sub
-        self.sub_zi1 = scipy.signal.lfilter_zi(b_sub, a_sub)
-        self.sub_zi2 = scipy.signal.lfilter_zi(b_sub, a_sub)
 
     def open_serial(self):
         print(f"Connecting to SOURCE Dongle on {self.port} at {self.baud} baud...", flush=True)
@@ -177,8 +214,8 @@ class PcUnicastStreamer:
             block_size = int(native_sr * (FRAME_DURATION_US / 1000000.0))
 
             print(f"Opening Audio Input on: [{dev_id}] '{dev_info['name']}' ({native_sr} Hz, {native_ch} ch)...", flush=True)
-            if native_sr != SAMPLE_RATE_HZ:
-                self.resampler = Resampler(native_sr, SAMPLE_RATE_HZ)
+            if native_sr != SAMPLE_RATE_48K:
+                self.resampler = Resampler(native_sr, SAMPLE_RATE_48K)
             else:
                 self.resampler = None
 
@@ -240,6 +277,7 @@ class PcUnicastStreamer:
         clean_name = os.path.basename(track).encode('ascii', errors='replace').decode('ascii')
         print(f"\n[MP3 Track] Now Playing: '{clean_name}' (48 kHz Stereo)", flush=True)
 
+        frame_bytes = SAMPLES_48K * 2 * 2
         cmd = [
             "ffmpeg",
             "-i", track,
@@ -254,40 +292,37 @@ class PcUnicastStreamer:
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            bufsize=FRAME_BYTES * 10
+            bufsize=frame_bytes * 10
         )
 
     def generate_synth_frame(self) -> np.ndarray:
         """Generates continuous-phase LFO sine sweep (220-880 Hz Left, 440-1760 Hz Right)."""
-        t = np.arange(SAMPLES_PER_FRAME) / SAMPLE_RATE_HZ
-        dt = SAMPLES_PER_FRAME / SAMPLE_RATE_HZ
+        t = np.arange(SAMPLES_48K) / SAMPLE_RATE_48K
+        dt = SAMPLES_48K / SAMPLE_RATE_48K
 
-        # LFO modulation @ 0.2 Hz
         lfo_mod = np.sin(self.lfo_phase + 2.0 * np.pi * 0.2 * t)
         freq_l = 550.0 + 330.0 * lfo_mod
         freq_r = 1100.0 + 660.0 * lfo_mod
 
-        phase_l = self.carrier_phase_l + 2.0 * np.pi * np.cumsum(freq_l) / SAMPLE_RATE_HZ
-        phase_r = self.carrier_phase_r + 2.0 * np.pi * np.cumsum(freq_r) / SAMPLE_RATE_HZ
+        phase_l = self.carrier_phase_l + 2.0 * np.pi * np.cumsum(freq_l) / SAMPLE_RATE_48K
+        phase_r = self.carrier_phase_r + 2.0 * np.pi * np.cumsum(freq_r) / SAMPLE_RATE_48K
         self.carrier_phase_l = phase_l[-1] % (2.0 * np.pi)
         self.carrier_phase_r = phase_r[-1] % (2.0 * np.pi)
         self.lfo_phase = (self.lfo_phase + 2.0 * np.pi * 0.2 * dt) % (2.0 * np.pi)
 
-        pcm_l = (np.sin(phase_l) * 0.5 * 32767.0).astype(np.int16)
-        pcm_r = (np.sin(phase_r) * 0.5 * 32767.0).astype(np.int16)
+        pcm_l = (np.sin(phase_l) * 0.6 * 32767.0).astype(np.int16)
+        pcm_r = (np.sin(phase_r) * 0.6 * 32767.0).astype(np.int16)
         return np.column_stack([pcm_l, pcm_r])
 
     def generate_bass_test_frame(self) -> np.ndarray:
-        """Generates 50 Hz deep bass on both channels + 1 kHz pulse melody on Left."""
-        t = np.arange(SAMPLES_PER_FRAME) / SAMPLE_RATE_HZ
-        dt = SAMPLES_PER_FRAME / SAMPLE_RATE_HZ
+        """Generates 50 Hz deep bass on both channels + 1 kHz melody on Left."""
+        t = np.arange(SAMPLES_48K) / SAMPLE_RATE_48K
+        dt = SAMPLES_48K / SAMPLE_RATE_48K
 
-        # 50 Hz Deep Bass (Subwoofer test)
         phase_bass = self.bass_phase + 2.0 * np.pi * 50.0 * t
         self.bass_phase = (self.bass_phase + 2.0 * np.pi * 50.0 * dt) % (2.0 * np.pi)
         bass_pcm = np.sin(phase_bass) * 0.7 * 32767.0
 
-        # 1000 Hz Lead Tone (Left speaker test)
         phase_lead = self.lead_phase + 2.0 * np.pi * 1000.0 * t
         self.lead_phase = (self.lead_phase + 2.0 * np.pi * 1000.0 * dt) % (2.0 * np.pi)
         lead_pcm = np.sin(phase_lead) * 0.4 * 32767.0
@@ -297,15 +332,16 @@ class PcUnicastStreamer:
         return np.column_stack([pcm_l, pcm_r])
 
     def get_mp3_frame(self) -> np.ndarray:
+        frame_bytes = SAMPLES_48K * 2 * 2
         if not self.mp3_proc:
-            return np.zeros((SAMPLES_PER_FRAME, 2), dtype=np.int16)
-        raw_bytes = self.mp3_proc.stdout.read(FRAME_BYTES)
-        if len(raw_bytes) < FRAME_BYTES:
+            return np.zeros((SAMPLES_48K, 2), dtype=np.int16)
+        raw_bytes = self.mp3_proc.stdout.read(frame_bytes)
+        if len(raw_bytes) < frame_bytes:
             self._play_next_mp3_track()
-            raw_bytes = self.mp3_proc.stdout.read(FRAME_BYTES) if self.mp3_proc else b""
-            if len(raw_bytes) < FRAME_BYTES:
-                return np.zeros((SAMPLES_PER_FRAME, 2), dtype=np.int16)
-        return np.frombuffer(raw_bytes, dtype=np.int16).reshape((SAMPLES_PER_FRAME, 2))
+            raw_bytes = self.mp3_proc.stdout.read(frame_bytes) if self.mp3_proc else b""
+            if len(raw_bytes) < frame_bytes:
+                return np.zeros((SAMPLES_48K, 2), dtype=np.int16)
+        return np.frombuffer(raw_bytes, dtype=np.int16).reshape((SAMPLES_48K, 2))
 
     def run(self, test_duration_sec: float = None):
         self.open_serial()
@@ -313,14 +349,13 @@ class PcUnicastStreamer:
         self.is_running = True
 
         print("=" * 86)
-        print("   PC REAL-TIME AUDIO STREAMER FOR audioESP-NOW UNICAST NETWORK")
+        print("   PC REAL-TIME LC3 AUDIO STREAMER FOR audioESP-NOW UNICAST NETWORK")
         print("=" * 86)
         print(f"  Target Dongle   : {self.port} @ {self.baud} baud (Node 16 ESP32-S3 SOURCE)")
         print(f"  Audio Source    : {self.source_type.upper()} ({self.audio_device_name if self.source_type in ('wasapi','cable','device') else ''})")
-        print(f"  Sample Rate     : {SAMPLE_RATE_HZ} Hz Stereo (480 samples / 10 ms)")
-        print(f"  Left SINK       : Node 23 (ESP32-C6) -> Target Channel 0 @ 48 kHz LC3")
-        print(f"  Subwoofer SINK  : Node 24 (ESP32-C6) -> Target Channel 5 @ 8 kHz LC3 (200 Hz LR-LP)")
-        print(f"  Packet Format   : 8B Magic Header (0x5043) + 1920B Stereo PCM = 1928 Bytes/frame")
+        print(f"  Left SINK       : Node 23 (ESP32-C6) -> Channel 0 @ 48 kHz LC3 ({OCTETS_LEFT_48K}B = 96 kbps)")
+        print(f"  Subwoofer SINK  : Node 24 (ESP32-C6) -> Channel 5 @ 8 kHz LC3 ({OCTETS_SUB_8K}B = 64 kbps, 200Hz LP)")
+        print(f"  VSAF USB Framing: Ch 0 (130B) + Ch 5 (90B) = 220 Bytes/frame (100 fps = 176 kbps)")
         print("=" * 86)
 
         table_div  = "+----------+-------+----------+-----------+-------------------------------------+"
@@ -340,6 +375,10 @@ class PcUnicastStreamer:
         last_stat_time = time.perf_counter()
         seq = 0
 
+        # Prime initial buffer cushion for WASAPI capture
+        if self.audio_stream is not None:
+            time.sleep(0.04)
+
         try:
             while self.is_running:
                 if test_duration_sec is not None and (time.perf_counter() - start_time) >= test_duration_sec:
@@ -350,17 +389,17 @@ class PcUnicastStreamer:
                     try:
                         raw_data = self.audio_queue.get(timeout=0.03)
                         if self.resampler:
-                            resampled = self.resampler.resample(raw_data, SAMPLES_PER_FRAME)
+                            resampled = self.resampler.resample(raw_data, SAMPLES_48K)
                         else:
                             resampled = raw_data
                         pcm_frame = (np.clip(resampled, -1.0, 1.0) * 32767.0).astype(np.int16)
                         if pcm_frame.ndim == 1:
                             pcm_frame = np.column_stack([pcm_frame, pcm_frame])
-                        if pcm_frame.shape[0] < SAMPLES_PER_FRAME:
-                            pad = np.zeros((SAMPLES_PER_FRAME - pcm_frame.shape[0], 2), dtype=np.int16)
+                        if pcm_frame.shape[0] < SAMPLES_48K:
+                            pad = np.zeros((SAMPLES_48K - pcm_frame.shape[0], 2), dtype=np.int16)
                             pcm_frame = np.vstack([pcm_frame, pad])
-                        elif pcm_frame.shape[0] > SAMPLES_PER_FRAME:
-                            pcm_frame = pcm_frame[:SAMPLES_PER_FRAME, :]
+                        elif pcm_frame.shape[0] > SAMPLES_48K:
+                            pcm_frame = pcm_frame[:SAMPLES_48K, :]
                     except queue.Empty:
                         continue
                 elif self.source_type == "mp3":
@@ -385,23 +424,48 @@ class PcUnicastStreamer:
                     next_tick_ns += step_ns
                     pcm_frame = self.generate_synth_frame()
 
-                # 2. Build 1928-byte USB PCM Packet
-                # Header: Magic 0x5043 (2B), Seq (1B), Format 0 (1B), Samples 480 (2B), Flags 0 (2B)
-                header = struct.pack("<HBBHH", USB_PCM_MAGIC, seq & 0xFF, 0, SAMPLES_PER_FRAME, 0)
+                pts_us = int((time.perf_counter() + 0.05) * 1000000) & 0xFFFFFFFF
+                current_seq = seq & 0xFF
                 seq = (seq + 1) & 0xFF
-                packet = header + pcm_frame.tobytes()
 
-                # 3. Transmit to Node 16 over USB Serial JTAG
-                self.serial_conn.write(packet)
+                # 2. Encode Left Channel (48 kHz LC3 -> 120 octets)
+                pcm_left = pcm_frame[:, 0]
+                lc3_left = self.enc_left.encode(pcm_left, OCTETS_LEFT_48K)
+
+                # 3. Subwoofer DSP & 8 kHz LC3 Encoding (80 octets)
+                sub_mono_f = (pcm_frame[:, 0].astype(np.float32) + pcm_frame[:, 1].astype(np.float32)) * 0.5
+                sub_filt1, self.sub_zi1 = scipy.signal.lfilter(self.sub_b, self.sub_a, sub_mono_f, zi=self.sub_zi1)
+                sub_filt2, self.sub_zi2 = scipy.signal.lfilter(self.sub_b, self.sub_a, sub_filt1, zi=self.sub_zi2)
+                # Decimate 48 kHz (480 samples) -> 8 kHz (80 samples)
+                sub_8k_pcm = scipy.signal.resample_poly(sub_filt2, 1, 6).astype(np.int16)
+                if len(sub_8k_pcm) < SAMPLES_8K:
+                    sub_8k_pcm = np.pad(sub_8k_pcm, (0, SAMPLES_8K - len(sub_8k_pcm)))
+                elif len(sub_8k_pcm) > SAMPLES_8K:
+                    sub_8k_pcm = sub_8k_pcm[:SAMPLES_8K]
+                lc3_sub = self.enc_sub.encode(sub_8k_pcm, OCTETS_SUB_8K)
+
+                # 4. Assemble VSAF LC3 Packets:
+                # Header format (10B): Magic(uint16), Seq(uint8), Channel(uint8), Octets(uint8), Flags(uint8), PTS(uint32)
+                # flags: Bit 0..2: SR code (4 for 48k, 0 for 8k), Bit 3: Dur (0 for 10ms)
+                hdr_left = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 0, OCTETS_LEFT_48K, 4, pts_us)
+                pkt_left = hdr_left + lc3_left
+
+                hdr_sub  = struct.pack("<HBBBB I", VSAF_MAGIC, current_seq, 5, OCTETS_SUB_8K, 0, pts_us)
+                pkt_sub  = hdr_sub + lc3_sub
+
+                # 5. Transmit both packets in one atomic USB batch (220 bytes total)
+                batch = pkt_left + pkt_sub
+                self.serial_conn.write(batch)
+
                 total_frames += 1
                 frames_since_stat += 1
 
-                # 4. Dashboard telemetry printout (1 Hz)
+                # 6. Dashboard Telemetry (1 Hz)
                 now = time.perf_counter()
                 if now - last_stat_time >= 1.0:
                     dt = now - last_stat_time
                     fps_real = frames_since_stat / dt
-                    kbps_real = (frames_since_stat * len(packet) * 8) / (dt * 1000)
+                    kbps_real = (frames_since_stat * len(batch) * 8) / (dt * 1000)
 
                     # Compute RMS dBFS
                     ch0 = pcm_frame[:, 0].astype(np.float32) / 32768.0
@@ -412,12 +476,8 @@ class PcUnicastStreamer:
                     rms1 = np.sqrt(np.mean(ch1 ** 2))
                     rms1_db = 20 * math.log10(rms1) if rms1 > 1e-5 else -99.9
 
-                    # Simulated Subwoofer RMS (mono sum filtered through 200 Hz LP)
-                    sub_mono = (ch0 + ch1) * 0.5
-                    sub_filt1, self.sub_zi1 = scipy.signal.lfilter(self.sub_b, self.sub_a, sub_mono, zi=self.sub_zi1)
-                    sub_filt2, self.sub_zi2 = scipy.signal.lfilter(self.sub_b, self.sub_a, sub_filt1, zi=self.sub_zi2)
-                    rms_sub = np.sqrt(np.mean(sub_filt2 ** 2))
-                    rms_sub_db = 20 * math.log10(rms_sub) if rms_sub > 1e-5 else -99.9
+                    sub_rms = np.sqrt(np.mean((sub_filt2 / 32768.0) ** 2))
+                    rms_sub_db = 20 * math.log10(sub_rms) if sub_rms > 1e-5 else -99.9
 
                     elapsed = now - start_time
                     m, s = divmod(int(elapsed), 60)
@@ -457,11 +517,11 @@ class PcUnicastStreamer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PC Real-Time Audio Streamer for audioESP-NOW Unicast")
+    parser = argparse.ArgumentParser(description="PC Real-Time LC3 Audio Streamer for audioESP-NOW Unicast")
     parser.add_argument("--port", type=str, default="COM16", help="Target Dongle Port (default: COM16 or 'auto')")
     parser.add_argument("--baud", type=int, default=2000000, help="Serial Baud Rate (default: 2000000)")
-    parser.add_argument("--source", type=str, default="bass-test", choices=["bass-test", "synth", "mp3", "wasapi", "cable", "device"],
-                        help="Audio Source Mode (default: bass-test)")
+    parser.add_argument("--source", type=str, default="wasapi", choices=["wasapi", "cable", "device", "mp3", "bass-test", "synth"],
+                        help="Audio Source Mode (default: wasapi)")
     parser.add_argument("--device", type=str, default="CABLE Output", help="Audio device query name for WASAPI/Cable capture")
     parser.add_argument("--mp3-folder", type=str, default="data/mp3", help="Folder containing MP3 audio files (default: data/mp3)")
     parser.add_argument("--duration", type=float, default=None, help="Streaming duration in seconds (optional, runs indefinitely if omitted)")

@@ -68,11 +68,11 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_VOLUME_MAX_DB
-#define CONFIG_VOLUME_MAX_DB -10.0f   // Maximum volume in dB
+#define CONFIG_VOLUME_MAX_DB -6.0f   // Maximum volume in dB
 #endif
 
 #ifndef CONFIG_VOLUME_DEFAULT_U8
-#define CONFIG_VOLUME_DEFAULT_U8 200 // Default power-on volume
+#define CONFIG_VOLUME_DEFAULT_U8 220 // Default power-on volume
 #endif
 
 #ifndef CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC

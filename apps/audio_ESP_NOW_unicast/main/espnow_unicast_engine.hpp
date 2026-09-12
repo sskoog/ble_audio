@@ -1,18 +1,22 @@
 #pragma once
 
-#include "sdkconfig.h"
-#include "esp_now.h"
-#include "esp_wifi_types.h"
+#include "config.h"
 #include "lc3_codec.hpp"
+#include "audio_filters.hpp"
 #include "tone_generator.hpp"
 #include "i2s_audio.hpp"
 #include "audio_metering.hpp"
-#include "audio_filters.hpp"
-#include "config.h"
+#include "esp_now.h"
+#include "esp_wifi.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <atomic>
-#include <cstdint>
-#include <cstring>
+#include <vector>
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 
 #define MAX_UNICAST_SINKS 6
 
@@ -24,7 +28,8 @@ enum class NetworkState {
     SCANNING,
     PREFILL,
     STREAM,
-    CAST // SOURCE actively multicasting/unicasting to peers
+    CAST,       // SOURCE actively multicasting/unicasting internal test tone
+    PC_STREAM   // SOURCE actively streaming LC3 packets from Host PC / Bumble
 };
 
 enum class PeerStatus : uint8_t {
@@ -74,7 +79,67 @@ typedef struct {
     };
 } vsaf_packet_t;
 typedef vsaf_packet_t vsaf_unicast_header_t;
+
+// USB LC3 Ingest Header (10 Bytes)
+typedef struct {
+    uint16_t magic;      // 0x1337 (VSAF USB Magic)
+    uint8_t  seq;        // Sequence number (0..255)
+    uint8_t  channel_id; // Target Channel: 0 = Left, 1 = Right, 5 = Subwoofer
+    uint8_t  octets;     // LC3 payload length (e.g. 120 for Left @ 48kHz, 80 for Sub @ 8kHz)
+    uint8_t  flags;      // Bit 0..2: SR code (0:8k, 4:48k), Bit 3: Dur (0:10ms)
+    uint32_t pts_us;     // Presentation timestamp in microseconds
+} vsaf_usb_header_t;
 #pragma pack(pop)
+
+struct UsbLc3Frame {
+    uint8_t  channel_id;
+    uint8_t  seq;
+    uint8_t  octets;
+    uint16_t flags;
+    uint32_t pts_us;
+    uint8_t  data[MAX_LC3_FRAME_OCTETS];
+};
+
+#define USB_LC3_FIFO_CAPACITY 16
+
+class UsbLc3Fifo {
+public:
+    UsbLc3Fifo() : m_head(0), m_tail(0), m_count(0) {}
+
+    bool push(const UsbLc3Frame& frame) {
+        if (m_count >= USB_LC3_FIFO_CAPACITY) {
+            return false;
+        }
+        m_frames[m_head] = frame;
+        m_head = (m_head + 1) % USB_LC3_FIFO_CAPACITY;
+        m_count++;
+        return true;
+    }
+
+    bool pop(UsbLc3Frame& out_frame) {
+        if (m_count == 0) {
+            return false;
+        }
+        out_frame = m_frames[m_tail];
+        m_tail = (m_tail + 1) % USB_LC3_FIFO_CAPACITY;
+        m_count--;
+        return true;
+    }
+
+    void clear() {
+        m_head = 0;
+        m_tail = 0;
+        m_count = 0;
+    }
+
+    size_t count() const { return m_count; }
+
+private:
+    UsbLc3Frame m_frames[USB_LC3_FIFO_CAPACITY];
+    size_t      m_head;
+    size_t      m_tail;
+    size_t      m_count;
+};
 
 struct StreamTelemetry {
     uint32_t sample_rate = CONFIG_ESPNOW_SAMPLE_RATE_HZ;
@@ -88,95 +153,99 @@ struct StreamTelemetry {
 template <typename T, size_t N>
 class SpscDurationRingBuffer {
 public:
+    SpscDurationRingBuffer() : m_head(0), m_count(0) {}
+
     void push(T val) {
-        size_t next = (m_head + 1) % N;
         m_buffer[m_head] = val;
-        m_head = next;
+        m_head = (m_head + 1) % N;
         if (m_count < N) m_count++;
     }
-    void getStats(float& out_avg, float& out_max, bool& out_has_data) const {
+
+    void getStats(float& out_avg, float& out_peak, bool& out_has_data) const {
         if (m_count == 0) {
             out_avg = 0.0f;
-            out_max = 0.0f;
+            out_peak = 0.0f;
             out_has_data = false;
             return;
         }
-        float sum = 0.0f;
-        float max_v = 0.0f;
-        for (size_t i = 0; i < m_count; i++) {
-            float v = static_cast<float>(m_buffer[i]);
-            sum += v;
-            if (v > max_v) max_v = v;
-        }
-        out_avg = sum / static_cast<float>(m_count);
-        out_max = max_v;
         out_has_data = true;
+        T sum = 0;
+        T max_val = 0;
+        for (size_t i = 0; i < m_count; i++) {
+            sum += m_buffer[i];
+            if (m_buffer[i] > max_val) max_val = m_buffer[i];
+        }
+        out_avg = static_cast<float>(sum) / static_cast<float>(m_count);
+        out_peak = static_cast<float>(max_val);
     }
+
 private:
-    T m_buffer[N];
-    size_t m_head = 0;
-    size_t m_count = 0;
+    T m_buffer[N] = {};
+    size_t m_head;
+    size_t m_count;
 };
 
-// Time Offset Ring Buffer for Microsecond Clock Sync Telemetry
 class TimeOffsetRingBuffer {
 public:
-    void push(float offset_ms) {
-        m_buffer[m_head] = offset_ms;
+    static constexpr size_t CAPACITY = 50; // 5 seconds @ 10Hz tick
+
+    TimeOffsetRingBuffer() : m_head(0), m_count(0) {}
+
+    void push(float val_ms) {
+        m_buffer[m_head] = val_ms;
         m_head = (m_head + 1) % CAPACITY;
         if (m_count < CAPACITY) m_count++;
     }
-    void computeStats(float& out_median, float& out_range, bool& out_valid) const {
+
+    void computeStats(float& out_median, float& out_range, bool& out_has_data) const {
         if (m_count == 0) {
             out_median = 0.0f;
             out_range = 0.0f;
-            out_valid = false;
+            out_has_data = false;
             return;
         }
-        float sorted[CAPACITY];
-        for (size_t i = 0; i < m_count; i++) {
-            sorted[i] = m_buffer[i];
+        out_has_data = true;
+        std::vector<float> sorted(m_buffer, m_buffer + m_count);
+        std::sort(sorted.begin(), sorted.end());
+
+        size_t n = sorted.size();
+        if (n % 2 == 1) {
+            out_median = sorted[n / 2];
+        } else {
+            out_median = (sorted[n / 2 - 1] + sorted[n / 2]) * 0.5f;
         }
-        for (size_t i = 0; i < m_count - 1; i++) {
-            for (size_t j = i + 1; j < m_count; j++) {
-                if (sorted[i] > sorted[j]) {
-                    float tmp = sorted[i];
-                    sorted[i] = sorted[j];
-                    sorted[j] = tmp;
-                }
-            }
-        }
-        out_median = sorted[m_count / 2];
-        out_range = sorted[m_count - 1] - sorted[0];
-        out_valid = true;
+        out_range = sorted.back() - sorted.front();
     }
+
+    void clear() {
+        m_head = 0;
+        m_count = 0;
+    }
+
 private:
-    static constexpr size_t CAPACITY = 10;
-    float m_buffer[CAPACITY] = {0.0f};
-    size_t m_head = 0;
-    size_t m_count = 0;
+    float m_buffer[CAPACITY] = {};
+    size_t m_head;
+    size_t m_count;
 };
 
 class EspNowUnicastEngine {
 public:
-    EspNowUnicastEngine(Codec::Lc3CodecEngine& lc3_codec,
-                        Audio::ToneGenerator* tone_gen,
-                        Hardware::I2sAudioDriver* i2s_dac);
+    EspNowUnicastEngine(Codec::Lc3CodecEngine& primary_codec, Audio::ToneGenerator* primary_tone_gen = nullptr, Hardware::I2sAudioDriver* i2s_dac = nullptr);
     ~EspNowUnicastEngine();
 
     esp_err_t init(uint8_t role, uint8_t node_id, uint8_t wifi_channel = 1);
     esp_err_t start();
     esp_err_t stop();
 
-    // Peer Management & Dynamic Handshake
-    bool addPeer(const uint8_t* mac, uint8_t channel_id, const char* name);
-    bool removePeer(const uint8_t* mac);
-    bool setPeerEnabled(const uint8_t* mac, bool enabled);
+    // Unicast Peer Management (SOURCE node)
+    bool addPeer(const uint8_t* mac_addr, uint8_t channel_id, const char* name = nullptr);
+    bool removePeer(const uint8_t* mac_addr);
+    bool setPeerEnabled(const uint8_t* mac_addr, bool enabled);
     bool addOrUpdatePeerFromHello(const uint8_t* mac, uint8_t channel_id, const char* name = nullptr);
-    int  getPeerCount() const { return m_peer_count; }
     const SinkPeerConfig* getPeer(int index) const;
     const SinkPeerConfig* getPeerByMac(const uint8_t* mac) const;
     void resetPeerStats();
+    int  getPeerCount() const { return m_peer_count; }
 
     // Volume Control & Slew Limiter
     void setVolume(uint8_t vol_u8, bool instant = false);
@@ -222,10 +291,20 @@ public:
     }
     uint8_t getTargetChannel() const { return m_target_channel; }
 
-    // Real-Time USB Audio Stream Ingestion (SOURCE node)
-    void processUsbPcmPacket(const int16_t* stereo_pcm, size_t samples_per_channel);
+    // Real-Time USB LC3 Audio Stream Ingestion (SOURCE node)
     void processUsbVsafPacket(const uint8_t* data, size_t len);
     bool isUsbStreamActive() const { return m_usb_stream_active.load(std::memory_order_relaxed); }
+    uint32_t getUsbUnderrunCount() const { return m_usb_underrun_count.load(std::memory_order_relaxed); }
+    uint32_t getUsbOverrunCount() const { return m_usb_overrun_count.load(std::memory_order_relaxed); }
+    uint32_t getAndResetUsbUnderrunCount() { return m_usb_underrun_count.exchange(0, std::memory_order_relaxed); }
+    uint32_t getAndResetUsbOverrunCount() { return m_usb_overrun_count.exchange(0, std::memory_order_relaxed); }
+    size_t   getUsbQueueLength() const {
+        size_t total = 0;
+        for (int i = 0; i < MAX_UNICAST_SINKS; i++) {
+            total += m_usb_lc3_fifo[i].count();
+        }
+        return total;
+    }
 
     // Packet Callbacks
     void onPacketSent(const uint8_t* mac_addr, esp_now_send_status_t status);
@@ -305,7 +384,7 @@ private:
     Codec::Lc3CodecEngine&     m_lc3_codec;     // Primary encoder (Left / Mono) or SINK decoder
     Codec::Lc3CodecEngine      m_lc3_codec_r;   // Secondary encoder (Right Channel for Stereo)
     Codec::Lc3CodecEngine      m_lc3_codec_sub; // Subwoofer encoder (8 kHz mono, 80 octets)
-    Dsp::LinkwitzRiley4thOrderLowPass m_sub_lr4_filter; // 4th-order LR Low-Pass Filter @ 100 Hz
+    Dsp::LinkwitzRiley4thOrderLowPass m_sub_lr4_filter; // 4th-order LR Low-Pass Filter @ 100-200 Hz
     float                      m_sub_cutoff_hz = CONFIG_ESPNOW_SUB_LP_HZ;
 
     Audio::ToneGenerator*      m_tone_gen;     // Primary tone generator (Left / Mono)
@@ -319,6 +398,7 @@ private:
     uint32_t                   m_frame_duration_us = 10000;
     NetworkState               m_state = NetworkState::OFF;
     StreamTelemetry            m_telemetry;
+
     AudioMetering::AudioSignalMeter m_audio_meter;
     SpscDurationRingBuffer<uint32_t, 10> m_codec_duration_ring_buffer;
     TimeOffsetRingBuffer       m_time_offset_ring_buffer;
@@ -351,14 +431,14 @@ private:
     int                        m_peer_count = 0;
     portMUX_TYPE               m_peer_mux = portMUX_INITIALIZER_UNLOCKED;
 
-    // Ingest State (SOURCE node)
+    // USB LC3 Ingest State (SOURCE node)
     std::atomic<bool>          m_is_stereo{true};
     std::atomic<bool>          m_usb_stream_active{false};
-    int16_t                    m_usb_pcm_buf[2][MAX_PCM_FRAME_SAMPLES * 2] = {};
-    std::atomic<int>           m_usb_pcm_write_buf{0};
-    std::atomic<int>           m_usb_pcm_read_buf{0};
-    std::atomic<bool>          m_usb_pcm_has_new{false};
     std::atomic<int64_t>       m_last_usb_packet_time_us{0};
+    std::atomic<uint32_t>      m_usb_underrun_count{0};
+    std::atomic<uint32_t>      m_usb_overrun_count{0};
+    UsbLc3Fifo                 m_usb_lc3_fifo[MAX_UNICAST_SINKS];
+    portMUX_TYPE               m_usb_fifo_mux = portMUX_INITIALIZER_UNLOCKED;
 
     std::atomic<uint32_t>      m_tx_packets_total{0};
     std::atomic<uint32_t>      m_tx_packets_sec{0};

@@ -422,25 +422,29 @@ static void usb_serial_cli_task(void* pvParameters) {
             }
         }
 
-        // Fast parse binary PCM frames or ASCII CLI commands
+        // Fast parse dynamic VSAF LC3 packets or ASCII CLI commands
         while (ring_len > 0) {
-            // Check for USB PCM Magic (0x5043 -> 'P', 'C' in little-endian ASCII)
-            if (ring_len >= 2 && ((ring_buf[0] == 0x43 && ring_buf[1] == 0x50) || (ring_buf[0] == 0x50 && ring_buf[1] == 0x43))) {
-                // USB PCM Header: 8 Bytes + 480 stereo samples (1920 bytes) = 1928 bytes
-                size_t pcm_pkt_len = 8 + (MAX_PCM_FRAME_SAMPLES * 2 * sizeof(int16_t)); // 1928 bytes
-                if (ring_len >= pcm_pkt_len) {
-                    if (s_unicast_engine) {
-                        const int16_t* pcm_data = reinterpret_cast<const int16_t*>(ring_buf + 8);
-                        s_unicast_engine->processUsbPcmPacket(pcm_data, MAX_PCM_FRAME_SAMPLES);
+            // Check for VSAF LC3 Magic (0x1337 -> 0x37, 0x13 in little-endian)
+            if (ring_len >= 2 && ring_buf[0] == 0x37 && ring_buf[1] == 0x13) {
+                if (ring_len >= sizeof(AudioNet::vsaf_usb_header_t)) {
+                    const auto* usb_hdr = reinterpret_cast<const AudioNet::vsaf_usb_header_t*>(ring_buf);
+                    size_t pkt_len = sizeof(AudioNet::vsaf_usb_header_t) + usb_hdr->octets;
+                    if (ring_len >= pkt_len) {
+                        if (s_unicast_engine) {
+                            s_unicast_engine->processUsbVsafPacket(ring_buf, pkt_len);
+                        }
+                        if (ring_len > pkt_len) {
+                            memmove(ring_buf, ring_buf + pkt_len, ring_len - pkt_len);
+                        }
+                        ring_len -= pkt_len;
+                        line_idx = 0;
+                        continue;
+                    } else {
+                        // Waiting for remaining bytes of full LC3 packet
+                        break;
                     }
-                    if (ring_len > pcm_pkt_len) {
-                        memmove(ring_buf, ring_buf + pcm_pkt_len, ring_len - pcm_pkt_len);
-                    }
-                    ring_len -= pcm_pkt_len;
-                    line_idx = 0;
-                    continue;
                 } else {
-                    // Waiting for remaining bytes of full PCM frame
+                    // Waiting for header
                     break;
                 }
             } else {

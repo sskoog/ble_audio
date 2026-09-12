@@ -707,26 +707,43 @@ void EspNowUnicastEngine::onPacketReceived(const uint8_t* mac_addr, const uint8_
 }
 
 
-void EspNowUnicastEngine::processUsbPcmPacket(const int16_t* stereo_pcm, size_t samples_per_channel) {
-    if (m_node_role != NODE_ROLE_SOURCE || !stereo_pcm) return;
-    if (samples_per_channel > MAX_PCM_FRAME_SAMPLES) samples_per_channel = MAX_PCM_FRAME_SAMPLES;
+void EspNowUnicastEngine::processUsbVsafPacket(const uint8_t* data, size_t len) {
+    if (m_node_role != NODE_ROLE_SOURCE || !data || len < sizeof(vsaf_usb_header_t)) return;
 
-    if (m_state != NetworkState::CAST) {
-        transitionTo(NetworkState::CAST);
+    const auto* hdr = reinterpret_cast<const vsaf_usb_header_t*>(data);
+    if (hdr->magic != 0x1337) return;
+
+    uint8_t ch = hdr->channel_id;
+    if (ch >= MAX_UNICAST_SINKS) return;
+
+    size_t payload_len = len - sizeof(vsaf_usb_header_t);
+    if (payload_len == 0 || payload_len > MAX_LC3_FRAME_OCTETS || payload_len != hdr->octets) return;
+
+    // Transition to PC_STREAM if not already
+    if (m_state != NetworkState::PC_STREAM) {
+        transitionTo(NetworkState::PC_STREAM);
+        m_usb_underrun_count.store(0, std::memory_order_relaxed);
+        m_usb_overrun_count.store(0, std::memory_order_relaxed);
     }
 
-    int current_read = m_usb_pcm_read_buf.load(std::memory_order_relaxed);
-    int write_idx = 1 - current_read;
-    memcpy(m_usb_pcm_buf[write_idx], stereo_pcm, samples_per_channel * 2 * sizeof(int16_t));
-    m_usb_pcm_read_buf.store(write_idx, std::memory_order_release);
-    m_usb_pcm_has_new.store(true, std::memory_order_release);
+    UsbLc3Frame frame = {};
+    frame.channel_id = ch;
+    frame.seq = hdr->seq;
+    frame.octets = hdr->octets;
+    frame.flags = hdr->flags;
+    frame.pts_us = hdr->pts_us;
+    memcpy(frame.data, data + sizeof(vsaf_usb_header_t), payload_len);
+
+    taskENTER_CRITICAL(&m_usb_fifo_mux);
+    bool pushed = m_usb_lc3_fifo[ch].push(frame);
+    taskEXIT_CRITICAL(&m_usb_fifo_mux);
+
+    if (!pushed) {
+        m_usb_overrun_count.fetch_add(1, std::memory_order_relaxed);
+    }
 
     m_last_usb_packet_time_us.store(esp_timer_get_time(), std::memory_order_relaxed);
     m_usb_stream_active.store(true, std::memory_order_relaxed);
-}
-
-void EspNowUnicastEngine::processUsbVsafPacket(const uint8_t* data, size_t len) {
-    // VSAF LC3 Ingestion hook
 }
 
 void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
@@ -734,7 +751,7 @@ void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
     m_state = new_state;
 
     // Reset error and PLC counters on stream activation
-    if (new_state == NetworkState::CAST || new_state == NetworkState::STREAM || new_state == NetworkState::PREFILL) {
+    if (new_state == NetworkState::CAST || new_state == NetworkState::STREAM || new_state == NetworkState::PREFILL || new_state == NetworkState::PC_STREAM) {
         m_lc3_codec.resetPlcCount();
         m_fifo_underrun.store(0, std::memory_order_relaxed);
         m_fifo_overflow.store(0, std::memory_order_relaxed);
@@ -756,6 +773,7 @@ void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
         case NetworkState::CAST:
             Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING_TONE);
             break;
+        case NetworkState::PC_STREAM:
         case NetworkState::STREAM:
         case NetworkState::PREFILL:
             Hardware::getStatusLed().setSystemState(Hardware::SystemState::STREAM);
@@ -864,23 +882,20 @@ void EspNowUnicastEngine::audioTaskRoutine(void* pvParameters) {
 }
 
 void EspNowUnicastEngine::runSourceLoop() {
-    ESP_LOGI(TAG, "SOURCE Unicast Audio Task started on Core %d", xPortGetCoreID());
-
     int16_t pcm_ch0[MAX_PCM_FRAME_SAMPLES];
     int16_t pcm_ch1[MAX_PCM_FRAME_SAMPLES];
-    uint8_t lc3_ch0[MAX_LC3_FRAME_OCTETS];
-    uint8_t lc3_ch1[MAX_LC3_FRAME_OCTETS];
-
-    // Subwoofer DSP Buffers
     int16_t sub_mono_48k[MAX_PCM_FRAME_SAMPLES];
     int16_t sub_filtered_48k[MAX_PCM_FRAME_SAMPLES];
     int16_t sub_pcm_8k[80];
+
+    uint8_t lc3_ch0[MAX_LC3_FRAME_OCTETS];
+    uint8_t lc3_ch1[MAX_LC3_FRAME_OCTETS];
     uint8_t lc3_sub[MAX_LC3_FRAME_OCTETS];
-    size_t  len_sub = 0;
+    size_t len_sub = 0;
 
     uint8_t tx_packet[sizeof(vsaf_unicast_header_t) + MAX_LC3_FRAME_OCTETS];
-
     uint8_t seq = 0;
+
     int64_t next_frame_time_us = esp_timer_get_time();
 
     while (m_audio_task_running) {
@@ -898,29 +913,27 @@ void EspNowUnicastEngine::runSourceLoop() {
         }
         next_frame_time_us += m_frame_duration_us;
 
-        if (m_state != NetworkState::CAST) {
+        // 1. Check if node is IDLE or OFF: sleep and do not transmit
+        if (m_state != NetworkState::CAST && m_state != NetworkState::PC_STREAM) {
             continue;
         }
 
-        size_t samples_per_frame = (m_telemetry.sample_rate * m_frame_duration_us) / 1000000;
-        if (samples_per_frame > MAX_PCM_FRAME_SAMPLES) samples_per_frame = MAX_PCM_FRAME_SAMPLES;
-
-        // Audio Ingest: Pull from USB PCM Stream if active (< 500 ms), otherwise fallback to internal synth
-        int64_t last_usb_us = m_last_usb_packet_time_us.load(std::memory_order_relaxed);
-        bool usb_active = (last_usb_us > 0) && ((now_us - last_usb_us) < 500000);
-        m_usb_stream_active.store(usb_active, std::memory_order_relaxed);
-
-        if (usb_active && m_usb_pcm_has_new.exchange(false, std::memory_order_acquire)) {
-            int read_idx = m_usb_pcm_read_buf.load(std::memory_order_relaxed);
-            const int16_t* usb_stereo = m_usb_pcm_buf[read_idx];
-            for (size_t i = 0; i < samples_per_frame; i++) {
-                pcm_ch0[i] = usb_stereo[2 * i];     // Left channel
-                pcm_ch1[i] = usb_stereo[2 * i + 1]; // Right channel
+        // 2. Check for PC Stream Timeout (> 200 ms) in PC_STREAM mode -> Transition to IDLE
+        if (m_state == NetworkState::PC_STREAM) {
+            int64_t last_usb = m_last_usb_packet_time_us.load(std::memory_order_relaxed);
+            if (last_usb > 0 && (now_us - last_usb) > 200000) {
+                ESP_LOGI(TAG, "SOURCE: PC Stream Timed Out (> 200 ms) -> Transition to IDLE");
+                taskENTER_CRITICAL(&m_usb_fifo_mux);
+                for (int i = 0; i < MAX_UNICAST_SINKS; i++) {
+                    m_usb_lc3_fifo[i].clear();
+                }
+                taskEXIT_CRITICAL(&m_usb_fifo_mux);
+                m_usb_underrun_count.store(0, std::memory_order_relaxed);
+                m_usb_overrun_count.store(0, std::memory_order_relaxed);
+                m_usb_stream_active.store(false, std::memory_order_relaxed);
+                transitionTo(NetworkState::IDLE);
+                continue;
             }
-        } else if (!usb_active) {
-            // Internal synthetic tone generator
-            if (m_tone_gen) m_tone_gen->generateFrame(pcm_ch0, samples_per_frame);
-            m_tone_gen_r.generateFrame(pcm_ch1, samples_per_frame);
         }
 
         // Snapshot registered peers
@@ -938,7 +951,63 @@ void EspNowUnicastEngine::runSourceLoop() {
         }
         taskEXIT_CRITICAL(&m_peer_mux);
 
-        // Encode audio channels with LC3 (Dual-Core Parallel on ESP32-S3)
+        // ======================= MODE 1: PC_STREAM =======================
+        if (m_state == NetworkState::PC_STREAM) {
+            uint32_t pts_us = static_cast<uint32_t>(now_us + CONFIG_ESPNOW_PRESENTATION_DELAY_US);
+
+            for (int i = 0; i < peer_count_snap; i++) {
+                if (!peers_snap[i].is_enabled || peers_snap[i].status != PeerStatus::ONLINE) {
+                    continue;
+                }
+
+                uint8_t ch = peers_snap[i].channel_id;
+                UsbLc3Frame frame = {};
+                bool has_frame = false;
+
+                taskENTER_CRITICAL(&m_usb_fifo_mux);
+                has_frame = m_usb_lc3_fifo[ch].pop(frame);
+                taskEXIT_CRITICAL(&m_usb_fifo_mux);
+
+                if (!has_frame) {
+                    m_usb_underrun_count.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+
+                vsaf_unicast_header_t* hdr = reinterpret_cast<vsaf_unicast_header_t*>(tx_packet);
+                hdr->seq = frame.seq;
+                hdr->octets = frame.octets;
+                hdr->audio.flags = (ch == SUB_CHANNEL_ID) ?
+                                    encode_vsaf_flags(CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ, m_frame_duration_us) :
+                                    encode_vsaf_flags(m_telemetry.sample_rate, m_frame_duration_us);
+                hdr->audio.pts_us = pts_us;
+
+                memcpy(tx_packet + sizeof(vsaf_unicast_header_t), frame.data, frame.octets);
+                size_t packet_size = sizeof(vsaf_unicast_header_t) + frame.octets;
+
+                esp_err_t send_err = esp_now_send(peers_snap[i].mac, tx_packet, packet_size);
+                if (send_err == ESP_OK) {
+                    m_tx_packets_total.fetch_add(1, std::memory_order_relaxed);
+                    m_tx_packets_sec.fetch_add(1, std::memory_order_relaxed);
+                    taskENTER_CRITICAL(&m_peer_mux);
+                    for (int p = 0; p < m_peer_count; p++) {
+                        if (memcmp(m_peers[p].mac, peers_snap[i].mac, 6) == 0) {
+                            m_peers[p].packets_sent++;
+                            break;
+                        }
+                    }
+                    taskEXIT_CRITICAL(&m_peer_mux);
+                }
+            }
+            continue;
+        }
+
+        // ======================= MODE 2: CAST (Internal Test Tone) =======================
+        size_t samples_per_frame = (m_telemetry.sample_rate * m_frame_duration_us) / 1000000;
+        if (samples_per_frame > MAX_PCM_FRAME_SAMPLES) samples_per_frame = MAX_PCM_FRAME_SAMPLES;
+
+        if (m_tone_gen) m_tone_gen->generateFrame(pcm_ch0, samples_per_frame);
+        m_tone_gen_r.generateFrame(pcm_ch1, samples_per_frame);
+
         int64_t enc_start = esp_timer_get_time();
         size_t len_ch0 = 0, len_ch1 = 0;
 
@@ -952,10 +1021,7 @@ void EspNowUnicastEngine::runSourceLoop() {
             s_lc3_job.caller_task = xTaskGetCurrentTaskHandle();
             xTaskNotifyGive(s_lc3_worker_task_handle);
 
-            // Encode Left channel on Core 1 concurrently
             m_lc3_codec.encodeFrame(pcm_ch0, samples_per_frame, lc3_ch0, sizeof(lc3_ch0), &len_ch0);
-
-            // Wait for Core 0 worker to finish Right channel
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
         } else {
             m_lc3_codec.encodeFrame(pcm_ch0, samples_per_frame, lc3_ch0, sizeof(lc3_ch0), &len_ch0);
@@ -966,34 +1032,25 @@ void EspNowUnicastEngine::runSourceLoop() {
         m_lc3_codec_r.encodeFrame(pcm_ch1, samples_per_frame, lc3_ch1, sizeof(lc3_ch1), &len_ch1);
 #endif
 
-        // Subwoofer DSP Pipeline (only computed if Subwoofer peer is ONLINE)
         if (has_sub_peer) {
             for (size_t i = 0; i < samples_per_frame; i++) {
                 int32_t sum = static_cast<int32_t>(pcm_ch0[i]) + static_cast<int32_t>(pcm_ch1[i]);
                 sub_mono_48k[i] = static_cast<int16_t>(sum / 2);
             }
-            // 4th-order Linkwitz-Riley Lowpass Filter @ 100 Hz
             m_sub_lr4_filter.process(sub_mono_48k, sub_filtered_48k, samples_per_frame);
-
-            // Downsample factor 6: 48 kHz (480 samples) -> 8 kHz (80 samples)
             Dsp::SubwooferResampler::downsample48kTo8k(sub_filtered_48k, sub_pcm_8k, samples_per_frame);
-
-            // Encode 8 kHz LC3 Frame (80 octets)
             m_lc3_codec_sub.encodeFrame(sub_pcm_8k, 80, lc3_sub, sizeof(lc3_sub), &len_sub);
         }
 
         int64_t enc_end = esp_timer_get_time();
         m_codec_duration_ring_buffer.push(static_cast<uint32_t>(enc_end - enc_start));
-
         m_audio_meter.pushFramePcm(pcm_ch0, samples_per_frame);
 
-        // Microsecond Master Presentation Timestamp (50 ms buffer cushion)
         uint32_t pts_us = static_cast<uint32_t>(now_us + CONFIG_ESPNOW_PRESENTATION_DELAY_US);
 
-        // Dispatch unicast packets ONLY to ONLINE peers (0 Hz / 0 packets to OFFLINE peers!)
         for (int i = 0; i < peer_count_snap; i++) {
             if (!peers_snap[i].is_enabled || peers_snap[i].status != PeerStatus::ONLINE) {
-                continue; // Zero packets sent to OFFLINE nodes!
+                continue;
             }
 
             vsaf_unicast_header_t* hdr = reinterpret_cast<vsaf_unicast_header_t*>(tx_packet);
@@ -1004,19 +1061,16 @@ void EspNowUnicastEngine::runSourceLoop() {
             size_t payload_len = 0;
 
             if (peers_snap[i].channel_id == SUB_CHANNEL_ID) {
-                // Subwoofer Channel (8 kHz / 80 octets)
                 hdr->octets = static_cast<uint8_t>(CONFIG_ESPNOW_SUB_FRAME_LEN_OCTETS);
                 hdr->audio.flags = encode_vsaf_flags(CONFIG_ESPNOW_SUB_SAMPLE_RATE_HZ, m_frame_duration_us);
                 payload = lc3_sub;
                 payload_len = len_sub;
             } else if (peers_snap[i].channel_id == 1) {
-                // Right Channel (48 kHz / 120 octets)
                 hdr->octets = static_cast<uint8_t>(m_octets_per_frame);
                 hdr->audio.flags = encode_vsaf_flags(m_telemetry.sample_rate, m_frame_duration_us);
                 payload = lc3_ch1;
                 payload_len = len_ch1;
             } else {
-                // Left / Main Channel (48 kHz / 120 octets)
                 hdr->octets = static_cast<uint8_t>(m_octets_per_frame);
                 hdr->audio.flags = encode_vsaf_flags(m_telemetry.sample_rate, m_frame_duration_us);
                 payload = lc3_ch0;
@@ -1033,9 +1087,16 @@ void EspNowUnicastEngine::runSourceLoop() {
             if (send_err == ESP_OK) {
                 m_tx_packets_total.fetch_add(1, std::memory_order_relaxed);
                 m_tx_packets_sec.fetch_add(1, std::memory_order_relaxed);
+                taskENTER_CRITICAL(&m_peer_mux);
+                for (int p = 0; p < m_peer_count; p++) {
+                    if (memcmp(m_peers[p].mac, peers_snap[i].mac, 6) == 0) {
+                        m_peers[p].packets_sent++;
+                        break;
+                    }
+                }
+                taskEXIT_CRITICAL(&m_peer_mux);
             }
         }
-
         seq++;
     }
 }
