@@ -46,7 +46,7 @@ const system_config_t* get_system_config(void) {
             s_active_config.device_name = "ESP32-C6-23-LEFT";
         } else if (mac[5] == 0xE4 || mac[4] == 0x18) {
             s_active_config.node_id = 24;
-            s_active_config.device_name = "ESP32-C6-24-RIGHT";
+            s_active_config.device_name = "ESP32-C6-24-SUB";
         }
 #endif
         s_config_initialized = true;

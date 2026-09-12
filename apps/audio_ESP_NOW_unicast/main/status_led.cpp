@@ -192,7 +192,7 @@ void StatusLed::setSystemState(SystemState state) {
             setPattern(LED_COLOR_TEAL, DEFAULT_PULSE_MAX_BRIGHTNESS, PULSE_MEDIUM);
             break;
         case SystemState::STREAM:
-            setPattern(LED_COLOR_TEAL, DEFAULT_LED_BRIGHTNESS, BLINK_FAST);
+            setPattern(LED_COLOR_TEAL, DEFAULT_PULSE_MAX_BRIGHTNESS, PULSE_FAST);
             break;
         case SystemState::BT_SYNC:
             setPattern(LED_COLOR_TEAL, DEFAULT_LED_BRIGHTNESS, BLINK_SLOW);

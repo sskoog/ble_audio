@@ -68,15 +68,15 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_VOLUME_MAX_DB
-#define CONFIG_VOLUME_MAX_DB 0.0f   // Maximum volume in dB (step 255)
+#define CONFIG_VOLUME_MAX_DB -10.0f   // Maximum volume in dB (step 255)
 #endif
 
 #ifndef CONFIG_VOLUME_DEFAULT_U8
-#define CONFIG_VOLUME_DEFAULT_U8 30 // Default power-on volume
+#define CONFIG_VOLUME_DEFAULT_U8 255 // Default power-on volume
 #endif
 
 #ifndef CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC
-#define CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC 96.0f // Volume Slew Rate in dB/second (96 dB/s)
+#define CONFIG_VOLUME_SLEW_RATE_DB_PER_SEC 100.0f // Volume Slew Rate in dB/second (96 dB/s)
 #endif
 
 #define MAX_LC3_FRAME_OCTETS 200 // Maximum LC3 frame size supported over ESP-NOW

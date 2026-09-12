@@ -206,9 +206,9 @@ esp_err_t EspNowUnicastEngine::init(uint8_t role, uint8_t node_id, uint8_t wifi_
     m_node_role = role;
     m_node_id = node_id;
 
-    // Default tone frequencies
-    if (m_tone_gen) m_tone_gen->init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 440.0f, 110.0f, 440.0f, 50.0f);
-    m_tone_gen_r.init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 880.0f, 220.0f, 880.0f, 50.0f);
+    // Default tone frequencies (100% full scale amplitude)
+    if (m_tone_gen) m_tone_gen->init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 440.0f, 110.0f, 440.0f, 100.0f);
+    m_tone_gen_r.init(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 880.0f, 220.0f, 880.0f, 100.0f);
 
     if (m_node_role == NODE_ROLE_SOURCE) {
         m_lc3_codec.initEncoder(CONFIG_ESPNOW_SAMPLE_RATE_HZ, 1, 10000, m_octets_per_frame);
@@ -229,7 +229,7 @@ esp_err_t EspNowUnicastEngine::init(uint8_t role, uint8_t node_id, uint8_t wifi_
         const uint8_t right_mac[6] = {0xB0, 0xA6, 0x04, 0x99, 0x18, 0xE4}; // Node 24
 
         addPeer(left_mac, 0, "Sink-Left");
-        addPeer(right_mac, 1, "Sink-Right");
+        addPeer(right_mac, 5, "Sink-Sub");
     }
 
     // Initialize Wi-Fi
@@ -710,7 +710,13 @@ void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
     if (m_state == new_state) return;
     m_state = new_state;
 
-    if (new_state == NetworkState::CAST || new_state == NetworkState::STREAM) {
+    // Reset error and PLC counters on stream activation
+    if (new_state == NetworkState::CAST || new_state == NetworkState::STREAM || new_state == NetworkState::PREFILL) {
+        m_lc3_codec.resetPlcCount();
+        m_fifo_underrun.store(0, std::memory_order_relaxed);
+        m_fifo_overflow.store(0, std::memory_order_relaxed);
+        if (m_i2s_dac) m_i2s_dac->resetUnderrunCount();
+
         int64_t now_us = esp_timer_get_time();
         m_session_start_time_us.store(now_us, std::memory_order_relaxed);
         taskENTER_CRITICAL(&m_peer_mux);
@@ -722,7 +728,26 @@ void EspNowUnicastEngine::transitionTo(NetworkState new_state) {
         taskEXIT_CRITICAL(&m_peer_mux);
     }
 
-    ESP_LOGI(TAG, "State Transition: %s -> %s", getStateString(),
+    // Update Status LED state
+    switch (new_state) {
+        case NetworkState::CAST:
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::BROADCASTING_TONE);
+            break;
+        case NetworkState::STREAM:
+        case NetworkState::PREFILL:
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::STREAM);
+            break;
+        case NetworkState::SCANNING:
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::SCANNING);
+            break;
+        case NetworkState::IDLE:
+        case NetworkState::OFF:
+        default:
+            Hardware::getStatusLed().setSystemState(Hardware::SystemState::IDLE);
+            break;
+    }
+
+    ESP_LOGI(TAG, "State Transition: -> %s",
              (new_state == NetworkState::CAST) ? "CAST" :
              (new_state == NetworkState::STREAM) ? "STREAM" :
              (new_state == NetworkState::PREFILL) ? "PREFILL" :
