@@ -1299,6 +1299,15 @@ void EspNowUnicastEngine::runSinkLoop() {
                     m_i2s_dac->waitForDmaSlot(wait_timeout);
                 }
 
+                // Buffer depth regulation: keep RX FIFO strictly locked at 2-3 frames (~20-30 ms)
+                // Discard excess stale backlog to prevent latency drift across SINKs
+                taskENTER_CRITICAL(&s_fifo_mux);
+                while (s_rx_fifo_count > 4) {
+                    s_rx_fifo_tail = (s_rx_fifo_tail + 1) % LC3_RX_FIFO_CAPACITY;
+                    s_rx_fifo_count--;
+                }
+                taskEXIT_CRITICAL(&s_fifo_mux);
+
                 size_t lc3_len = 0;
                 uint8_t seq = 0;
                 uint16_t frame_sr = 0;
@@ -1344,16 +1353,30 @@ void EspNowUnicastEngine::runSinkLoop() {
                         uint8_t expected_seq = (m_last_rx_seq + 1) & 0xFF;
                         if (seq != expected_seq) {
                             uint8_t gap = (seq - expected_seq) & 0xFF;
-                            if (gap < 10) {
-                                for (uint8_t g = 0; g < gap; g++) {
-                                    size_t plc_samples = 0;
-                                    m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm_raw, MAX_PCM_FRAME_SAMPLES, &plc_samples,
-                                                            frame_sr, frame_dur);
-                                    if (m_i2s_dac && plc_samples > 0) {
-                                        size_t plc_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, plc_samples);
-                                        m_i2s_dac->write(stereo_pcm, plc_bytes, &bytes_written, 15);
-                                    }
+                            if (gap > 0 && gap < 10) {
+                                // Synthesize 1 PLC frame for missing expected_seq and push current packet back for next DMA slot
+                                size_t plc_samples = 0;
+                                m_lc3_codec.decodeFrame(nullptr, 0, decoded_pcm_raw, MAX_PCM_FRAME_SAMPLES, &plc_samples,
+                                                        frame_sr, frame_dur);
+                                m_last_rx_seq = expected_seq;
+
+                                taskENTER_CRITICAL(&s_fifo_mux);
+                                s_rx_fifo_tail = (s_rx_fifo_tail + LC3_RX_FIFO_CAPACITY - 1) % LC3_RX_FIFO_CAPACITY;
+                                s_rx_fifo[s_rx_fifo_tail].len = static_cast<uint8_t>(lc3_len);
+                                s_rx_fifo[s_rx_fifo_tail].seq = seq;
+                                s_rx_fifo[s_rx_fifo_tail].sample_rate_hz = frame_sr;
+                                s_rx_fifo[s_rx_fifo_tail].frame_duration_us = frame_dur;
+                                s_rx_fifo[s_rx_fifo_tail].pts_us = frame_pts;
+                                s_rx_fifo[s_rx_fifo_tail].rx_local_time_us = rx_time_us;
+                                memcpy(s_rx_fifo[s_rx_fifo_tail].data, current_lc3_buf, lc3_len);
+                                s_rx_fifo_count++;
+                                taskEXIT_CRITICAL(&s_fifo_mux);
+
+                                if (m_i2s_dac && plc_samples > 0) {
+                                    size_t plc_bytes = apply_volume_and_format_stereo(decoded_pcm_raw, plc_samples);
+                                    m_i2s_dac->write(stereo_pcm, plc_bytes, &bytes_written, 15);
                                 }
+                                break;
                             }
                         }
                     }
@@ -1376,6 +1399,7 @@ void EspNowUnicastEngine::runSinkLoop() {
                 } else {
                     // Packet Loss Concealment (PLC)
                     consecutive_empty_frames++;
+                    m_fifo_underrun.fetch_add(1, std::memory_order_relaxed);
                     if (consecutive_empty_frames >= m_watchdog_timeout_frames) {
                         ESP_LOGW(TAG, "Watchdog timeout (%lu missing frames) -> SCANNING", (unsigned long)consecutive_empty_frames);
                         transitionTo(NetworkState::SCANNING);

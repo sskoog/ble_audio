@@ -92,8 +92,10 @@ void SystemDiagnostics::tick() {
         uint32_t fifo_ud = m_unicast_engine.getFifoUnderrunCount();
 
         uint32_t delta_dma = (dma_udr >= m_last_dma_udr) ? (dma_udr - m_last_dma_udr) : 0;
+        uint32_t delta_plc = (plc_count >= m_last_plc_count) ? (plc_count - m_last_plc_count) : 0;
         uint32_t delta_fifo = (fifo_ud >= m_last_fifo_udr) ? (fifo_ud - m_last_fifo_udr) : 0;
         m_last_dma_udr = dma_udr;
+        m_last_plc_count = plc_count;
         m_last_fifo_udr = fifo_ud;
 
         // FreeRTOS CPU load measurement sampled over the 1-second interval
@@ -136,7 +138,7 @@ void SystemDiagnostics::tick() {
 
         if (cfg->node_role == NODE_ROLE_SINK &&
             m_unicast_engine.getState() == AudioNet::NetworkState::STREAM &&
-            (delta_dma > 0 || plc_count > 0 || delta_fifo > 0)) {
+            (delta_dma > 0 || delta_plc > 0 || delta_fifo > 0)) {
             m_status_led.triggerUnderrunFlash(200);
         }
 
